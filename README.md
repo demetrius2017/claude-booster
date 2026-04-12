@@ -55,14 +55,14 @@ Optimizes how Claude Code loads, stores, retrieves, and preserves knowledge acro
 | 1d | 3-question session_end extraction | DONE |
 | 1e | institutional.md — 35 rules from 11 reports | DONE |
 
-### Phase 2: PLANNED (after 1 week stability)
+### Phase 2: IN PROGRESS
 
-| Step | Description | Effort |
-|------|-------------|--------|
-| 2a | FTS5 scope support + report indexing (schema v1→v2) | ~4h |
-| 2b | Error pattern taxonomy (manual, after 2-3 weeks data) | ~2h |
-| 2c | Consolidation review (preserve: true exempt) | ~2h |
-| 2d | Cross-project search in /start command | ~2h |
+| Step | Description | Effort | Status |
+|------|-------------|--------|--------|
+| 2a | FTS5 scope column (schema v2→v3) + report indexing (20 consilium/audit rows) | ~4h | **DONE 2026-04-12** |
+| 2b | Error pattern taxonomy (manual, now feasible on 63-row corpus) | ~2h | PENDING |
+| 2c | Consolidation review (`preserve: true` exempt for consilium/audit rows) | ~2h | PENDING |
+| 2d | Cross-project search in `/start` command (replaces Glob+Read with `search(scope=...)`) | ~2h | PENDING (unblocked by 2a) |
 
 ## Key Findings
 
