@@ -55,7 +55,7 @@ Optimizes how Claude Code loads, stores, retrieves, and preserves knowledge acro
 | 1d | 3-question session_end extraction | DONE |
 | 1e | institutional.md — 35 rules from 11 reports | DONE |
 
-### Phase 2: IN PROGRESS
+### Phase 2: DONE (2026-04-13)
 
 | Step | Description | Effort | Status |
 |------|-------------|--------|--------|
@@ -64,6 +64,12 @@ Optimizes how Claude Code loads, stores, retrieves, and preserves knowledge acro
 | 2c | `preserve` column (schema v3→v4) + consolidate() respects preserve flag | ~2h | **DONE 2026-04-13** |
 | 2d | Cross-project search in `/start` command (replaces Glob+Read with `start-context` CLI) | ~2h | **DONE 2026-04-13** (2-round GPT audit, 6 fixes) |
 | 2e | Auto-indexing via PostToolUse async subprocess (variant G from scenario-based audit) | ~1h | **DONE 2026-04-13** |
+
+### Phase 3: DONE (2026-04-13)
+
+| Step | Description | Effort | Status |
+|------|-------------|--------|--------|
+| 3 | Deprecate `~/.claude/CLAUDE.md` — `~/.claude/rules/*.md` auto-load via their own frontmatter | ~30m | **DONE 2026-04-13** (verified via `/memory` in a fresh session while CLAUDE.md renamed) |
 
 ## Key Findings
 
