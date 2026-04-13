@@ -60,7 +60,7 @@ Optimizes how Claude Code loads, stores, retrieves, and preserves knowledge acro
 | Step | Description | Effort | Status |
 |------|-------------|--------|--------|
 | 2a | FTS5 scope column (schema v2→v3) + report indexing (20 consilium/audit rows) | ~4h | **DONE 2026-04-12** |
-| 2b | Error pattern taxonomy (manual, now feasible on 63-row corpus) | ~2h | PENDING |
+| 2b | Error pattern taxonomy (11 canonical slugs mirroring `institutional.md` H2s, classifier + render) | ~2h | **DONE 2026-04-13** |
 | 2c | Consolidation review (`preserve: true` exempt for consilium/audit rows) | ~2h | PENDING |
 | 2d | Cross-project search in `/start` command (replaces Glob+Read with `start-context` CLI) | ~2h | **DONE 2026-04-13** (2-round GPT audit, 6 fixes) |
 | 2e | Auto-indexing via PostToolUse async subprocess (variant G from scenario-based audit) | ~1h | **DONE 2026-04-13** |
