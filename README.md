@@ -59,6 +59,7 @@ Optimizes how Claude Code loads, stores, retrieves, and preserves knowledge acro
 
 | Step | Description | Effort | Status |
 |------|-------------|--------|--------|
+| 3  | Deprecate `~/.claude/CLAUDE.md` index in favour of `rules/` auto-scan (live test in CRM_AI) | ~30m | **DONE 2026-04-13** |
 | 2a | FTS5 scope column (schema v2→v3) + report indexing (20 consilium/audit rows) | ~4h | **DONE 2026-04-12** |
 | 2b | Error pattern taxonomy (11 canonical slugs mirroring `institutional.md` H2s, classifier + render) | ~2h | **DONE 2026-04-13** |
 | 2c | `preserve` column (schema v3→v4) + consolidate() respects preserve flag | ~2h | **DONE 2026-04-13** |
