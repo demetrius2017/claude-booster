@@ -1,6 +1,13 @@
 ---
-name: Audit 2026-04-13 — Phase 2d cross-project /start search integration
-description: Two rounds of GPT-5.4 codereview on build_start_context + _category_from_scope + /start rule prose; round 1 caught 1 HIGH (greedy walk + raw $(pwd)) + 2 MED (no normalization, init_db on read command) + 1 LOW (empty title); round 2 caught 1 MED (contract-vs-reality: sqlite3.connect creates empty file) + 1 LOW (os.getcwd crashes on deleted cwd); all 6 fixed in-session
+name: "Audit 2026-04-13 — Phase 2d cross-project /start search integration"
+description: >
+  Two rounds of GPT-5.4 codereview on build_start_context,
+  _category_from_scope, and the /start rule prose. Round 1 caught 1 HIGH
+  (greedy walk past Projects + raw $(pwd)), 2 MED (no path normalization,
+  init_db on read-only command), 1 LOW (empty title fallback). Round 2
+  caught 1 MED (sqlite3.connect creates empty file on missing DB — contract
+  vs reality drift), 1 LOW (os.getcwd raises on deleted cwd). All six
+  findings fixed in-session.
 type: audit
 scope: global
 preserve: true
