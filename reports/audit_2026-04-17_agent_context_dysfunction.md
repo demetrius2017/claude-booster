@@ -303,3 +303,24 @@ Rejected: start with Mirror v2; one commit bundle; stale-P1 auto-consilium; blin
 - Agent E (Data Forensics): `adc89d304daaefde4`
 
 **PAL consensus continuation**: `b81441c8-3870-4227-be8d-50ba9a7373f9`
+
+---
+
+## Self-audit clause
+
+**This audit's authority expires 2026-07-17** (90 days from issuance). After that date, the `preserve: true` frontmatter preserves the **document** as an artefact — it does **not** preserve the **trust level** of its recommendations.
+
+**Before citing this audit as authority after 2026-07-17**, run the following re-verification checks. If any fails, re-tag the corresponding tranche as `[UNDER REVIEW since <cite>; resolve by <date>]` using the canonical format enforced by `~/.claude/scripts/check_review_ages.py`:
+
+| Check | Command | Fail condition |
+|---|---|---|
+| Rules canary still loads | `python ~/.claude/scripts/check_rules_loaded.py` | Canary token absent → rules subsystem broke silently |
+| Session-start hook healthy | `bash ~/.claude/scripts/on_session_start.sh --dry-run` (or grep transcripts for canary line) | Hook format changed by a Claude Code upgrade |
+| T1.3 dead-path fix still present | `git -C ~/Projects/horizon log --oneline -S "total_value" backend/snapshot_cron.py` | Guard reintroduced by a later commit |
+| T1.1 blocking reconcile still present | `git -C ~/Projects/horizon log --oneline -S "startup_reconcile" backend/main.py` | Gate reverted |
+| T1.2 etoro sync still present | `git -C ~/Projects/horizon log --oneline backend/etoro_sync.py` | File removed or core function renamed away |
+| UNDER REVIEW tag hygiene | `python ~/.claude/scripts/check_review_ages.py` | Any tag overdue without replacement |
+
+**Rationale.** The scenario planner (`reports/scenario_planning_2026-04-18.md` §5.1, risk #2 P0) identified this audit itself as the highest-ranked meta-risk: agent reads it 3 months from now as authoritative, assumes all T1/T2/T3 fixes still hold, never re-verifies, reproduces exactly the stale-canon failure the audit was written to cure. This clause resolves the contradiction between `preserve: true` and the T2.3 supersession principle: **preserve the document, not the trust level of the document**.
+
+**If re-verification passes** at 2026-07-17 (or earlier / later audit), extend the expiry by 90 days and log the re-verification in a new session handover. Do NOT silently refresh the date without running the checks.
