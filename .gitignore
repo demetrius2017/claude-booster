@@ -1,0 +1,52 @@
+# Per-user runtime state — NEVER commit
+.credentials.json
+rolling_memory.db*
+history.jsonl
+settings.json
+settings.local.json
+settings.json.bak*
+CLAUDE.md.backup*
+CLAUDE.md.phase*
+.booster-manifest.json
+.booster-install.lock
+
+# Per-user directories (never slurp from ~/.claude)
+backups/
+cache/
+chrome/
+debug/
+downloads/
+file-history/
+ide/
+image-cache/
+logs/
+paste-cache/
+plans/
+projects/
+scheduled-tasks/
+session-env/
+sessions/
+
+# Bak variants of anything
+*.bak
+*.bak_*
+*-shm
+*-wal
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# OS/editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Test artifacts
+test_home/
+/tmp_install/

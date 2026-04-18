@@ -1,0 +1,100 @@
+{
+  "env": {
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Bash(*)",
+      "Read",
+      "Edit",
+      "Write",
+      "Glob",
+      "Grep",
+      "WebFetch",
+      "WebSearch",
+      "Agent",
+      "Skill",
+      "ToolSearch",
+      "TaskCreate",
+      "TaskUpdate",
+      "TaskList",
+      "TaskGet",
+      "TaskOutput",
+      "TaskStop",
+      "AskUserQuestion",
+      "EnterPlanMode",
+      "ExitPlanMode",
+      "NotebookEdit",
+      "mcp__pal__*",
+      "mcp__plugin_context7_context7__*",
+      "mcp__chrome-devtools__*",
+      "mcp__claude-in-chrome__*",
+      "mcp__playwright__*"
+    ],
+    "ask": [
+      "Bash(rm *)",
+      "Bash(rm)",
+      "Bash(unlink *)",
+      "Bash(rmdir *)",
+      "Bash(shred *)",
+      "Bash(* && rm *)",
+      "Bash(* || rm *)",
+      "Bash(* | xargs rm *)"
+    ],
+    "defaultMode": "auto",
+    "additionalDirectories": []
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/memory_session_start.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/verify_gate.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/memory_post_tool.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/memory_session_end.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {},
+  "skipAutoPermissionPrompt": false,
+  "_booster": {
+    "version": "${BOOSTER_VERSION}",
+    "installed_at": "${INSTALLED_AT}"
+  }
+}

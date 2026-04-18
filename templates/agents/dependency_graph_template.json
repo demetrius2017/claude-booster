@@ -1,0 +1,12 @@
+{
+  "$schema": "dependency_graph_v1",
+  "description": "Task dependency graph. Copy to <project>/.claude/agents/dependency_graph.json and populate with project tasks.",
+  "tasks": {},
+  "rules": {
+    "parallel_execution": "Tasks are parallel-safe only if they have no shared depends_on AND no file ownership overlap.",
+    "serial_execution": "If task A blocks task B, B cannot start until A status is 'completed'.",
+    "ui_gate": "If ui_acceptance_required is true, task stays in 'review' until user approves.",
+    "max_parallel_agents": 3,
+    "reason": "More than 3 agents creates coordination overhead that exceeds time savings."
+  }
+}
