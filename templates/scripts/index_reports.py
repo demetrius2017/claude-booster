@@ -73,14 +73,14 @@ def _iter_report_files() -> list[Path]:
     found: list[Path] = []
     for pat in patterns:
         found.extend(PROJECTS_ROOT.glob(pat))
-    # Some projects nest one level deeper (e.g. AINEWS/tnews_webapp/reports).
+    # Some projects nest one level deeper (e.g. monorepo/subproject/reports).
     nested_patterns = [
         "*/*/reports/consilium_*.md",
         "*/*/reports/audit_*.md",
     ]
     for pat in nested_patterns:
         found.extend(PROJECTS_ROOT.glob(pat))
-    # PnL_Tracker uses audits/<topic>/audit_report.md — pick those up too.
+    # Some projects use audits/<topic>/audit_report.md — pick those up too.
     found.extend(PROJECTS_ROOT.glob("*/audits/*/audit_report.md"))
     # Dedupe while preserving order.
     seen: set[Path] = set()
@@ -133,9 +133,9 @@ def _infer_type_from_name(path: Path) -> Optional[str]:
 def _project_category(path: Path) -> str:
     """Return the project directory name closest to the report file.
 
-    For nested layouts like ``~/Projects/AINEWS/tnews_webapp/reports/x.md``
-    we want ``tnews_webapp`` (the immediate parent of ``reports/``), not the
-    top-level ``AINEWS`` umbrella project. For PnL_Tracker's
+    For nested layouts like ``~/Projects/umbrella/subproject/reports/x.md``
+    we want ``subproject`` (the immediate parent of ``reports/``), not the
+    top-level ``umbrella`` directory. For layouts using
     ``audits/<topic>/audit_report.md`` we walk past the ``audits`` segment
     the same way.
     """

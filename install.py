@@ -30,7 +30,10 @@ Exit codes:
   10  Python < 3.8
   11  ~/.claude/ not writable
   12  Downgrade attempt (manifest version > source)
-  13  Native Windows
+  13  Native Windows / Cygwin / MSYS / WSL1
+  14  Sandboxed Claude Code (Snap / Flatpak)
+  15  ~/.claude/ on a network filesystem (NFS / CIFS / SMB / sshfs)
+  16  sqlite3 lacks FTS5 support
   20  Backup failed
   30  Write failed (rolled back)
   40  Settings merge failed (rolled back)
@@ -47,12 +50,13 @@ import os
 import platform
 import shutil
 import signal
+import sqlite3
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
 
-BOOSTER_VERSION = "1.0.0"
+BOOSTER_VERSION = "1.0.1"
 REPO_ROOT = Path(__file__).resolve().parent
 TEMPLATES = REPO_ROOT / "templates"
 CLAUDE_HOME = Path.home() / ".claude"
@@ -105,7 +109,12 @@ def fail(code: int, msg: str) -> None:
 
 
 def atomic_write(target: Path, data: bytes, mode: int = 0o644) -> None:
-    """Write `data` to `target` via tmp + fsync + os.replace."""
+    """Write `data` to `target` via tmp + fsync + os.replace.
+
+    On Darwin, additionally issue F_FULLFSYNC — plain fsync() does not
+    guarantee platter flush on macOS, exposing a power-loss corruption
+    window (SQLite docs §atomiccommit).
+    """
     target.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=f".{target.name}.")
     try:
@@ -113,6 +122,12 @@ def atomic_write(target: Path, data: bytes, mode: int = 0o644) -> None:
             f.write(data)
             f.flush()
             os.fsync(f.fileno())
+            if sys.platform == "darwin":
+                try:
+                    import fcntl
+                    fcntl.fcntl(f.fileno(), fcntl.F_FULLFSYNC)
+                except (OSError, AttributeError):
+                    pass  # F_FULLFSYNC not supported on all filesystems
         os.chmod(tmp, mode)
         os.replace(tmp, target)
     except Exception:
@@ -124,16 +139,99 @@ def atomic_write(target: Path, data: bytes, mode: int = 0o644) -> None:
 # ──────────────────────────── preflight ────────────────────────────
 
 
+def _detect_network_fs(path: Path) -> str | None:
+    """Return filesystem type string if `path` lives on a network FS, else None.
+
+    SQLite WAL is documented-unsafe on NFS/CIFS (sqlite.org/wal.html §2.2).
+    Parses /proc/mounts on Linux; returns None on other OSes (macOS network
+    mounts are rarer and detectable via `statfs` in a follow-up).
+    """
+    try:
+        if sys.platform.startswith("linux"):
+            mounts = Path("/proc/mounts").read_text().splitlines()
+            path_str = str(path.resolve())
+            best_mount = ""
+            best_fs: str | None = None
+            for line in mounts:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mount_point, fs_type = parts[1], parts[2]
+                if path_str == mount_point or path_str.startswith(mount_point.rstrip("/") + "/"):
+                    if len(mount_point) > len(best_mount):
+                        best_mount = mount_point
+                        best_fs = fs_type
+            if best_fs in {
+                "nfs", "nfs4", "cifs", "smbfs", "smb3",
+                "fuse.sshfs", "fuse.rclone", "9p", "davfs",
+            }:
+                return best_fs
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _detect_wsl() -> str | None:
+    """Return "wsl1" / "wsl2" if running under WSL, else None."""
+    if not sys.platform.startswith("linux"):
+        return None
+    try:
+        rel = Path("/proc/sys/kernel/osrelease").read_text().lower()
+    except OSError:
+        return None
+    if "microsoft" not in rel and "wsl" not in rel:
+        return None
+    # WSL2 kernel identifies itself in /proc/version / osrelease.
+    if "wsl2" in rel or "-wsl2" in rel or "microsoft-standard-wsl2" in rel:
+        return "wsl2"
+    return "wsl1"
+
+
 def preflight() -> None:
     if sys.version_info < (3, 8):
         fail(10, f"Python 3.8+ required, got {sys.version.split()[0]}")
 
     sysname = platform.system()
-    if sysname == "Windows":
+    # C1: widen to Cygwin / MSYS2 / MinGW — equality check was bypassed.
+    if sysname == "Windows" or sysname.startswith(("CYGWIN", "MSYS", "MINGW")):
         fail(
             13,
-            "Native Windows is not supported in v1.\n"
-            "       Use WSL2: https://learn.microsoft.com/windows/wsl/install",
+            "Native Windows / Cygwin / MSYS2 / MinGW is not supported in v1. "
+            "Use WSL2: https://learn.microsoft.com/windows/wsl/install",
+        )
+
+    # C2+C3: WSL detection — refuse WSL1 (drvfs WAL corruption), warn WSL2.
+    wsl = _detect_wsl()
+    if wsl == "wsl1":
+        fail(
+            13,
+            "WSL1 detected — SQLite WAL corrupts on drvfs. Upgrade to WSL2: "
+            "wsl --set-version <distro> 2",
+        )
+    if wsl == "wsl2":
+        log(
+            "WSL2 detected. If Claude Code runs on the Windows host (not "
+            "inside WSL), it reads %USERPROFILE%\\.claude and will NOT see "
+            "this install. Install on the side where Claude Code actually "
+            "runs.",
+            "WARN",
+        )
+
+    # C4: Snap / Flatpak confinement — HOME differs from $HOME for the app.
+    if os.environ.get("SNAP") or os.environ.get("SNAP_NAME"):
+        fail(
+            14,
+            "Snap sandbox detected ($SNAP set). If Claude Code is the "
+            "Snap-packaged app, its HOME is under ~/snap/<app>/common/ "
+            "and is not writable from outside. Install Claude Code via "
+            "deb/dmg/direct download, or run install.py from inside the "
+            "sandbox.",
+        )
+    if os.environ.get("FLATPAK_ID"):
+        fail(
+            14,
+            "Flatpak sandbox detected. Claude Code as a Flatpak uses a "
+            "separate HOME that this installer cannot reach.",
         )
 
     try:
@@ -147,8 +245,31 @@ def preflight() -> None:
     if not TEMPLATES.is_dir():
         fail(1, f"templates/ dir missing at {TEMPLATES} — repo corrupted?")
 
-    # OneDrive / Dropbox / iCloud detection
-    home_parts = [p.lower() for p in Path.home().parts]
+    # C5: Network filesystem detection — SQLite WAL forbidden on NFS.
+    net_fs = _detect_network_fs(CLAUDE_HOME)
+    if net_fs:
+        fail(
+            15,
+            f"~/.claude/ is on {net_fs} (network filesystem). SQLite WAL "
+            "corrupts on network filesystems — rolling_memory.db cannot "
+            "live here. Move ~/.claude/ to a local disk, or symlink it "
+            "from a local path.",
+        )
+
+    # P2.4: FTS5 capability check — rolling_memory.py requires it.
+    try:
+        conn = sqlite3.connect(":memory:")
+        conn.execute("CREATE VIRTUAL TABLE _probe USING fts5(x)")
+        conn.close()
+    except sqlite3.OperationalError:
+        fail(
+            16,
+            "Python sqlite3 lacks FTS5 support. Install Python via Homebrew "
+            "(macOS), apt/dnf (Linux), or compile SQLite with -DSQLITE_ENABLE_FTS5. "
+            "The Claude Booster memory engine requires FTS5 for cross-project search.",
+        )
+
+    # OneDrive / Dropbox / iCloud detection (cloud-sync folder warning).
     sync_markers = ("onedrive", "dropbox", "google drive", "icloud")
     if any(m in str(CLAUDE_HOME).lower() for m in sync_markers):
         log(
@@ -209,15 +330,20 @@ def classify_state(manifest: dict | None) -> str:
 
 
 def make_backup() -> Path:
-    """Tarball everything we intend to touch. Excludes runtime/user data."""
-    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    """Tarball everything we intend to touch. Excludes runtime/user data.
+
+    C6: stage the backup tarball in $TMPDIR (local tmpfs), NOT in
+    `~/.claude/backups/`. If CLAUDE_HOME lives on an external / network
+    drive that unmounts mid-install, the rollback target would otherwise
+    be on the same failed volume. `finalize_backup()` copies the tarball
+    into `BACKUP_DIR` after a successful install.
+    """
     stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-    tarball = BACKUP_DIR / f"booster_install_{stamp}.tar.gz"
+    tmp_tarball = Path(tempfile.gettempdir()) / f"booster_install_{stamp}.tar.gz"
 
     def filt(info: tarfile.TarInfo) -> tarfile.TarInfo | None:
         name = info.name
         parts = name.split("/")
-        # strip cwd prefix
         if parts and parts[0] == ".claude":
             rel_parts = parts[1:]
         else:
@@ -230,12 +356,29 @@ def make_backup() -> Path:
             return None
         return info
 
-    with tarfile.open(tarball, "w:gz") as tar:
+    with tarfile.open(tmp_tarball, "w:gz") as tar:
         for entry in MANAGED_DIRS + ("settings.json", "CLAUDE.md"):
             src = CLAUDE_HOME / entry
             if src.exists():
                 tar.add(src, arcname=f".claude/{entry}", filter=filt)
-    return tarball
+    return tmp_tarball
+
+
+def finalize_backup(tmp_tarball: Path) -> Path:
+    """Copy tmp-staged backup into CLAUDE_HOME/backups/ after success."""
+    BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+    final = BACKUP_DIR / tmp_tarball.name
+    try:
+        shutil.copy2(tmp_tarball, final)
+        tmp_tarball.unlink(missing_ok=True)
+        return final
+    except OSError as e:
+        log(
+            f"could not copy backup to {final} ({e}); backup remains at "
+            f"{tmp_tarball} — move it somewhere durable.",
+            "WARN",
+        )
+        return tmp_tarball
 
 
 def restore_backup(tarball: Path) -> None:
@@ -277,12 +420,35 @@ def _strip_booster_entries(hooks: dict) -> dict:
     return out
 
 
+def _resolve_python() -> str:
+    """Pick the most stable python3 path for hook commands.
+
+    Prefer `shutil.which("python3")` over `sys.executable` because:
+      - Homebrew ships a stable `/opt/homebrew/bin/python3` symlink that
+        survives `brew upgrade python@3.x → 3.y` (sys.executable resolves
+        to the versioned Cellar path, which disappears).
+      - apt/dnf keep `/usr/bin/python3` pointing at the active version.
+      - pyenv shims stay at `~/.pyenv/shims/python3`.
+      - NixOS: `python3` via PATH, not the nix-store hash that changes on
+        every `nixos-rebuild switch`.
+    Falls back to `sys.executable` when `python3` is not on PATH.
+    """
+    stable = shutil.which("python3")
+    if stable:
+        return stable
+    return sys.executable
+
+
 def _render_booster_settings() -> dict:
     raw = (TEMPLATES / "settings.json.template").read_text()
+    # Windows-aware path escaping for JSON: forward slashes work on both
+    # POSIX and NT and don't collide with JSON escape sequences like \U.
+    claude_home_json = str(CLAUDE_HOME).replace("\\", "/")
+    python_json = _resolve_python().replace("\\", "/")
     raw = raw.replace("${BOOSTER_VERSION}", BOOSTER_VERSION)
     raw = raw.replace("${INSTALLED_AT}", now_iso())
-    raw = raw.replace("${CLAUDE_HOME}", str(CLAUDE_HOME))
-    raw = raw.replace("${PYTHON}", sys.executable)
+    raw = raw.replace("${CLAUDE_HOME}", claude_home_json)
+    raw = raw.replace("${PYTHON}", python_json)
     return json.loads(raw)
 
 
@@ -306,16 +472,19 @@ def merge_settings(user: dict, booster: dict) -> dict:
     if cleaned:
         result["hooks"] = cleaned
 
-    # permissions: only seed if user has none
+    # permissions: only seed if user has none; else union allow/ask/deny
     if "permissions" not in result:
         result["permissions"] = booster.get("permissions", {})
     else:
-        # merge allow lists (union)
         booster_perms = booster.get("permissions", {})
-        user_allow = set(result["permissions"].get("allow", []))
-        for p in booster_perms.get("allow", []):
-            user_allow.add(p)
-        result["permissions"]["allow"] = sorted(user_allow)
+        # H2: union all three list keys, not just `allow`. User's rm-guards
+        # (ask list) would silently drop if we only merged allow.
+        for perm_key in ("allow", "ask", "deny"):
+            merged = set(result["permissions"].get(perm_key, []))
+            for p in booster_perms.get(perm_key, []):
+                merged.add(p)
+            if merged:
+                result["permissions"][perm_key] = sorted(merged)
         result["permissions"].setdefault(
             "defaultMode", booster_perms.get("defaultMode", "auto")
         )
@@ -357,8 +526,14 @@ def plan(
     pairs: list[tuple[Path, Path]],
     manifest: dict | None,
     force: bool,
+    subs: dict[str, str],
 ) -> dict:
-    """Build action plan: write / skip (idempotent) / preserve (user-modified)."""
+    """Build action plan: write / skip (idempotent) / preserve (user-modified).
+
+    Compares the installer's effective output (after {{...}} substitution)
+    against the currently-installed file. Using raw-template sha here
+    breaks idempotency — see _effective_src_sha().
+    """
     to_write: list[tuple[Path, Path]] = []
     to_skip: list[Path] = []
     to_preserve: list[Path] = []
@@ -370,7 +545,7 @@ def plan(
 
     for src, dst in pairs:
         rel = str(dst.relative_to(CLAUDE_HOME))
-        src_sha = sha256(src)
+        src_sha = _effective_src_sha(src, subs)
         if not dst.exists():
             to_write.append((src, dst))
             continue
@@ -403,12 +578,28 @@ def _apply_substitutions(data: bytes, subs: dict[str, str]) -> bytes:
     return text.encode("utf-8")
 
 
+def _effective_src_bytes(src: Path, subs: dict[str, str]) -> bytes:
+    """Bytes the installer WOULD write for this template, after substitution.
+
+    Critical for idempotency: plan() must compare the post-substitution
+    output against the currently-installed file, not the raw template
+    (which still has {{GIT_AUTHOR_NAME}} placeholders). Without this,
+    every re-run sees .md files as changed and rewrites them.
+    """
+    data = src.read_bytes()
+    if src.suffix in (".md", ".txt"):
+        data = _apply_substitutions(data, subs)
+    return data
+
+
+def _effective_src_sha(src: Path, subs: dict[str, str]) -> str:
+    return hashlib.sha256(_effective_src_bytes(src, subs)).hexdigest()
+
+
 def write_all(to_write: list[tuple[Path, Path]], subs: dict[str, str]) -> list[dict]:
     records = []
     for src, dst in to_write:
-        data = src.read_bytes()
-        if src.suffix in (".md", ".txt"):
-            data = _apply_substitutions(data, subs)
+        data = _effective_src_bytes(src, subs)
         is_script = src.name.endswith((".py", ".sh"))
         mode = 0o755 if is_script else 0o644
         atomic_write(dst, data, mode=mode)
@@ -516,10 +707,23 @@ def prompt_identity(
         email = email or git_email
 
     if non_interactive:
+        synthesized = []
         if not name:
             name = os.environ.get("USER", "claude-booster-user")
+            synthesized.append("name")
         if not email:
             email = f"{name}@users.noreply.github.com"
+            synthesized.append("email")
+        if synthesized:
+            # M2: loud warn when installer had to guess identity. Vercel and
+            # some CI pipelines deploy only from a specific author — a silent
+            # fake identity causes later deploys to fail mysteriously.
+            log(
+                f"git author {'+'.join(synthesized)} synthesized "
+                f"({name} <{email}>). Override with --name/--email or "
+                "`git config --global user.name/email` before first commit.",
+                "WARN",
+            )
     else:
         if not name:
             default = os.environ.get("USER", "")
@@ -567,7 +771,7 @@ def main() -> int:
 
     log(f"Claude Booster {BOOSTER_VERSION}")
     log(f"CLAUDE_HOME = {CLAUDE_HOME}")
-    log(f"PYTHON      = {sys.executable}")
+    log(f"PYTHON      = {_resolve_python()}")
 
     preflight()
 
@@ -592,7 +796,7 @@ def main() -> int:
     log(f"state       = {state}")
 
     pairs = enumerate_template_files()
-    actions = plan(pairs, manifest, args.force)
+    actions = plan(pairs, manifest, args.force, subs)
     log(
         f"files plan  = {len(actions['write'])} write, "
         f"{len(actions['skip'])} skip, "
@@ -634,10 +838,10 @@ def main() -> int:
             log("aborted by user")
             return 0
 
-    # backup
+    # backup — staged in $TMPDIR, finalized to BACKUP_DIR only on success
     try:
         _rollback_tarball = make_backup()
-        log(f"backup      = {_rollback_tarball}")
+        log(f"backup (tmp) = {_rollback_tarball}")
     except Exception as e:
         fail(20, f"backup failed: {e}")
 
@@ -673,6 +877,15 @@ def main() -> int:
     # manifest
     write_manifest(records, settings_sha)
     log(f"manifest    = {MANIFEST_PATH}")
+
+    # finalize backup (move from $TMPDIR → BACKUP_DIR); only after success.
+    # Repoint _rollback_tarball at the finalized path so a late SIGINT /
+    # exception still finds a valid tarball (REG-1 from fix-validation audit).
+    if _rollback_tarball is not None:
+        final_backup = finalize_backup(_rollback_tarball)
+        _rollback_tarball = final_backup
+        log(f"backup      = {final_backup}")
+
     log(f"installed {len(records)} files ({len(actions['write'])} written, {len(actions['skip'])} unchanged)")
     log("done")
     return 0

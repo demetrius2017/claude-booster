@@ -1159,7 +1159,7 @@ def _category_from_scope(scope: Optional[str]) -> Optional[str]:
     upward from ``scope`` to the first ancestor that owns a ``reports/`` or
     ``audits/`` directory — that ancestor is the indexed project root, and
     its basename is the category. This means a subdirectory scope like
-    ``~/Projects/horizon/src`` still resolves to ``horizon``.
+    ``~/Projects/foo/src`` still resolves to ``foo``.
 
     Returns ``None`` for ``None``/``"global"``/empty scopes, anything outside
     ``~/Projects``, or scopes whose ancestry contains no indexed project
@@ -1296,8 +1296,8 @@ def build_start_context(
 
     Replaces the legacy ``Glob("reports/consilium_*.md")+Read`` step in the
     /start workflow. Pulls from the `agent_memory` rows ingested by
-    ``index_reports.py`` so cross-project knowledge (e.g., a horizon IBKR audit
-    consulted from inside Claude_Booster) becomes discoverable.
+    ``index_reports.py`` so cross-project knowledge (e.g., an audit from one
+    project consulted from inside another) becomes discoverable.
 
     Ordering:
         1. Rows whose ``category`` matches the project derived from ``scope``.
@@ -1482,7 +1482,7 @@ def trim_rolling(memory_type: str, scope: str = "", conn: Optional[sqlite3.Conne
         # preserve=1 rows are immune to eviction. They were seeded as canonical
         # source-of-truth (institutional rules, consilium/audit imports) and
         # must not be auto-deleted when the rolling limit is exceeded — that
-        # would silently re-open questions that Dmitry has already closed.
+        # would silently re-open questions that the user has already closed.
         # Counting them in the total is fine; excluding them from the DELETE
         # candidate pool is what matters.
         if memory_type == "project_context" and scope:

@@ -64,18 +64,30 @@ def build_frontmatter(meta: dict) -> str:
 
 
 def infer_project_from_path(filepath: str) -> str:
-    """Infer project name from file path."""
+    """Infer project name from file path.
+
+    Claude Code's per-project memory dirs encode the full host path with
+    slashes replaced by hyphens, e.g. ~/.claude/projects/-Users-<user>-Projects-<proj>/memory/
+    The user-specific prefix (``users-<username>-[projects-]``) is stripped
+    dynamically so the function works for any Unix username.
+    """
+    import getpass
     path = filepath.lower()
-    # From memory paths like ~/.claude/projects/-Users-dmitrijnazarov-Projects-AINEWS/memory/
     m = re.search(r"projects[/-]+([\w-]+?)[/-]+memory", path, re.IGNORECASE)
     if m:
         name = m.group(1)
-        # Clean up common prefixes
-        for prefix in ["users-dmitrijnazarov-projects-", "users-dmitrijnazarov-"]:
-            if name.startswith(prefix):
-                name = name[len(prefix):]
+        # Strip user-specific prefixes: `users-<username>-projects-` and
+        # `users-<username>-`. Derived from the current OS user, not hardcoded.
+        try:
+            user = getpass.getuser().lower()
+        except Exception:
+            user = ""
+        if user:
+            for prefix in (f"users-{user}-projects-", f"users-{user}-"):
+                if name.startswith(prefix):
+                    name = name[len(prefix):]
         return name.lower().rstrip("-") or "global"
-    # From project paths like ~/Projects/AINEWS/reports/
+    # From project paths like ~/Projects/<something>/reports/
     m = re.search(r"Projects/([^/]+)/", filepath)
     if m:
         return m.group(1).lower()
