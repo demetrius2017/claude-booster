@@ -1,0 +1,34 @@
+---
+description: "Tool strategy: direct tools, agents, PAL MCP, Context7, Browser MCP. Always loaded."
+---
+
+# Tool Strategy
+- **Direct tools** (Glob, Grep, Read, WebSearch, WebFetch) — parallel calls for speed.
+- **Agents** — tasks spanning 5+ files, 2+ independent streams, deep research. NOT for small edits (<3 files).
+  - `subagent_type: Explore` — codebase search
+  - `subagent_type: Plan` — architectural planning
+  - `general-purpose` — implementation, testing, audit
+- **Skills:** `/simplify` for code review (AUDIT phase). `/frontend-design` for UI tasks with Design Gate.
+- **PAL MCP (GPT-5.4)** — mandatory in AUDIT and consilium phases. `ask` for questions, `thinkdeep` for architecture, `consensus` for debates, `second_opinion`/`codereview` for validation.
+  - **[CRITICAL] PAL file handling:** PAL server **reads files from disk itself** via `relevant_files`. NEVER paste file contents into `step`/`findings`/`problem_context` — GPT won't see them (truncation). Correct pattern:
+    - `relevant_files`: array of **absolute paths** (PAL reads them itself, max 1MB/file, token budgeting)
+    - `step`: description of current analysis step (what we're doing, what we're checking)
+    - `findings`: conclusions and insights (text, NOT code)
+    - `problem_context`: task context, business logic, constraints
+    - `files_checked`: all examined files (including ruled-out ones) — for tracking
+    - `relevant_context`: function/method names involved in the problem
+- **Context7** — when working with external libraries: `resolve-library-id` + `query-docs` for up-to-date docs BEFORE writing code. Do not rely on memory — APIs change.
+- **Browser MCP (3 levels):**
+  - `chrome-devtools` — **primary power tool**. You have FULL browser control via `evaluate_script` — use it autonomously, NEVER ask the user to do things you can do yourself:
+    - **Cache/storage:** `caches.delete()`, `localStorage.clear()`, `sessionStorage.clear()`, `indexedDB.deleteDatabase()`, `navigator.serviceWorker.getRegistrations().then(r=>r.forEach(sw=>sw.unregister()))` — clear any cache without asking user
+    - **Console errors:** `list_console_messages` — read JS errors, warnings, failed assertions directly. Use `get_console_message(id)` for stack traces
+    - **Network diagnostics:** `list_network_requests` — see all requests, status codes, timings. `get_network_request(id)` for full request/response bodies and headers
+    - **Performance metrics:** `evaluate_script("JSON.stringify(performance.getEntriesByType('navigation')[0])")` — TTFB, DOM load, full load timing. `performance.getEntriesByType('resource')` — per-resource waterfall. `performance.memory` — heap usage
+    - **DOM/state inspection:** `evaluate_script("document.querySelector(...)")` — check DOM state, computed styles, React devtools, app state
+    - **Runtime debugging:** `evaluate_script` can run ANY JS in page context — intercept fetch, monkey-patch functions, add breakpoints, measure timing, check cookies, read/write globals
+    - **Lighthouse:** `lighthouse_audit` — a11y, SEO, performance scores in one call
+    - **Performance traces:** `performance_start_trace` / `performance_stop_trace` / `performance_analyze_insight` — Core Web Vitals, render blocking, LCP breakdown
+    - **Device emulation:** `emulate(device, networkCondition, cpuThrottling)` — test mobile/slow network without asking user to switch devices
+    - **Memory:** `take_memory_snapshot` — heap snapshots for leak detection
+  - `claude-in-chrome` — visual: screenshots, GIF, find (NL), auth sessions
+  - `playwright` — E2E tests, cross-browser, visual regression

@@ -1,0 +1,45 @@
+{
+  "$schema": "ownership_map_v1",
+  "description": "1 agent = 1 zone. No shared file edits without publish-flow. Copy to <project>/.claude/agents/ownership.json and customize.",
+  "roles": {
+    "lead": {
+      "description": "Orchestrator. Reads state, delegates tasks, reviews PRs, manages dependencies.",
+      "owns": [
+        ".claude/state/",
+        ".claude/agents/",
+        "CLAUDE.md"
+      ],
+      "can_read": ["*"],
+      "can_write": ["state only — delegates all code changes"]
+    },
+    "backend": {
+      "description": "Backend services, API, DB models, migrations.",
+      "owns": [],
+      "can_read": [".claude/state/contracts/"],
+      "publishes": ["state/contracts/api_*.json", "state/handoffs/backend_*.md"]
+    },
+    "frontend": {
+      "description": "UI components, pages, styling, client-side logic.",
+      "owns": [],
+      "can_read": [".claude/state/contracts/"],
+      "publishes": ["state/contracts/ui_*.json", "state/handoffs/frontend_*.md"]
+    },
+    "devops": {
+      "description": "Docker, CI/CD, infra, deployment.",
+      "owns": [],
+      "can_read": ["*"],
+      "publishes": ["state/handoffs/devops_*.md"]
+    },
+    "research": {
+      "description": "Notebooks, experiments, data analysis.",
+      "owns": [],
+      "can_read": ["*"],
+      "publishes": ["state/handoffs/research_*.md"]
+    }
+  },
+  "rules": {
+    "shared_file_edit": "Only through publish-flow: agent proposes change in contract, lead approves, owner applies.",
+    "conflict_resolution": "Lead decides. If lead unavailable, owner of the file has priority.",
+    "new_files": "Agent can create files only within their owned directories."
+  }
+}
