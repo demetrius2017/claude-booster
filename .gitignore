@@ -71,7 +71,9 @@ id_ecdsa*
 .claude/plans/
 .claude/paste-cache/
 
-# Internal design reports — personal project references; not for public push.
-# Remove this line if you want to ship your own audit/consilium history.
-reports/
+# NOTE: `reports/` is tracked in this working repo (consilium/audit/handover
+# history for /start retrieval). The PUBLIC distribution repo
+# (github.com/demetrius2017/claude-booster) has its own .gitignore that
+# excludes reports/ — the fresh-init push strategy keeps personal content
+# out of the public history.
 
