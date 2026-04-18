@@ -18,11 +18,11 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 | Daily scenario | Stock Claude Code | With Claude Booster |
 |---|---|---|
-| **New session starts** | Reads `CLAUDE.md`, asks what changed since yesterday | `/start` auto-loads last session's decisions + relevant prior consiliums/audits — scoped to the current project, biased by category |
-| **Finished a hard debugging session** | Wisdom evaporates when you close the laptop | `/handover` captures decisions + next-step command. Next session picks up exactly where you left off |
+| **New session starts** | Reads `CLAUDE.md`, asks what changed since yesterday | `start` auto-loads last session's decisions + relevant prior consiliums/audits — scoped to the current project, biased by category |
+| **Finished a hard debugging session** | Wisdom evaporates when you close the laptop | `handover` captures decisions + next-step command. Next session picks up exactly where you left off |
 | **Moving to a new project** | Zero context carry-over | FTS5 cross-project search surfaces relevant lessons from every other project you've worked on |
 | **"Which approach do you want?"** | Claude asks, you tie-break, lose a round-trip | **51% Rule**: Claude acts on best guess, states the assumption in one line, you course-correct only if wrong |
-| **Hook silently broken** | Discovered 3 weeks later when something "feels weird" | `check_rules_loaded.py` canary + `telemetry_agent_health.py` surface 5 anti-theater signals every `/start` |
+| **Hook silently broken** | Discovered 3 weeks later when something "feels weird" | `check_rules_loaded.py` canary + `telemetry_agent_health.py` surface 5 anti-theater signals every `start` |
 | **Architectural decision** | Lost in terminal scrollback | `consilium` spawns 3–5 bio-specific agents + GPT via PAL MCP, auto-saves to `reports/`, auto-indexed for retrieval |
 | **"Did I run the tests?"** | Honor system | `verify_gate.py` PreToolUse hook blocks handover commits without an evidence JSON block |
 | **Hand-off between sessions** | "read the chat log" | Structured `handover` protocol with verify-gate evidence + first-step-tomorrow command |
@@ -43,7 +43,7 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 | Decisions lost | No structured save | `consilium` / `audit` / `handover` protocol, auto-indexed for retrieval |
 | Hooks broken silently | No self-check | `check_rules_loaded.py` canary + 5-signal agent-health telemetry |
 | "Fake evidence" in commits | No verification gate | `verify_gate.py` PreToolUse hook — blocks handover commits without real curl/SQL/HTTP evidence markers |
-| Session ends, notes scattered | No handover contract | `/handover` auto-collects git log + roadmap delta, formats structured report with evidence block |
+| Session ends, notes scattered | No handover contract | `handover` auto-collects git log + roadmap delta, formats structured report with evidence block |
 | Personal install breaks on new machine | Manual copy of `~/.claude/` | `install.py` — one command, atomic, idempotent, safe by default |
 
 ---
@@ -69,7 +69,7 @@ Under `~/.claude/`:
 
 | Path | Content |
 |------|---------|
-| `rules/*.md` | 9 rule files — anti-loop, tool strategy, pipeline phases, `/start` + `/handover` + `/consilium` / `/audit` commands, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection |
+| `rules/*.md` | 9 rule files — anti-loop, tool strategy, pipeline phases, `start` + `handover` + `consilium` / `audit` commands, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection |
 | `scripts/*.py` | 12 Python hook scripts — `rolling_memory.py` (memory engine), `memory_session_start.py` / `_end.py` / `_post_tool.py` (session hooks), `verify_gate.py` (commit evidence gate), `telemetry_agent_health.py` (5 anti-theater signals), `index_reports.py` (cross-project indexer), `check_rules_loaded.py` (canary), `check_review_ages.py` (supersession hygiene), `add_frontmatter.py` (YAML migration), `backup_rolling_memory.py`, `instructions_loaded_log.py` |
 | `commands/*.md` | `/verify-after-edit`, `/verify-flow` slash commands |
 | `agents/*.md`, `*.json` | Agent team protocols — lifecycle, ownership schema, worktree safety, readiness gates, roadmap convention |
