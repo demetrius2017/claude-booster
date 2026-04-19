@@ -16,7 +16,18 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 ## What's new in v1.1.0 — Lead-Orchestrator workflow enforcement
 
-Phase machine and hard gates that make it **physically impossible** to skip planning or merge unverified code.
+**The problem this release solves.** v1.0 gave Claude *instructions* on how to work as a lead orchestrator: RECON first, plan second, verify before closing, never push unverified code. Those instructions are in `pipeline.md` and Claude reads them every session. It still skipped steps — because instructions without teeth decay into theater the moment a task gets urgent. "I'll just edit this one file" becomes a habit, plans never get written, tasks close without anyone running a single `curl`.
+
+**What v1.1.0 changes.** The workflow is now enforced by the harness, not by Claude's memory. A six-phase state machine (`RECON → PLAN → IMPLEMENT → AUDIT → VERIFY → MERGE`) lives in `<project>/.claude/.phase`, visible in every prompt, and `PreToolUse` / `TaskCompleted` / `PreCompact` hooks **physically refuse** tool calls that violate the current phase:
+
+- Try to `Edit` a `.py` file in `RECON`? Blocked with a message telling Claude to advance the phase first.
+- Try to close a `TaskUpdate(status=completed)` without a `curl`, `pytest`, `SELECT ... N rows`, or DevTools inspection in the transcript? Blocked.
+- Auto-compaction tries to fire mid-plan and summarize away the architecture discussion? Blocked.
+- `git push --force`, `rm -rf /`, `kubectl delete`, `dd`, `mkfs`? Refused even with `bypassPermissions`.
+
+Plus three Claude-4.7-specific env defaults that push back on the [effort-downgrade controversy](https://www.theregister.com/2026/04/13/claude_outage_quality_complaints/) shipped in Opus 4.6: `effortLevel: high`, `MAX_THINKING_TOKENS=12000`, `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80`.
+
+Full lever map:
 
 | Lever | Behaviour |
 |---|---|
