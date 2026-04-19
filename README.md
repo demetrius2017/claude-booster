@@ -14,6 +14,27 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 ---
 
+## What's new in v1.1.0 — Lead-Orchestrator workflow enforcement
+
+Phase machine and hard gates that make it **physically impossible** to skip planning or merge unverified code.
+
+| Lever | Behaviour |
+|---|---|
+| `/phase` slash command + per-project `.claude/.phase` file | Six phases: `RECON → PLAN → IMPLEMENT → AUDIT → VERIFY → MERGE`. Transitions logged to `phase_transitions.log`. |
+| `phase_gate.py` PreToolUse hook | Blocks `Edit`/`Write`/`NotebookEdit` on source code unless phase = `IMPLEMENT`. Docs / reports / tests / `*.md` still editable in any phase. |
+| `phase_prompt_inject.py` UserPromptSubmit hook | Injects `[phase: X] <rule>` into every user prompt so Claude always sees the current gate. |
+| `require_task.py` PreToolUse hook | Blocks code edits without an active `TaskCreate` — enforces plan-first discipline. |
+| `require_evidence.py` TaskCompleted hook | Refuses to close a task without `curl`/`pytest`/`SELECT ... N rows`/DevTools output in recent transcript. Bypass via `docs:`/`chore:` task prefix. |
+| `preserve_plan_context.py` PreCompact hook | Blocks auto-compaction while phase = `PLAN` so architectural discussion isn't summarized mid-design. |
+| `permissions.deny` hardening | `git push --force`, `git reset --hard`, `rm -rf /`, `kubectl delete`, `docker system prune`, `dd`, `mkfs` refused even in `bypassPermissions` mode. |
+| `effortLevel: high` + `MAX_THINKING_TOKENS=12000` | Counters the Claude 4.6→4.7 "effort downgrade" that shipped with medium-default adaptive thinking. |
+| `ANTHROPIC_DEFAULT_OPUS_MODEL=claude-opus-4-7` | Pins Opus 4.7; session doesn't silently fall back to 4.6. |
+| `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=80` | Compaction triggers at 80 % instead of the default ~95 % — planning context isn't lost at the edge. |
+
+Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDENCE,COMPACT}_GATE=1`.
+
+---
+
 ## Before / After
 
 | Daily scenario | Stock Claude Code | With Claude Booster |
@@ -70,8 +91,8 @@ Under `~/.claude/`:
 | Path | Content |
 |------|---------|
 | `rules/*.md` | 9 rule files — anti-loop, tool strategy, pipeline phases, `/start` + `/handover` + `/consilium` / `/audit` commands, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection |
-| `scripts/*.py` | 12 Python hook scripts — `rolling_memory.py` (memory engine), `memory_session_start.py` / `_end.py` / `_post_tool.py` (session hooks), `verify_gate.py` (commit evidence gate), `telemetry_agent_health.py` (5 anti-theater signals), `index_reports.py` (cross-project indexer), `check_rules_loaded.py` (canary), `check_review_ages.py` (supersession hygiene), `add_frontmatter.py` (YAML migration), `backup_rolling_memory.py`, `instructions_loaded_log.py` |
-| `commands/*.md` | `/verify-after-edit`, `/verify-flow` slash commands |
+| `scripts/*.py` | 18 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
+| `commands/*.md` | `/phase`, `/verify-after-edit`, `/verify-flow` slash commands |
 | `agents/*.md`, `*.json` | Agent team protocols — lifecycle, ownership schema, worktree safety, readiness gates, roadmap convention |
 | `settings.json` | Hooks wired to Claude Code, **merged** into any existing config |
 | `.booster-manifest.json` | Installer metadata — SHA-256 per file, version, for idempotency and selective rollback |

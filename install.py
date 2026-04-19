@@ -56,7 +56,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-BOOSTER_VERSION = "1.0.1"
+BOOSTER_VERSION = "1.1.0"
 REPO_ROOT = Path(__file__).resolve().parent
 TEMPLATES = REPO_ROOT / "templates"
 CLAUDE_HOME = Path.home() / ".claude"
@@ -497,6 +497,13 @@ def merge_settings(user: dict, booster: dict) -> dict:
 
     # enabledPlugins, mcpServers — preserve user verbatim, do not inject
     result.setdefault("enabledPlugins", {})
+
+    # top-level simple keys: adopt booster default only when user has no value.
+    # User overrides (e.g., effortLevel=max, skipAutoPermissionPrompt=true)
+    # are preserved verbatim.
+    for key in ("effortLevel", "skipAutoPermissionPrompt"):
+        if key in booster and key not in result:
+            result[key] = booster[key]
 
     # ownership marker
     result["_booster"] = booster["_booster"]
