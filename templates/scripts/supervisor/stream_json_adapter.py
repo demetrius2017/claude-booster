@@ -50,6 +50,7 @@ import signal
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import AsyncIterator
 
 from .runtime import WorkerEvent
@@ -76,6 +77,7 @@ class _TaskState:
     usage_snapshot: dict | None = None
     reader_task: asyncio.Task | None = None
     started_monotonic: float = 0.0
+    stderr_path: object = None  # Path | None — per-task stderr log for diagnostics
 
 
 class StreamJsonRuntime:
@@ -109,14 +111,22 @@ class StreamJsonRuntime:
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
         args += [prompt]
+        # Capture stderr into a per-task log (open file, not a PIPE — avoids
+        # H-stderr pipe-buffer deadlock but preserves diagnostics when the
+        # worker fails to spawn or emits non-stream-json errors).
+        log_dir = Path.home() / ".claude" / "logs" / "supervisor"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        state_stderr_path = log_dir / f"worker_{task_id}.stderr.log"
+        stderr_fh = open(state_stderr_path, "wb")
         proc = await asyncio.create_subprocess_exec(
             *args,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,  # fix H-stderr: PIPE without drain deadlocks CLI
+            stderr=stderr_fh,
             cwd=cwd or self.default_cwd,
         )
         state = _TaskState(task_id=task_id, proc=proc, started_monotonic=time.monotonic())
+        state.stderr_path = state_stderr_path
         state.reader_task = asyncio.create_task(self._reader(state))
         self._tasks[task_id] = state
         return task_id
@@ -178,6 +188,15 @@ class StreamJsonRuntime:
         return self._tasks[task_id]
 
     async def _reader(self, state: _TaskState) -> None:
+        """Drain stdout, schema-check, normalise into WorkerEvents.
+
+        Real `claude -p --output-format stream-json` emits a preamble of
+        `system/hook_started` + `system/hook_response` events (one per
+        SessionStart hook) BEFORE the authoritative `system/init` line.
+        The handshake must tolerate that preamble and only validate the
+        first `system/init` it sees. Non-JSON before init still fails
+        closed (audit-fix H2).
+        """
         proc = state.proc
         assert proc is not None and proc.stdout is not None
         schema_checked = False
@@ -190,13 +209,16 @@ class StreamJsonRuntime:
                     msg = json.loads(line)
                 except json.JSONDecodeError:
                     if not schema_checked:
-                        # fix H2: don't let non-JSON garbage slip past the handshake
                         raise SchemaMismatchError("first non-empty line is not valid JSON")
                     continue
                 if not schema_checked:
+                    mtype, mstype = msg.get("type"), msg.get("subtype")
+                    if mtype == "system" and mstype != "init":
+                        # Preamble hook events; wait for system/init.
+                        continue
                     self._assert_schema(msg)
                     schema_checked = True
-                for ev in self._to_events(state, msg):  # fix H1: emit ALL content blocks
+                for ev in self._to_events(state, msg):
                     await state.queue.put(ev)
             await proc.wait()
             if state.terminal is None:

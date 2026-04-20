@@ -183,6 +183,29 @@ class TestReaderReplay(unittest.IsolatedAsyncioTestCase):
             await runtime._reader(state)
         self.assertEqual(state.terminal, "failed")
 
+    async def test_hook_preamble_before_init_is_tolerated(self):
+        """Regression: real `claude -p --output-format stream-json` emits
+        system/hook_started + system/hook_response events BEFORE system/init.
+        The handshake must skip them and validate on the first system/init.
+        """
+        preamble_hook_started = {"type": "system", "subtype": "hook_started", "hook_id": "h1"}
+        preamble_hook_response = {"type": "system", "subtype": "hook_response", "hook_id": "h1", "exit_code": 0}
+        lines = [
+            json.dumps(preamble_hook_started),
+            json.dumps(preamble_hook_response),
+            json.dumps(_fixture_init()),
+            json.dumps(_fixture_text("hi")),
+            json.dumps(_fixture_result()),
+        ]
+        runtime = SJA.StreamJsonRuntime()
+        state = SJA._TaskState(task_id="tid-hook", proc=FakeProc(lines))
+        await runtime._reader(state)
+        events = await _drain(state)
+        # Hook events are not in WorkerEvent surface (no mapping), first event
+        # we see is message_start from system/init.
+        self.assertEqual([e.kind for e in events], ["message_start", "text_delta", "message_stop"])
+        self.assertEqual(state.terminal, "completed")
+
     async def test_multi_block_message_reader_replay(self):
         """Regression (audit H1 end-to-end): reader emits every event."""
         bundled = {"type": "assistant", "message": {"content": [
