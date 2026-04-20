@@ -18,6 +18,9 @@ is a session-level control that spawns its own `claude` subprocess.
 ## Invocations
 
 ```bash
+# Bare invocation — prints help + summary of all known sessions:
+python3 ~/.claude/scripts/supervisor/supervisor.py
+
 # Run a one-shot supervised session:
 python3 ~/.claude/scripts/supervisor/supervisor.py run "$ARGUMENTS"
 
@@ -26,7 +29,15 @@ python3 ~/.claude/scripts/supervisor/supervisor.py status --session <id>
 
 # Recent decisions for a session:
 python3 ~/.claude/scripts/supervisor/supervisor.py decisions --session <id> --limit 20
+
+# Table of all sessions (session_id, started, worker_tokens, circuit, decisions):
+python3 ~/.claude/scripts/supervisor/supervisor.py sessions [--limit N] [--json]
 ```
+
+**Do NOT query `~/.claude/rolling_memory.db` directly** with ad-hoc
+sqlite3 — the schema uses `started_at` / `worker_tokens` /
+`circuit_state` (not `ts` / `used_tokens` / `state`). Prefer
+`sessions`, `status`, `decisions` above.
 
 Actual execution of this slash command:
 

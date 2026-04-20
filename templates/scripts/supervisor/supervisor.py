@@ -356,9 +356,34 @@ def _cmd_decisions(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_sessions(args: argparse.Namespace) -> int:
+    """Summary across sessions — Claudes used to query sqlite3 ad-hoc with
+    wrong column names (observed in field logs 2026-04-20). Shipping a
+    first-class command avoids improvisation.
+    """
+    store = SupervisorPersistence()
+    rows = store.list_sessions(limit=args.limit)
+    if args.json:
+        print(json.dumps(rows, indent=2))
+        return 0
+    if not rows:
+        print("No supervisor sessions on record.")
+        return 0
+    # Fixed-width columns; tolerate long session_ids by truncating.
+    print(f"{'SESSION_ID':<20} {'STARTED':<22} {'WORKER_TOK':>10}  {'CIRCUIT':<10} {'DECISIONS':>9}")
+    print("-" * 76)
+    for r in rows:
+        sid = (r["session_id"] or "")[:18]
+        started = (r["started_at"] or "")[:19]
+        print(f"{sid:<20} {started:<22} {r['worker_tokens']:>10}  {r['circuit_state']:<10} {r['n_decisions']:>9}")
+    return 0
+
+
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(prog="supervisor", description="Claude Booster Supervisor Agent v1.2.0")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    # cmd no longer `required=True` — bare invocation drops into _cmd_sessions
+    # so users and other Claudes get a useful summary, not argparse exit=2.
+    sub = ap.add_subparsers(dest="cmd")
 
     run = sub.add_parser("run", help="Run a supervised worker session")
     run.add_argument("prompt", help="Prompt to pass to the worker")
@@ -376,12 +401,22 @@ def _build_parser() -> argparse.ArgumentParser:
     dec.add_argument("--limit", type=int, default=20)
     dec.set_defaults(func=_cmd_decisions)
 
+    sess = sub.add_parser("sessions", help="Summary across all supervisor sessions")
+    sess.add_argument("--limit", type=int, default=20)
+    sess.add_argument("--json", action="store_true", help="Emit JSON instead of table")
+    sess.set_defaults(func=_cmd_sessions)
+
     return ap
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
+    if args.cmd is None:
+        # Bare invocation — friendly default instead of argparse exit=2.
+        parser.print_help()
+        print()
+        return _cmd_sessions(argparse.Namespace(limit=10, json=False))
     return args.func(args)
 
 

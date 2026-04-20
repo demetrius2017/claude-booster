@@ -386,6 +386,65 @@ class TestDirectScriptInvocation(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("Claude Booster Supervisor Agent", result.stdout)
 
+    def test_bare_invocation_shows_help_and_summary(self):
+        """Regression: field-log 2026-04-20 showed bare `/supervise` failing
+        with argparse exit=2. Bare must now be exit=0 with help+sessions.
+        """
+        import subprocess
+        script = SCRIPTS / "supervisor" / "supervisor.py"
+        env = dict(**os.environ, CLAUDE_BOOSTER_DB=tempfile.NamedTemporaryFile(suffix=".db", delete=False).name)
+        try:
+            result = subprocess.run(
+                ["python3", str(script)],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Claude Booster Supervisor Agent", result.stdout)
+            # "No supervisor sessions on record." on an empty DB.
+            self.assertIn("supervisor sessions", result.stdout.lower())
+        finally:
+            os.unlink(env["CLAUDE_BOOSTER_DB"])
+
+
+class TestSessionsCommand(unittest.TestCase):
+    def test_sessions_subcommand_json_and_table(self):
+        """Regression: `sessions` subcommand is the official way to enumerate —
+        other Claudes used to hack raw sqlite3 with wrong column names."""
+        import subprocess
+        script = SCRIPTS / "supervisor" / "supervisor.py"
+        db = tempfile.NamedTemporaryFile(suffix=".db", delete=False); db.close()
+        env = dict(**os.environ, CLAUDE_BOOSTER_DB=db.name)
+        try:
+            # Seed one quota row via direct persistence.
+            from supervisor.persistence import SupervisorPersistence
+            store = SupervisorPersistence(db_path=db.name)
+            store.upsert_quota({
+                "session_id": "seed-1", "started_at": "2026-04-20T17:00:00+00:00",
+                "window_end": "2026-04-20T22:00:00+00:00",
+                "supervisor_tokens": 0, "worker_tokens": 42, "circuit_state": "closed",
+            })
+            # JSON form:
+            result = subprocess.run(
+                ["python3", str(script), "sessions", "--json"],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            data = json.loads(result.stdout)
+            self.assertEqual(len(data), 1)
+            self.assertEqual(data[0]["session_id"], "seed-1")
+            self.assertEqual(data[0]["worker_tokens"], 42)
+            # Table form:
+            result2 = subprocess.run(
+                ["python3", str(script), "sessions"],
+                capture_output=True, text=True, timeout=10, env=env,
+            )
+            self.assertEqual(result2.returncode, 0, result2.stderr)
+            self.assertIn("SESSION_ID", result2.stdout)
+            self.assertIn("seed-1", result2.stdout)
+            self.assertIn("closed", result2.stdout)
+        finally:
+            os.unlink(db.name)
+
 
 class TestPersistenceListDecisions(unittest.TestCase):
     def test_public_api_returns_rows(self):

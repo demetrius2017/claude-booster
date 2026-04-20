@@ -98,6 +98,26 @@ class TestPersistence(unittest.TestCase):
     def test_load_quota_missing_returns_none(self):
         self.assertIsNone(self.store.load_quota("no-such-session"))
 
+    def test_list_sessions_joins_decision_count(self):
+        """Regression: list_sessions returns one row per quota, with n_decisions."""
+        now = _now_iso()
+        self.store.upsert_quota({
+            "session_id": "sess-A", "started_at": now, "window_end": _now_iso(18_000),
+            "supervisor_tokens": 10, "worker_tokens": 100, "circuit_state": "closed",
+        })
+        self.store.upsert_quota({
+            "session_id": "sess-B", "started_at": now, "window_end": _now_iso(18_000),
+            "supervisor_tokens": 20, "worker_tokens": 200, "circuit_state": "half_open",
+        })
+        for _ in range(3):
+            self.store.record_decision("sess-A", "Bash", "dA", "approve", 0, "r", approved_by="regex")
+        self.store.record_decision("sess-B", "Read", "dB", "deny", None, "r", approved_by="regex")
+        rows = self.store.list_sessions(limit=10)
+        by_id = {r["session_id"]: r for r in rows}
+        self.assertEqual(by_id["sess-A"]["n_decisions"], 3)
+        self.assertEqual(by_id["sess-B"]["n_decisions"], 1)
+        self.assertEqual(by_id["sess-B"]["circuit_state"], "half_open")
+
     def test_recent_by_args_window_filter(self):
         # Insert with window_seconds=0 — instantly stale.
         self.store.record_decision("s", "Bash", "digest-xyz", "deny", None, "deny-list hit", approved_by="regex")

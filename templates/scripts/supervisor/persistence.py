@@ -110,6 +110,25 @@ class SupervisorPersistence:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_sessions(self, limit: int = 20) -> list[dict]:
+        """Summary across all sessions, joined with decision count.
+
+        Shipped because field logs (2026-04-20) showed other Claudes
+        improvising sqlite3 queries with wrong column names. Giving
+        them a first-class API removes the temptation.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT q.session_id, q.started_at, q.worker_tokens, q.circuit_state, "
+                "       q.supervisor_tokens, q.updated_at, "
+                "       (SELECT COUNT(*) FROM supervisor_decisions d WHERE d.session_id = q.session_id) AS n_decisions "
+                "FROM supervisor_quota q "
+                "ORDER BY q.updated_at DESC "
+                "LIMIT ?",
+                (int(limit),),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def list_decisions(self, session_id: str, limit: int = 20) -> list[dict]:
         with self._connect() as conn:
             rows = conn.execute(
