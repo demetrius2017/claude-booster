@@ -57,13 +57,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Awaitable, Callable, Protocol
 
-from . import policy as P
-from . import runtime as R
-from .detector import State, WorkerStateDetector
-from .persistence import SupervisorPersistence
-from .policy import PolicyContext, args_digest, evaluate
-from .quota import CircuitState, QuotaTracker
-from .stream_json_adapter import StreamJsonRuntime
+# Bootstrap so the file works both as `python3 -m supervisor.supervisor ...`
+# AND as `python3 ~/.claude/scripts/supervisor/supervisor.py ...` (the form
+# the /supervise slash command uses).
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    __package__ = "supervisor"
+
+from supervisor import policy as P  # noqa: E402
+from supervisor import runtime as R  # noqa: E402
+from supervisor.detector import State, WorkerStateDetector  # noqa: E402
+from supervisor.persistence import SupervisorPersistence  # noqa: E402
+from supervisor.policy import PolicyContext, args_digest, evaluate  # noqa: E402
+from supervisor.quota import CircuitState, QuotaTracker  # noqa: E402
+from supervisor.stream_json_adapter import StreamJsonRuntime  # noqa: E402
 
 DEFAULT_ESTIMATED_TOKENS = 10_000
 SILENCE_POLL_INTERVAL = 1.0

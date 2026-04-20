@@ -371,6 +371,22 @@ class TestConfigTypeValidation(unittest.TestCase):
                 SupervisorConfig.from_yaml(yaml_path)
 
 
+class TestDirectScriptInvocation(unittest.TestCase):
+    def test_supervisor_runs_as_direct_script(self):
+        """Regression: /supervise slash command invokes supervisor.py as a direct
+        script (not `python3 -m supervisor.supervisor`). A relative-import crash
+        here means the command is broken for every installed user.
+        """
+        import subprocess
+        script = SCRIPTS / "supervisor" / "supervisor.py"
+        result = subprocess.run(
+            ["python3", str(script), "--help"],
+            capture_output=True, text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("Claude Booster Supervisor Agent", result.stdout)
+
+
 class TestPersistenceListDecisions(unittest.TestCase):
     def test_public_api_returns_rows(self):
         """Audit-fix L1 regression: public list_decisions() works without _connect()."""
