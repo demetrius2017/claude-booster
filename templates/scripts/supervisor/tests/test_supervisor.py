@@ -78,8 +78,12 @@ class FakeRuntime:
     async def shutdown(self): return None
 
 
-def _ctx(project_dir: Path, tier1: set[str] | None = None) -> PolicyContext:
-    return PolicyContext(project_dir=project_dir, tier1_enabled=tier1 or set(), tier2_trusted_repo=False, session_sandbox=project_dir / "sandbox")
+def _ctx(project_dir: Path, tier1: set[str] | None = None, paranoid: bool = False) -> PolicyContext:
+    return PolicyContext(
+        project_dir=project_dir, tier1_enabled=tier1 or set(),
+        tier2_trusted_repo=False, session_sandbox=project_dir / "sandbox",
+        paranoid_mode=paranoid,
+    )
 
 
 def _store_tmp() -> tuple[SupervisorPersistence, str]:
@@ -155,10 +159,11 @@ class TestPolicyDenyRecorded(unittest.IsolatedAsyncioTestCase):
             os.unlink(path)
 
     async def test_escalate_without_escalator_defaults_to_deny_and_cancels(self):
-        # Audit-fix C1 regression: unknown tool → policy.escalate → no escalator → default-deny + cancel.
+        # Audit-fix C1 regression: under paranoid_mode, escalate→no-escalator→default-deny+cancel.
+        # We wrap paranoid_mode=True around a Bash that in permissive-mode would approve.
         lines = [json.dumps(m) for m in (
             _fixture_init(),
-            _fixture_tool(name="NotebookEdit", input={"path": "x.ipynb"}),
+            _fixture_tool(name="Bash", input={"command": "echo hello"}),
             _fixture_tool_result(),
             _fixture_result(),
         )]
@@ -166,7 +171,7 @@ class TestPolicyDenyRecorded(unittest.IsolatedAsyncioTestCase):
         store, path = _store_tmp()
         try:
             tracker = QuotaTracker(session_id="sess-noesc")
-            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store)
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd(), paranoid=True), tracker=tracker, store=store)
             result = await sup.supervise(prompt="x", estimated_tokens=1000)
             self.assertTrue(any(d["decision"] == "deny" and "no escalator" in d["rationale"] for d in result.decisions))
             self.assertIn("fake-tid", runtime.cancel_calls)
@@ -188,9 +193,10 @@ class FakeEscalator:
 
 class TestEscalationPath(unittest.IsolatedAsyncioTestCase):
     async def test_unknown_tool_escalates_to_haiku(self):
+        # Paranoid ctx so the escalate branch is exercised at all.
         lines = [json.dumps(m) for m in (
             _fixture_init(),
-            _fixture_tool(name="NotebookEdit", input={"path": "x.ipynb"}),
+            _fixture_tool(name="Bash", input={"command": "echo hello"}),
             _fixture_tool_result(),
             _fixture_result(),
         )]
@@ -199,10 +205,10 @@ class TestEscalationPath(unittest.IsolatedAsyncioTestCase):
         store, path = _store_tmp()
         try:
             tracker = QuotaTracker(session_id="sess-esc")
-            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store, escalator=escalator)
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd(), paranoid=True), tracker=tracker, store=store, escalator=escalator)
             result = await sup.supervise(prompt="x", estimated_tokens=1000)
             self.assertEqual(len(escalator.calls), 1)
-            self.assertEqual(escalator.calls[0][0], "NotebookEdit")
+            self.assertEqual(escalator.calls[0][0], "Bash")
             # Haiku's deny must land in decisions.
             haiku_denies = [d for d in result.decisions if d["decision"] == "deny"]
             self.assertGreaterEqual(len(haiku_denies), 1)
@@ -369,6 +375,53 @@ class TestConfigTypeValidation(unittest.TestCase):
             json_path.write_text(json.dumps({"tier2_trusted_repo": "yes"}))
             with self.assertRaises(ValueError):
                 SupervisorConfig.from_yaml(yaml_path)
+
+
+class TestPermissiveDefault(unittest.IsolatedAsyncioTestCase):
+    async def test_bash_ls_approves_under_permissive_default(self):
+        """Regression: permissive default (paranoid_mode=False) approves any
+        Bash not matching the deny-list. Was escalate→deny→cancel in v1.2.0.
+        """
+        lines = [json.dumps(m) for m in (
+            _fixture_init(),
+            _fixture_tool(name="Bash", input={"command": "ls /tmp | head -3"}),
+            _fixture_tool_result(),
+            _fixture_result(input_tokens=10, output_tokens=15),
+        )]
+        runtime = FakeRuntime(lines)
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-perm")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store)
+            result = await sup.supervise(prompt="x", estimated_tokens=1000)
+            self.assertEqual(result.terminal, "completed")
+            approvals = [d for d in result.decisions if d["decision"] == "approve"]
+            self.assertGreaterEqual(len(approvals), 1)
+            self.assertEqual(runtime.cancel_calls, [])  # NOT cancelled
+        finally:
+            os.unlink(path)
+
+    async def test_git_push_force_still_cancels_in_permissive(self):
+        """Regression: deny-list still bites in permissive mode. Worker tries
+        `git push --force` → policy deny → worker cancelled.
+        """
+        lines = [json.dumps(m) for m in (
+            _fixture_init(),
+            _fixture_tool(name="Bash", input={"command": "git push --force origin main"}),
+            _fixture_tool_result(),
+            _fixture_result(),
+        )]
+        runtime = FakeRuntime(lines)
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-permdeny")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store)
+            result = await sup.supervise(prompt="x", estimated_tokens=1000)
+            deny_decisions = [d for d in result.decisions if d["decision"] == "deny"]
+            self.assertGreaterEqual(len(deny_decisions), 1)
+            self.assertIn("fake-tid", runtime.cancel_calls)
+        finally:
+            os.unlink(path)
 
 
 class TestDirectScriptInvocation(unittest.TestCase):

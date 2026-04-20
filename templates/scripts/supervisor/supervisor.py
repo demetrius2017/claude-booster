@@ -101,6 +101,7 @@ class SupervisorConfig:
     tier1_tools: set[str] = field(default_factory=set)
     tier2_trusted_repo: bool = False
     estimated_tokens: int = DEFAULT_ESTIMATED_TOKENS
+    paranoid_mode: bool = False  # True = old whitelist-default; False = permissive blacklist
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SupervisorConfig":
@@ -121,13 +122,19 @@ class SupervisorConfig:
         tier1 = data.get("tier1_tools", [])
         trusted = data.get("tier2_trusted_repo", False)
         estimated = data.get("estimated_tokens", DEFAULT_ESTIMATED_TOKENS)
+        paranoid = data.get("paranoid_mode", False)
         if not isinstance(tier1, list) or not all(isinstance(x, str) for x in tier1):
             raise ValueError(f"tier1_tools must be a list of strings in {path}")
         if not isinstance(trusted, bool):
             raise ValueError(f"tier2_trusted_repo must be true/false in {path}")
         if not isinstance(estimated, int):
             raise ValueError(f"estimated_tokens must be an integer in {path}")
-        return cls(tier1_tools=set(tier1), tier2_trusted_repo=trusted, estimated_tokens=estimated)
+        if not isinstance(paranoid, bool):
+            raise ValueError(f"paranoid_mode must be true/false in {path}")
+        return cls(
+            tier1_tools=set(tier1), tier2_trusted_repo=trusted,
+            estimated_tokens=estimated, paranoid_mode=paranoid,
+        )
 
 
 def _parse_minimal_yaml(text: str) -> dict:
@@ -313,6 +320,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         project_dir=base_dir,
         tier1_enabled=cfg.tier1_tools,
         tier2_trusted_repo=cfg.tier2_trusted_repo,
+        paranoid_mode=cfg.paranoid_mode,
     )
     tracker = QuotaTracker(session_id=session_id)
     store = SupervisorPersistence()

@@ -20,7 +20,7 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 **What v1.2.0 changes.** The supervisor is a second Python process that spawns a `claude -p --output-format stream-json` worker, observes every tool invocation on the worker's stream, and **kills the worker the instant a policy violation or quota breach occurs**. Three layers:
 
-1. **Deterministic Tier 0/1/2 policy engine** (`policy.py`, 16 regex patterns mirrored from `settings.json` deny-list + 11 hard-deny path substrings). Tier 0 approves read-only ops under `project_dir` / `/tmp/booster-*`. Tier 1 gates `pytest` / `npm test` / `cargo test`. Tier 2 gates package installs. Deny-list bash patterns (`git push --force`, `rm -rf /`, `kubectl delete`, `dd`, `mkfs`) never auto-approve under any tier.
+1. **Permissive-blacklist policy engine** (`policy.py`). Worker is **trusted by default** — Bash/Edit/Write/Read/Grep/Glob all approve unless they hit one of 13 hard-deny Bash regexes (`git push --force`, `rm -rf /`, `kubectl delete`, `dd`, `mkfs`, …) or one of 11 hard-deny path substrings (`.env`, `id_rsa`, `/.aws/`, `/.ssh/`, `/.git/config`, …). Set `paranoid_mode: true` in `<repo>/.claude/supervisor.yaml` to flip the default back to whitelist-only for high-trust-boundary projects.
 2. **Adaptive silence detector** (`detector.py`). `clamp(3 × median_event_gap, 20s, 180s)` with a 60s post-start grace. A hung or deadlocked worker gets cancelled automatically — no infinite stall, no infinite spend.
 3. **Quota admission control** (`quota.py`). 15% supervisor reserve carved out of the 5-hour Max/Pro window. Circuit-breaker `CLOSED → HALF_OPEN (≥50% usage) → OPEN (≥85%)`. Pre-spawn admission check refuses workers that would blow the session cap.
 

@@ -123,6 +123,7 @@ class TestRedTeam(unittest.TestCase):
             tier1_enabled=tier1 or set(),
             tier2_trusted_repo=False,
             session_sandbox=td / "sandbox",
+            paranoid_mode=True,  # RT suite validates the whitelist-default flow
         )
 
 

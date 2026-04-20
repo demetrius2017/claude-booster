@@ -21,12 +21,22 @@ sys.path.insert(0, str(SCRIPTS))
 from supervisor import policy as P  # noqa: E402
 
 
-def _ctx(tmp_path: Path = Path("/tmp"), tier1: set[str] | None = None, trust: bool = False) -> P.PolicyContext:
+def _ctx(
+    tmp_path: Path = Path("/tmp"),
+    tier1: set[str] | None = None,
+    trust: bool = False,
+    paranoid: bool = True,
+) -> P.PolicyContext:
+    """Tests default to paranoid_mode=True to preserve the v1.2.0 escalate
+    invariants that validate the old whitelist flow. Permissive-mode tests
+    override with paranoid=False.
+    """
     return P.PolicyContext(
         project_dir=tmp_path,
         tier1_enabled=tier1 or set(),
         tier2_trusted_repo=trust,
         session_sandbox=tmp_path / "sandbox",
+        paranoid_mode=paranoid,
     )
 
 

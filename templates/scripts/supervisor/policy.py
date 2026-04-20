@@ -64,6 +64,7 @@ class PolicyContext:
     tier1_enabled: set[str] = field(default_factory=set)  # e.g. {"pytest"}
     tier2_trusted_repo: bool = False
     session_sandbox: Path | None = None  # /tmp/booster-<pid>
+    paranoid_mode: bool = False  # if True, keeps the old whitelist-heavy policy
 
 
 # Mirrored from templates/settings.json.template lines 49-66.
@@ -231,21 +232,29 @@ def evaluate_bash(tool_input: dict, ctx: PolicyContext) -> Decision:
     cmd_prefix = " ".join(tokens[:2]) if len(tokens) > 1 else tokens[0]
     for tier1 in TIER1_TOOLS:
         if cmd.startswith(tier1):
-            if tier1 in ctx.tier1_enabled:
-                return Decision("approve", 1, f"tier1 {tier1} enabled for session", None)
-            return Decision("escalate", None, f"tier1 {tier1} not enabled", None)
+            if tier1 in ctx.tier1_enabled or not ctx.paranoid_mode:
+                return Decision("approve", 1, f"tier1 {tier1} permitted", None)
+            return Decision("escalate", None, f"tier1 {tier1} not enabled (paranoid_mode)", None)
     for t2 in TIER2_PREFIXES:
         if cmd.startswith(t2):
-            if ctx.tier2_trusted_repo:
-                return Decision("approve", 2, f"tier2 {t2} allowed (trusted repo)", None)
-            return Decision("escalate", None, f"tier2 {t2} needs trusted-repo flag", None)
+            if ctx.tier2_trusted_repo or not ctx.paranoid_mode:
+                return Decision("approve", 2, f"tier2 {t2} permitted", None)
+            return Decision("escalate", None, f"tier2 {t2} needs trusted-repo flag (paranoid_mode)", None)
 
     # Bash strictly inside session sandbox — Tier 0.
     if ctx.session_sandbox and cmd.strip().startswith(f"cd {ctx.session_sandbox}"):
         return Decision("approve", 0, "sandbox-scoped bash", None)
 
-    # Default: unknown → escalate.
-    return Decision("escalate", None, "unknown command — escalate by safe default", None)
+    # Default behaviour depends on ctx.paranoid_mode:
+    #   paranoid_mode=True  (opt-in)  → escalate (old whitelist-default behaviour).
+    #   paranoid_mode=False (default) → approve Tier 1 (blacklist: deny-list +
+    #       curl-payload + shell-expansion already caught above; everything else
+    #       trusted). Rationale: real workflows need psql/ls/echo/python3 -c
+    #       etc. Deny-list covers the genuinely dangerous patterns. Supervisor
+    #       still records the decision + args_digest for post-hoc audit.
+    if ctx.paranoid_mode:
+        return Decision("escalate", None, "unknown command — paranoid_mode escalate", None)
+    return Decision("approve", 1, "bash passes deny-list + shell-hygiene checks", None)
 
 
 def evaluate(tool: str, tool_input: dict, ctx: PolicyContext) -> Decision:
@@ -261,6 +270,20 @@ def evaluate(tool: str, tool_input: dict, ctx: PolicyContext) -> Decision:
         # TaskUpdate description mutation guarded in runtime; policy-level pass.
         return Decision("approve", 0, f"{tool} task-machine op", None)
     if tool in ("Edit", "Write", "NotebookEdit"):
-        # require_task + phase_gate cover these. Supervisor defers.
-        return Decision("escalate", None, f"{tool} deferred to require_task/phase_gate", None)
-    return Decision("escalate", None, f"unknown tool {tool!r}", None)
+        # Path-based deny still fires (`.env`, `id_rsa`, `.ssh/`, etc.);
+        # outside of that, trust the worker under the same rationale as
+        # evaluate_bash. paranoid_mode restores the old escalate-always
+        # behaviour for shops that want require_task + phase_gate to handle
+        # code edits at the Claude Code harness layer instead.
+        path = (tool_input.get("file_path") or tool_input.get("notebook_path") or "").strip()
+        hit = _has_deny_path_substring(path) if path else None
+        if hit:
+            return Decision("deny", None, f"{tool} path matches deny-substring {hit!r}", None)
+        if ctx.paranoid_mode:
+            return Decision("escalate", None, f"{tool} paranoid_mode — deferred to require_task/phase_gate", None)
+        if path and not _within_allowed_root(path, ctx):
+            return Decision("escalate", None, f"{tool} path outside project_dir+sandbox", None)
+        return Decision("approve", 1, f"{tool} under project_dir, not in deny-path list", None)
+    if ctx.paranoid_mode:
+        return Decision("escalate", None, f"unknown tool {tool!r} — paranoid_mode escalate", None)
+    return Decision("approve", 1, f"unknown tool {tool!r} — permissive default", None)

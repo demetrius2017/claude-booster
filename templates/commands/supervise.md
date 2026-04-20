@@ -52,28 +52,43 @@ python3 ~/.claude/scripts/supervisor/supervisor.py $ARGUMENTS
 
 ## What it checks
 
-| Tool | Default outcome |
-|---|---|
-| `Read` / `Grep` / `Glob` under `project_dir` or `/tmp/booster-*` | approve (Tier 0) |
-| Read against `.env`, `id_rsa*`, `credentials*`, `/.aws/`, `/.ssh/`, `/.git/config` | **deny** (hard) |
-| `git status/log/diff/show/branch/rev-parse` | approve, wrapped with core.pager=cat + core.fsmonitor= + diff.external= + protocol.version=2 |
-| `curl` GET | approve (Tier 0), hardened: --no-netrc --max-redirs 0 --fail, Cookie/Authorization stripped |
-| `curl` POST / `-d` / `--data-binary` | **deny** |
-| `pytest` / `npm test` / `cargo test` | escalate → approved only if in `tier1_tools` (repo `.claude/supervisor.yaml` or `/supervise tier1 pytest`) |
-| `npm install` / `pip install` / `cargo build` | escalate → approved only if `tier2_trusted_repo: true` in repo config |
-| Deny-list Bash patterns (`git push --force`, `rm -rf /`, `kubectl delete`, etc.) | **deny** always |
-| Same (tool, args) approved ≥3 times in 5 min | escalate (loop-guard) |
+## Policy defaults (permissive blacklist as of v1.2.0)
+
+Worker is **trusted by default** — supervisor only blocks explicitly-dangerous
+patterns. Old whitelist behaviour still available via `paranoid_mode: true` in
+`<repo>/.claude/supervisor.yaml`.
+
+| Tool | Default outcome (permissive) | Under `paranoid_mode: true` |
+|---|---|---|
+| `Read` / `Grep` / `Glob` under `project_dir` or `/tmp/booster-*` | approve (Tier 0) | approve (Tier 0) |
+| Read against `.env`, `id_rsa*`, `credentials*`, `/.aws/`, `/.ssh/`, `/.git/config` | **deny** (hard) | **deny** (hard) |
+| `git status/log/diff/show/branch/rev-parse` | approve, scrub-wrapped (core.pager=cat + core.fsmonitor= + diff.external= + protocol.version=2) | same |
+| `curl` GET | approve, hardened flags auto-injected | same |
+| `curl` POST / `-d` / `--data-binary` | escalate → permissive approves, paranoid cancels | escalate → deny+cancel |
+| `Bash` not in deny-list (`ls`, `psql`, `echo`, `python3 -c`, `docker ps`, etc.) | **approve Tier 1** — the v1.2.0 pivot | escalate → deny+cancel |
+| `pytest` / `npm test` / `cargo test` | **approve Tier 1** (no config needed) | escalate unless in `tier1_tools` |
+| `npm install` / `pip install` / `cargo build` | **approve Tier 2** (permissive trusts) | escalate unless `tier2_trusted_repo: true` |
+| `Edit` / `Write` / `NotebookEdit` under `project_dir`, not in deny-paths | **approve Tier 1** | escalate → deferred to require_task / phase_gate |
+| Deny-list Bash patterns (`git push --force`, `rm -rf /`, `kubectl delete`, `dd`, `mkfs`, etc.) | **deny** always | **deny** always |
+| Same (tool, args) approved ≥3 times in 5 min | escalate (loop-guard) | same |
 
 ## Configuration
 
 Per-project config in `<repo>/.claude/supervisor.yaml`:
 
 ```yaml
+# Permissive blacklist is the default since v1.2.0 — uncomment to tighten:
+# paranoid_mode: true
 tier1_tools:
   - pytest
 tier2_trusted_repo: false
 estimated_tokens: 10000
 ```
+
+`paranoid_mode: true` restores the v1.2.0-original whitelist behaviour:
+everything not explicitly on the Tier 0 allowlist escalates, and
+without a Haiku escalator wired that means deny+cancel. Use for
+credential-rich projects or CI-only runs where trust is low.
 
 ## Persistence
 
