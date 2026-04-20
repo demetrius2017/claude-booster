@@ -1,6 +1,6 @@
 ---
 description: Run a supervised worker session (Tier 0/1/2 policy + quota + silence detection) or inspect its state
-argument-hint: run "<prompt>" [--cwd DIR] | status --session ID | decisions --session ID [--limit N]
+argument-hint: run "<prompt>" | sessions | status --session ID | decisions --session ID
 ---
 
 # Supervise — Claude Booster Supervisor Agent v1.2.0
@@ -21,8 +21,13 @@ is a session-level control that spawns its own `claude` subprocess.
 # Bare invocation — prints help + summary of all known sessions:
 python3 ~/.claude/scripts/supervisor/supervisor.py
 
-# Run a one-shot supervised session:
+# Run a one-shot supervised session. `cwd` and config path default to
+# your CURRENT directory — no need to pass --cwd unless you want a
+# different project scope for the worker:
 python3 ~/.claude/scripts/supervisor/supervisor.py run "$ARGUMENTS"
+
+# Optional: override cwd + config for a one-off
+python3 ~/.claude/scripts/supervisor/supervisor.py run "task" --cwd /path/to/other/repo
 
 # Status snapshot of a session's quota:
 python3 ~/.claude/scripts/supervisor/supervisor.py status --session <id>

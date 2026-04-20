@@ -387,9 +387,9 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run = sub.add_parser("run", help="Run a supervised worker session")
     run.add_argument("prompt", help="Prompt to pass to the worker")
-    run.add_argument("--cwd", help="Working directory for the worker subprocess")
+    run.add_argument("--cwd", help="Working directory for worker + policy scope (default: current directory)")
     run.add_argument("--session", help="Session id (auto if omitted)")
-    run.add_argument("--config", help="Path to supervisor.yaml (default: ./.claude/supervisor.yaml)")
+    run.add_argument("--config", help="Path to supervisor.yaml (default: <cwd>/.claude/supervisor.yaml)")
     run.set_defaults(func=_cmd_run)
 
     status = sub.add_parser("status", help="Show quota snapshot for a session")
