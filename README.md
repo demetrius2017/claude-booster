@@ -65,7 +65,7 @@ Two new tables, both with `CHECK` constraints at the DB level:
 
 - **No Haiku escalator wired by default** — `policy.escalate` + no escalator = default-deny + cancel. If you want Haiku-as-gatekeeper, implement the `HaikuEscalator` Protocol in `supervisor.py` and inject at `Supervisor(...)` construction; the system prompt already lives at `~/.claude/scripts/supervisor/prompts/supervisor_v1.md` (contract: JSON-only reply with `{"decision":"approve|deny", "rationale":"..."}`).
 - **One worker per supervisor** — multi-worker session pooling is Session 5+.
-- **End-to-end red-team against the real `claude-agent-sdk` worker binary is documented but not automated** — the 90-test unit/integration suite exercises the full chain via `FakeProc`; a CI-pinned subprocess run against a real binary is the gate that will bump `BOOSTER_VERSION → 1.2.0` in `install.py` (currently 1.1.0 until that lands).
+- **End-to-end red-team against the real `claude-agent-sdk` worker binary is documented but not automated** — the 92-test unit/integration suite exercises the full chain via `FakeProc`, and Session 4's live smoke (hi → completed; `use bash ...` → cancelled + deny-decision persisted) proved the enforcement loop works against the real binary. A CI-pinned matrix across RT1–RT5 is the next roadmap item, not a ship-gate.
 
 ---
 

@@ -18,10 +18,15 @@ Module layout:
 - schema.sql             — SQLite DDL
 - tests/                 — 90 tests (policy 16 + quota 9 + redteam 5 + adapter 16 + detector 20 + persistence 9 + supervisor integration 15)
 
-Not yet implemented:
-- HaikuEscalator with real Anthropic API wiring (caller supplies credentials; Protocol in supervisor.py)
-- End-to-end red-team against the real claude-agent-sdk worker binary (gates BOOSTER_VERSION bump to 1.2.0)
-- Multi-worker session pool (Session 5+)
-"""
+Deferred (not blocking v1.2.0 ship):
+- HaikuEscalator with real Anthropic API wiring — the Protocol and
+  system prompt are in place; users who want LLM-gated escalation
+  inject a concrete escalator at Supervisor(...) construction.
+- Multi-worker session pool (roadmap item).
+- CI-pinned end-to-end red-team matrix against a real claude-agent-sdk
+  worker binary — current test suite (92 tests) exercises the full
+  chain via FakeProc + one-off live smoke in reports/handover_2026-04-21.
 
-__version__ = "0.3.0-supervisor-cli"
+The supervisor package has no independent version — it ships as part
+of Claude Booster and tracks BOOSTER_VERSION (set in install.py).
+"""
