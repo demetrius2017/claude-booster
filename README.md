@@ -14,6 +14,61 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 ---
 
+## What's new in v1.2.0 — Supervisor Agent
+
+**The problem this release solves.** v1.1.0 gave Claude a phase state machine and hook-enforced gates. That's good for one worker. But once you hand a long-running task to Claude and step away for coffee, there's no second opinion watching what the worker actually does: did it try a `git push --force` at 2am? Did it silently retry the same failing tool call 40 times in a loop? Did it hit a `/.env` Read the policy should have caught? Stock Claude Code answers all three with "check the transcript tomorrow."
+
+**What v1.2.0 changes.** The supervisor is a second Python process that spawns a `claude -p --output-format stream-json` worker, observes every tool invocation on the worker's stream, and **kills the worker the instant a policy violation or quota breach occurs**. Three layers:
+
+1. **Deterministic Tier 0/1/2 policy engine** (`policy.py`, 16 regex patterns mirrored from `settings.json` deny-list + 11 hard-deny path substrings). Tier 0 approves read-only ops under `project_dir` / `/tmp/booster-*`. Tier 1 gates `pytest` / `npm test` / `cargo test`. Tier 2 gates package installs. Deny-list bash patterns (`git push --force`, `rm -rf /`, `kubectl delete`, `dd`, `mkfs`) never auto-approve under any tier.
+2. **Adaptive silence detector** (`detector.py`). `clamp(3 × median_event_gap, 20s, 180s)` with a 60s post-start grace. A hung or deadlocked worker gets cancelled automatically — no infinite stall, no infinite spend.
+3. **Quota admission control** (`quota.py`). 15% supervisor reserve carved out of the 5-hour Max/Pro window. Circuit-breaker `CLOSED → HALF_OPEN (≥50% usage) → OPEN (≥85%)`. Pre-spawn admission check refuses workers that would blow the session cap.
+
+Enforcement is **authoritative, not advisory**: any `deny`, `escalate-without-escalator`, `loop-guard`, `blocked-by-quota` verdict triggers `SIGINT → SIGTERM → SIGKILL` on the worker and records the decision to `rolling_memory.db.supervisor_decisions` before the worker can finish the tool call.
+
+### `/supervise` command
+
+```bash
+# One-shot supervised worker session (prompt + cancel-on-violation):
+python3 ~/.claude/scripts/supervisor/supervisor.py run "your prompt here"
+
+# Recent decisions for a session:
+python3 ~/.claude/scripts/supervisor/supervisor.py decisions --session <id> --limit 20
+
+# Quota snapshot (5h window, circuit state, tokens spent):
+python3 ~/.claude/scripts/supervisor/supervisor.py status --session <id>
+```
+
+Also available as `/supervise <args>` from inside a Claude Code session — the slash command wraps the same CLI, and `install.py` auto-allowlists the bash pattern so you don't hit the auto-mode classifier on first try.
+
+### Per-project config
+
+`<repo>/.claude/supervisor.yaml` (parsed by a minimal flat-YAML reader; pre-materialise to `supervisor.json` if you need anything fancy):
+
+```yaml
+tier1_tools:
+  - pytest
+tier2_trusted_repo: false
+estimated_tokens: 10000
+```
+
+### What lands in `rolling_memory.db`
+
+Two new tables, both with `CHECK` constraints at the DB level:
+
+| Table | What it holds |
+|---|---|
+| `supervisor_decisions` | One row per observed tool-use: `session_id`, `ts`, `tool`, `args_digest` (SHA-256 for loop detection), `decision ∈ {approve,escalate,deny}`, `tier`, `rationale`, `approved_by ∈ {regex,haiku,dmitry}` |
+| `supervisor_quota` | One row per session: `session_id`, `started_at`, `window_end`, `supervisor_tokens`, `worker_tokens`, `circuit_state`, `updated_at` — survives supervisor restart |
+
+### What's still v1.2.0-MVP (call-out for honesty)
+
+- **No Haiku escalator wired by default** — `policy.escalate` + no escalator = default-deny + cancel. If you want Haiku-as-gatekeeper, implement the `HaikuEscalator` Protocol in `supervisor.py` and inject at `Supervisor(...)` construction; the system prompt already lives at `~/.claude/scripts/supervisor/prompts/supervisor_v1.md` (contract: JSON-only reply with `{"decision":"approve|deny", "rationale":"..."}`).
+- **One worker per supervisor** — multi-worker session pooling is Session 5+.
+- **End-to-end red-team against the real `claude-agent-sdk` worker binary is documented but not automated** — the 90-test unit/integration suite exercises the full chain via `FakeProc`; a CI-pinned subprocess run against a real binary is the gate that will bump `BOOSTER_VERSION → 1.2.0` in `install.py` (currently 1.1.0 until that lands).
+
+---
+
 ## What's new in v1.1.0 — Lead-Orchestrator workflow enforcement
 
 **The problem this release solves.** v1.0 gave Claude *instructions* on how to work as a lead orchestrator: RECON first, plan second, verify before closing, never push unverified code. Those instructions are in `pipeline.md` and Claude reads them every session. It still skipped steps — because instructions without teeth decay into theater the moment a task gets urgent. "I'll just edit this one file" becomes a habit, plans never get written, tasks close without anyone running a single `curl`.
@@ -77,6 +132,7 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | "Fake evidence" in commits | No verification gate | `verify_gate.py` PreToolUse hook — blocks handover commits without real curl/SQL/HTTP evidence markers |
 | Session ends, notes scattered | No handover contract | `/handover` auto-collects git log + roadmap delta, formats structured report with evidence block |
 | Personal install breaks on new machine | Manual copy of `~/.claude/` | `install.py` — one command, atomic, idempotent, safe by default |
+| Worker loops on a failing tool call at 2am, burns quota | No watchdog | v1.2.0 Supervisor Agent — `policy.py` + `detector.py` + `quota.py`, SIGINT-ladder-cancels worker on deny / silence / quota breach |
 
 ---
 
@@ -102,8 +158,9 @@ Under `~/.claude/`:
 | Path | Content |
 |------|---------|
 | `rules/*.md` | 9 rule files — anti-loop, tool strategy, pipeline phases, `/start` + `/handover` + `/consilium` / `/audit` commands, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection |
-| `scripts/*.py` | 18 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
-| `commands/*.md` | `/phase`, `/verify-after-edit`, `/verify-flow` slash commands |
+| `scripts/*.py` | 19 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
+| `scripts/supervisor/` | v1.2.0 Supervisor Agent — 8 modules (`supervisor.py` CLI + orchestration, `policy.py` Tier 0/1/2 engine, `quota.py` admission + circuit-breaker, `detector.py` adaptive-silence FSM, `stream_json_adapter.py` Path A runtime, `persistence.py` sqlite writers, `runtime.py` transport Protocol, `schema.sql`) + `prompts/supervisor_v1.md` Haiku escalation contract |
+| `commands/*.md` | `/phase`, `/supervise`, `/verify-after-edit`, `/verify-flow` slash commands |
 | `agents/*.md`, `*.json` | Agent team protocols — lifecycle, ownership schema, worktree safety, readiness gates, roadmap convention |
 | `settings.json` | Hooks wired to Claude Code, **merged** into any existing config |
 | `.booster-manifest.json` | Installer metadata — SHA-256 per file, version, for idempotency and selective rollback |
