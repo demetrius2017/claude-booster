@@ -115,6 +115,15 @@
             "source": "booster@${BOOSTER_VERSION}"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/approval_counter.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
       }
     ],
     "PostToolUse": [
