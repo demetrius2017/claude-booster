@@ -822,8 +822,18 @@ def main() -> int:
         )
 
     if not actions["write"] and state == "BOOSTER_SAME":
-        log("nothing to do — already at current version")
-        return 0
+        # Even when no files changed, settings.json.template may have been
+        # edited (new allow-list patterns, hooks, env vars). Check for drift
+        # and short-circuit only if the merged settings are byte-identical
+        # to what's already on disk.
+        settings_target = CLAUDE_HOME / "settings.json"
+        current_bytes = settings_target.read_bytes() if settings_target.exists() else b""
+        merged_preview, _ = write_settings(dry_run=True)
+        preview_bytes = (json.dumps(merged_preview, indent=2) + "\n").encode()
+        if current_bytes == preview_bytes:
+            log("nothing to do — already at current version")
+            return 0
+        log("settings.json drift detected — will rewrite")
 
     if args.dry_run:
         log("=== DRY RUN ===")

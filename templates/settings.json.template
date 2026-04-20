@@ -10,6 +10,8 @@
   "permissions": {
     "allow": [
       "Bash(*)",
+      "Bash(python3 ~/.claude/scripts/supervisor/supervisor.py *)",
+      "Bash(python3 */.claude/scripts/supervisor/supervisor.py *)",
       "Read",
       "Edit",
       "Write",
