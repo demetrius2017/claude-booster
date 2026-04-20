@@ -269,6 +269,20 @@ def preflight() -> None:
             "The Claude Booster memory engine requires FTS5 for cross-project search.",
         )
 
+    # v1.2.0 supervisor prereq: the `claude` CLI must be reachable via PATH
+    # (supervisor.py subprocess-execs it to spawn the worker). Warn-only —
+    # users can still install and use the rest of Booster without it; only
+    # `/supervise run` will error at runtime.
+    claude_bin = shutil.which("claude")
+    if claude_bin is None:
+        log(
+            "`claude` CLI not on PATH. /supervise run will fail at runtime "
+            "(subprocess cannot spawn the worker). Install Claude Code from "
+            "https://claude.com/claude-code — everything else in Booster "
+            "works without it.",
+            "WARN",
+        )
+
     # OneDrive / Dropbox / iCloud detection (cloud-sync folder warning).
     sync_markers = ("onedrive", "dropbox", "google drive", "icloud")
     if any(m in str(CLAUDE_HOME).lower() for m in sync_markers):

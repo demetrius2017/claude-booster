@@ -147,6 +147,14 @@ python3 install.py --yes --name "Your Name" --email "you@example.com"
 
 That's it. Your next Claude Code session reads the new `~/.claude/rules/`, the memory engine boots, hooks wire themselves in. Zero config files to edit by hand.
 
+To try the v1.2.0 supervisor on a real worker:
+```bash
+python3 ~/.claude/scripts/supervisor/supervisor.py run "your prompt"
+```
+or from inside a Claude Code session: `/supervise run "your prompt"`. Decisions land in `~/.claude/rolling_memory.db` (`supervisor_decisions` + `supervisor_quota` tables), stderr in `~/.claude/logs/supervisor/worker_*.stderr.log`.
+
+**Prerequisite for `/supervise`**: the `claude` CLI must be on PATH. The installer warns if it isn't, but the rest of Booster (memory, phase machine, rules, `/start`/`/handover`/`/consilium`) works without it.
+
 Supported: **macOS (Apple Silicon + Intel) · Ubuntu · Debian · Fedora · Arch · Alpine · WSL2**. Native Windows, WSL1, Snap/Flatpak-sandboxed Claude Code, and `~/.claude/` on a network filesystem are **refused at preflight with actionable errors** — no silent misinstalls.
 
 ---
