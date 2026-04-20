@@ -110,6 +110,15 @@ class SupervisorPersistence:
             ).fetchone()
         return dict(row) if row else None
 
+    def list_decisions(self, session_id: str, limit: int = 20) -> list[dict]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT ts, tool, decision, tier, rationale, approved_by "
+                "FROM supervisor_decisions WHERE session_id = ? ORDER BY ts DESC LIMIT ?",
+                (session_id, int(limit)),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
     def recent_by_args(self, args_digest: str, window_seconds: int = 300) -> list[dict]:
         cutoff = datetime.now(timezone.utc).timestamp() - window_seconds
         with self._connect() as conn:

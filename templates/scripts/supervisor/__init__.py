@@ -13,13 +13,15 @@ Module layout:
 - stream_json_adapter.py — Path A StreamJsonRuntime (subprocess + stream-json parser)
 - detector.py            — adaptive silence timeout + FSM + text-accelerator heuristic
 - persistence.py         — sqlite3 writers for supervisor_decisions / supervisor_quota
+- supervisor.py          — main orchestration loop + CLI (run / status / decisions)
+- prompts/supervisor_v1.md — Haiku escalation gatekeeper system prompt
 - schema.sql             — SQLite DDL
-- tests/                 — unit + red-team (71 tests total; 5 ship-blockers per consilium §7 R2)
+- tests/                 — 90 tests (policy 16 + quota 9 + redteam 5 + adapter 16 + detector 20 + persistence 9 + supervisor integration 15)
 
 Not yet implemented:
-- supervisor.py          — main entry point / CLI (Session 4)
-- prompts/supervisor_v1.md — Haiku supervisor system prompt (Session 4)
-- end-to-end red-team against real claude-agent-sdk worker (Session 4, gates BOOSTER_VERSION bump)
+- HaikuEscalator with real Anthropic API wiring (caller supplies credentials; Protocol in supervisor.py)
+- End-to-end red-team against the real claude-agent-sdk worker binary (gates BOOSTER_VERSION bump to 1.2.0)
+- Multi-worker session pool (Session 5+)
 """
 
-__version__ = "0.2.0-runtime"
+__version__ = "0.3.0-supervisor-cli"

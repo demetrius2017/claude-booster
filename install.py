@@ -296,6 +296,10 @@ def enumerate_template_files() -> list[tuple[Path, Path]]:
                 continue
             if src.name.endswith((".bak", ".pyc", ".pyo")):
                 continue
+            # Exclude test suites — supervisor ships tests in-repo but they
+            # don't belong in the user's ~/.claude/ tree.
+            if "tests" in src.parts:
+                continue
             rel = src.relative_to(TEMPLATES)
             pairs.append((src, CLAUDE_HOME / rel))
     return pairs
