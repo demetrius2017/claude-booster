@@ -7,17 +7,19 @@ Consilium 2026-04-20 decisions (see reports/consilium_2026-04-20_supervisor_arch
 - Q4 SQLite-backed state (supervisor_decisions + supervisor_quota tables in rolling_memory.db).
 
 Module layout:
-- policy.py  — Tier 0/1/2 policy engine, deny-list mirror, git-scrub + curl hardening
-- quota.py   — admission control, 15% supervisor reserve, closed/half_open/open states
-- runtime.py — transport-agnostic WorkerRuntime Protocol (Path A / future MCP)
-- schema.sql — SQLite DDL for supervisor_decisions + supervisor_quota tables
-- tests/     — unit + red-team scenarios (5 ship-blocker tests per consilium §7 R2)
+- policy.py              — Tier 0/1/2 policy engine, deny-list mirror, git-scrub + curl hardening
+- quota.py               — admission control, 15% supervisor reserve, closed/half_open/open states
+- runtime.py             — transport-agnostic WorkerRuntime Protocol (Path A / future MCP)
+- stream_json_adapter.py — Path A StreamJsonRuntime (subprocess + stream-json parser)
+- detector.py            — adaptive silence timeout + FSM + text-accelerator heuristic
+- persistence.py         — sqlite3 writers for supervisor_decisions / supervisor_quota
+- schema.sql             — SQLite DDL
+- tests/                 — unit + red-team (71 tests total; 5 ship-blockers per consilium §7 R2)
 
-Not yet implemented (next sessions):
-- detector.py      — adaptive silence timeout + state machine + text accelerator
-- stream_json_adapter.py — Path A implementation of WorkerRuntime
-- supervisor.py    — main entry point / CLI
-- prompts/supervisor_v1.md — Haiku supervisor system prompt
+Not yet implemented:
+- supervisor.py          — main entry point / CLI (Session 4)
+- prompts/supervisor_v1.md — Haiku supervisor system prompt (Session 4)
+- end-to-end red-team against real claude-agent-sdk worker (Session 4, gates BOOSTER_VERSION bump)
 """
 
-__version__ = "0.1.0-skeleton"
+__version__ = "0.2.0-runtime"
