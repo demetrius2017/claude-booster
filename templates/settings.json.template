@@ -186,6 +186,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/ask_gate.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          },
+          {
+            "type": "command",
             "command": "${PYTHON} ${CLAUDE_HOME}/scripts/memory_session_end.py",
             "source": "booster@${BOOSTER_VERSION}"
           }
