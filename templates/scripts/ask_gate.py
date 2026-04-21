@@ -98,8 +98,26 @@ def _last_assistant_text(transcript_path: Path) -> str:
     return ""
 
 
+_FENCE_RE = re.compile(r"```.*?```", re.DOTALL)  # triple-backtick fenced block
+_BACKTICK_RE = re.compile(r"`[^`\n]*`")          # single-backtick inline span
+_JSON_BLOCK_RE = re.compile(r"\{[^{}]*\"verified\"[^{}]*\}", re.DOTALL)  # handover evidence
+
+
+def _strip_quoted_content(text: str) -> str:
+    """Remove code fences and inline-code spans before scanning.
+    Prevents false-positives on pattern DOCUMENTATION (the ask_gate
+    docs in a handover literally contain `Apply patch?` as an example
+    of what's blocked — that quoted example should NOT trip the gate).
+    """
+    text = _JSON_BLOCK_RE.sub(" ", text)
+    text = _FENCE_RE.sub(" ", text)
+    text = _BACKTICK_RE.sub(" ", text)
+    return text
+
+
 def _matches_forbidden(text: str) -> tuple[bool, str]:
-    tail = text[-TAIL_SCAN_CHARS:] if len(text) > TAIL_SCAN_CHARS else text
+    cleaned = _strip_quoted_content(text)
+    tail = cleaned[-TAIL_SCAN_CHARS:] if len(cleaned) > TAIL_SCAN_CHARS else cleaned
     for pat in FORBIDDEN_REGEXES:
         m = pat.search(tail)
         if m:
