@@ -666,6 +666,29 @@ def write_settings(dry_run: bool) -> tuple[dict, str]:
     return merged, diff
 
 
+def _git_state(repo: Path) -> dict:
+    """Capture repo/sha/branch so check_booster_update.py can detect drift.
+
+    Returns empty dict when repo isn't a git checkout (e.g. tar-extracted).
+    """
+    if not (repo / ".git").exists():
+        return {}
+    import subprocess
+    try:
+        sha = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, timeout=3,
+        ).strip()
+        branch = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"], text=True, timeout=3,
+        ).strip()
+        remote = subprocess.check_output(
+            ["git", "-C", str(repo), "remote", "get-url", "origin"], text=True, timeout=3,
+        ).strip()
+        return {"repo_path": str(repo), "git_sha": sha, "git_branch": branch, "git_remote": remote}
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return {"repo_path": str(repo)}
+
+
 def write_manifest(files: list[dict], settings_sha: str) -> None:
     manifest = {
         "version": BOOSTER_VERSION,
@@ -675,6 +698,7 @@ def write_manifest(files: list[dict], settings_sha: str) -> None:
         "files": files,
         "settings_sha256": settings_sha,
         "settings_patch_ids": [f"booster@{BOOSTER_VERSION}"],
+        **_git_state(REPO_ROOT),  # repo_path / git_sha / git_branch / git_remote
     }
     atomic_write(
         MANIFEST_PATH,

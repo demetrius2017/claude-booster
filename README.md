@@ -155,6 +155,8 @@ or from inside a Claude Code session: `/supervise run "your prompt"`. Decisions 
 
 **Prerequisite for `/supervise`**: the `claude` CLI must be on PATH. The installer warns if it isn't, but the rest of Booster (memory, phase machine, rules, `/start`/`/handover`/`/consilium`) works without it.
 
+**Staying up-to-date.** `install.py` records the source repo's `repo_path` / `git_sha` / `git_branch` into the manifest. A SessionStart hook (`check_booster_update.py`) runs on every Claude Code session start: it `git fetch`es the booster repo and, if origin is ahead, injects an `additionalContext` notice telling Claude "N commits behind, run `cd <repo> && python3 install.py --yes` to update". For fully-autonomous updates, export `CLAUDE_BOOSTER_AUTO_UPDATE=1` — the hook runs the installer itself and reports the outcome. Offline / no git / tar-extracted install = silent no-op.
+
 Supported: **macOS (Apple Silicon + Intel) · Ubuntu · Debian · Fedora · Arch · Alpine · WSL2**. Native Windows, WSL1, Snap/Flatpak-sandboxed Claude Code, and `~/.claude/` on a network filesystem are **refused at preflight with actionable errors** — no silent misinstalls.
 
 ---
