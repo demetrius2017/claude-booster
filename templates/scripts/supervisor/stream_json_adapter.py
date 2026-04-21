@@ -78,6 +78,7 @@ class _TaskState:
     reader_task: asyncio.Task | None = None
     started_monotonic: float = 0.0
     stderr_path: object = None  # Path | None — per-task stderr log for diagnostics
+    terminal_reason: dict | None = None  # {subtype, stop_reason, num_turns, duration_ms} from result event
 
 
 class StreamJsonRuntime:
@@ -147,6 +148,12 @@ class StreamJsonRuntime:
 
     def usage(self, task_id: str) -> dict | None:
         return self._state(task_id).usage_snapshot
+
+    def terminal_reason(self, task_id: str) -> dict | None:
+        """Diagnostic snapshot from the CLI's `result` event.
+        Keys: subtype, stop_reason, terminal_reason, num_turns, duration_ms,
+        is_error, api_error_status. None if CLI never emitted result."""
+        return self._state(task_id).terminal_reason
 
     async def cancel(self, task_id: str) -> None:
         state = self._state(task_id)
@@ -273,6 +280,23 @@ class StreamJsonRuntime:
             usage = msg.get("usage") or {}
             state.usage_snapshot = {"input_tokens": usage.get("input_tokens", 0), "output_tokens": usage.get("output_tokens", 0)}
             state.terminal = "completed" if msg.get("subtype") == "success" else "failed"
-            out.append(WorkerEvent("message_stop", state.task_id, ts, {"subtype": msg.get("subtype"), "usage": state.usage_snapshot}))
+            # Capture everything the CLI tells us about WHY it stopped. Without
+            # this the user sees `terminal=failed, exit=1` and no diagnostic —
+            # field log 2026-04-21 had a session die after 108 tool-calls with
+            # no visible reason (turned out to be the CLI's max-turns limit).
+            state.terminal_reason = {
+                "subtype": msg.get("subtype"),
+                "stop_reason": msg.get("stop_reason"),
+                "terminal_reason": msg.get("terminal_reason"),
+                "num_turns": msg.get("num_turns"),
+                "duration_ms": msg.get("duration_ms"),
+                "is_error": msg.get("is_error"),
+                "api_error_status": msg.get("api_error_status"),
+            }
+            out.append(WorkerEvent("message_stop", state.task_id, ts, {
+                "subtype": msg.get("subtype"),
+                "usage": state.usage_snapshot,
+                **state.terminal_reason,
+            }))
             return out
         return out

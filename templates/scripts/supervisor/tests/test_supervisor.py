@@ -70,6 +70,9 @@ class FakeRuntime:
     def usage(self, task_id):
         return self._state.usage_snapshot if self._state else None
 
+    def terminal_reason(self, task_id):
+        return self._state.terminal_reason if self._state else None
+
     async def cancel(self, task_id):
         self.cancel_calls.append(task_id)
         if self._state is not None and self._state.terminal is None:
@@ -375,6 +378,37 @@ class TestConfigTypeValidation(unittest.TestCase):
             json_path.write_text(json.dumps({"tier2_trusted_repo": "yes"}))
             with self.assertRaises(ValueError):
                 SupervisorConfig.from_yaml(yaml_path)
+
+
+class TestTerminalReasonSurfaced(unittest.IsolatedAsyncioTestCase):
+    async def test_stop_reason_makes_it_to_result(self):
+        """Regression (field log 2026-04-21): workers that hit CLI max-turns
+        return with `terminal=failed` and no visible reason. Surface the
+        CLI's own stop_reason + num_turns + duration_ms so users can see."""
+        # Craft a result event with the full diagnostic shape the real CLI emits.
+        fake_result = {
+            "type": "result", "subtype": "error_max_turns",
+            "stop_reason": "max_turns", "num_turns": 25,
+            "duration_ms": 326000, "is_error": True,
+            "api_error_status": None,
+            "usage": {"input_tokens": 500, "output_tokens": 9680},
+        }
+        lines = [json.dumps(m) for m in (_fixture_init(), _fixture_text("work"), fake_result)]
+        runtime = FakeRuntime(lines)
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-maxturns")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store)
+            result = await sup.supervise(prompt="x", estimated_tokens=1000)
+            self.assertEqual(result.terminal, "failed")
+            self.assertIsNotNone(result.terminal_reason)
+            self.assertEqual(result.terminal_reason["subtype"], "error_max_turns")
+            self.assertEqual(result.terminal_reason["stop_reason"], "max_turns")
+            self.assertEqual(result.terminal_reason["num_turns"], 25)
+            self.assertEqual(result.terminal_reason["duration_ms"], 326000)
+            self.assertTrue(result.terminal_reason["is_error"])
+        finally:
+            os.unlink(path)
 
 
 class TestPermissiveDefault(unittest.IsolatedAsyncioTestCase):

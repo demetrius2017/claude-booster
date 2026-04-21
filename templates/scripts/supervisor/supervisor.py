@@ -94,6 +94,7 @@ class SupervisorResult:
     tool_calls: list[dict] = field(default_factory=list)
     usage: dict | None = None
     final_state: State | None = None
+    terminal_reason: dict | None = None  # {subtype, stop_reason, num_turns, duration_ms, ...}
 
 
 @dataclass
@@ -222,6 +223,10 @@ class Supervisor:
         self.result.usage = self.runtime.usage(task_id)
         self.result.tool_calls = self.runtime.tool_invocations(task_id)
         self.result.final_state = self.detector.state
+        # Surface the CLI's own stop_reason/num_turns — critical for diagnosing
+        # "failed" without an obvious cause (e.g. max-turns limit).
+        if hasattr(self.runtime, "terminal_reason"):
+            self.result.terminal_reason = self.runtime.terminal_reason(task_id)
         if self.result.usage:
             self.tracker.record(worker_tokens=int(self.result.usage.get("output_tokens", 0)))
             self._persist_quota()
@@ -346,11 +351,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     except Exception as exc:
         print(f"supervisor: {exc}", file=sys.stderr)
         return 2
-    print(json.dumps({
+    payload = {
         "session_id": result.session_id, "terminal": result.terminal,
         "final_state": result.final_state.value if result.final_state else None,
-        "decisions": len(result.decisions), "tool_calls": len(result.tool_calls), "usage": result.usage,
-    }, indent=2))
+        "decisions": len(result.decisions), "tool_calls": len(result.tool_calls),
+        "usage": result.usage,
+        "terminal_reason": result.terminal_reason,
+    }
+    print(json.dumps(payload, indent=2))
     return 0 if result.terminal == "completed" else 1
 
 
