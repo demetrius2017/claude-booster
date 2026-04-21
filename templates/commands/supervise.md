@@ -86,12 +86,18 @@ tier1_tools:
   - pytest
 tier2_trusted_repo: false
 estimated_tokens: 10000
+max_continuations: 5       # how many times to re-spawn on CLI max_turns
 ```
 
 `paranoid_mode: true` restores the v1.2.0-original whitelist behaviour:
 everything not explicitly on the Tier 0 allowlist escalates, and
 without a Haiku escalator wired that means deny+cancel. Use for
 credential-rich projects or CI-only runs where trust is low.
+
+`max_continuations` (default 5) caps the `--resume <cli_session_id>`
+chain. Set to 0 to disable auto-continuation (one-shot mode). Set
+higher for very long research tasks; each continuation is still gated
+by the quota circuit-breaker so a runaway loop can't blow the budget.
 
 ## Persistence
 

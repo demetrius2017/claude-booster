@@ -74,6 +74,13 @@ from supervisor.stream_json_adapter import StreamJsonRuntime  # noqa: E402
 
 DEFAULT_ESTIMATED_TOKENS = 10_000
 SILENCE_POLL_INTERVAL = 1.0
+DEFAULT_MAX_CONTINUATIONS = 5  # on CLI max_turns / network transient, auto-respawn this many times
+CONTINUATION_PROMPT = (
+    "Continue the task from exactly where you stopped. You were interrupted mid-work "
+    "(turn limit / transient issue). Do NOT restart or summarise the previous work — "
+    "pick up on the next step. When the task is actually complete, finish with a short "
+    "summary of what you did."
+)
 
 
 class HaikuEscalator(Protocol):
@@ -95,6 +102,7 @@ class SupervisorResult:
     usage: dict | None = None
     final_state: State | None = None
     terminal_reason: dict | None = None  # {subtype, stop_reason, num_turns, duration_ms, ...}
+    continuations: int = 0  # how many times we auto-respawned after max_turns
 
 
 @dataclass
@@ -103,6 +111,7 @@ class SupervisorConfig:
     tier2_trusted_repo: bool = False
     estimated_tokens: int = DEFAULT_ESTIMATED_TOKENS
     paranoid_mode: bool = False  # True = old whitelist-default; False = permissive blacklist
+    max_continuations: int = DEFAULT_MAX_CONTINUATIONS  # cap on auto-respawns after max_turns
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SupervisorConfig":
@@ -124,6 +133,7 @@ class SupervisorConfig:
         trusted = data.get("tier2_trusted_repo", False)
         estimated = data.get("estimated_tokens", DEFAULT_ESTIMATED_TOKENS)
         paranoid = data.get("paranoid_mode", False)
+        max_cont = data.get("max_continuations", DEFAULT_MAX_CONTINUATIONS)
         if not isinstance(tier1, list) or not all(isinstance(x, str) for x in tier1):
             raise ValueError(f"tier1_tools must be a list of strings in {path}")
         if not isinstance(trusted, bool):
@@ -132,9 +142,12 @@ class SupervisorConfig:
             raise ValueError(f"estimated_tokens must be an integer in {path}")
         if not isinstance(paranoid, bool):
             raise ValueError(f"paranoid_mode must be true/false in {path}")
+        if not isinstance(max_cont, int) or max_cont < 0:
+            raise ValueError(f"max_continuations must be a non-negative integer in {path}")
         return cls(
             tier1_tools=set(tier1), tier2_trusted_repo=trusted,
             estimated_tokens=estimated, paranoid_mode=paranoid,
+            max_continuations=max_cont,
         )
 
 
@@ -178,6 +191,7 @@ class Supervisor:
         store: SupervisorPersistence,
         detector: WorkerStateDetector | None = None,
         escalator: HaikuEscalator | None = None,
+        max_continuations: int = DEFAULT_MAX_CONTINUATIONS,
     ) -> None:
         self.runtime = runtime
         self.ctx = ctx
@@ -185,6 +199,7 @@ class Supervisor:
         self.store = store
         self.detector = detector or WorkerStateDetector()
         self.escalator = escalator
+        self.max_continuations = max_continuations
         self.session_id = tracker.session_id
         self.result = SupervisorResult(session_id=self.session_id, terminal=None)
 
@@ -195,6 +210,14 @@ class Supervisor:
         cwd: str | None = None,
         estimated_tokens: int = DEFAULT_ESTIMATED_TOKENS,
     ) -> SupervisorResult:
+        """Run a supervised task, auto-continuing across CLI max_turns.
+
+        The user writes one prompt. If the CLI's internal turn limit (or a
+        transient error) interrupts the worker mid-task, we respawn with
+        `--resume <cli_session_id>` so the new worker picks up the same
+        conversation history, and tell it to keep going. This is the
+        supervisor's core value-add over running `claude -p` directly.
+        """
         admitted, reason = self.tracker.admit(estimated_tokens)
         self._persist_quota()
         if not admitted:
@@ -204,7 +227,79 @@ class Supervisor:
             self._record_decision("_admit", {"estimate": estimated_tokens}, "deny", None, reason, "regex")
             return self.result
 
-        task_id = await self.runtime.submit_task(prompt, system_prompt=system_prompt, cwd=cwd)
+        current_prompt = prompt
+        resume_session: str | None = None
+        accumulated_tool_calls: list[dict] = []
+        accumulated_input_tokens = 0
+        accumulated_output_tokens = 0
+
+        for attempt in range(self.max_continuations + 1):
+            # Fresh detector per attempt so silence timing resets; policy state
+            # (loop-guard, quota tracker) is session-scoped, not attempt-scoped.
+            self.detector = WorkerStateDetector()
+            task_id = await self._run_one_attempt(
+                current_prompt, system_prompt, cwd, resume_session,
+            )
+            # Accumulate cross-attempt
+            accumulated_tool_calls.extend(self.runtime.tool_invocations(task_id))
+            attempt_usage = self.runtime.usage(task_id) or {}
+            accumulated_input_tokens += int(attempt_usage.get("input_tokens", 0))
+            accumulated_output_tokens += int(attempt_usage.get("output_tokens", 0))
+
+            tr = None
+            if hasattr(self.runtime, "terminal_reason"):
+                tr = self.runtime.terminal_reason(task_id)
+            self.result.terminal_reason = tr  # always reflect the latest
+
+            # Decide: done, or continue?
+            should_continue = (
+                tr is not None
+                and tr.get("subtype") == "error_max_turns"
+                and attempt < self.max_continuations
+                and self.detector.state is not State.CANCELLED  # respect policy-kills
+                and self.tracker.state is not CircuitState.OPEN  # respect quota circuit
+            )
+            if not should_continue:
+                break
+
+            # Prepare next attempt using CLI session resume.
+            if hasattr(self.runtime, "cli_session_id"):
+                resume_session = self.runtime.cli_session_id(task_id)
+            if not resume_session:
+                break  # no session id → can't resume, give up
+            current_prompt = CONTINUATION_PROMPT
+            self.result.continuations += 1
+
+        # Finalise from the LAST attempt's runtime state.
+        last_task_id = task_id
+        self.result.terminal = self.runtime.terminal_state(last_task_id) or self.detector.state.value
+        self.result.usage = {
+            "input_tokens": accumulated_input_tokens,
+            "output_tokens": accumulated_output_tokens,
+        }
+        self.result.tool_calls = accumulated_tool_calls
+        self.result.final_state = self.detector.state
+        self.tracker.record(worker_tokens=accumulated_output_tokens)
+        self._persist_quota()
+        return self.result
+
+    async def _run_one_attempt(
+        self,
+        prompt: str,
+        system_prompt: str | None,
+        cwd: str | None,
+        resume_session: str | None,
+    ) -> str:
+        """Single worker-spawn lifecycle. Returns the task_id."""
+        submit_kwargs = {"prompt": prompt, "system_prompt": system_prompt, "cwd": cwd}
+        if resume_session is not None:
+            submit_kwargs["resume_session"] = resume_session
+        try:
+            task_id = await self.runtime.submit_task(**submit_kwargs)
+        except TypeError:
+            # Test doubles / MCP adapter without resume_session kwarg — fall back.
+            submit_kwargs.pop("resume_session", None)
+            task_id = await self.runtime.submit_task(**submit_kwargs)
         poll_task = asyncio.create_task(self._silence_poller(task_id))
         try:
             async for ev in self.runtime.events(task_id):
@@ -218,19 +313,7 @@ class Supervisor:
                 await poll_task
             except asyncio.CancelledError:
                 pass
-
-        self.result.terminal = self.runtime.terminal_state(task_id) or self.detector.state.value
-        self.result.usage = self.runtime.usage(task_id)
-        self.result.tool_calls = self.runtime.tool_invocations(task_id)
-        self.result.final_state = self.detector.state
-        # Surface the CLI's own stop_reason/num_turns — critical for diagnosing
-        # "failed" without an obvious cause (e.g. max-turns limit).
-        if hasattr(self.runtime, "terminal_reason"):
-            self.result.terminal_reason = self.runtime.terminal_reason(task_id)
-        if self.result.usage:
-            self.tracker.record(worker_tokens=int(self.result.usage.get("output_tokens", 0)))
-            self._persist_quota()
-        return self.result
+        return task_id
 
     async def _silence_poller(self, task_id: str) -> None:
         """Audit-fix H2: act on POSSIBLY_COMPLETE by cancelling the worker.
@@ -335,7 +418,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
     tracker = QuotaTracker(session_id=session_id)
     store = SupervisorPersistence()
     runtime = StreamJsonRuntime()
-    sup = Supervisor(runtime=runtime, ctx=ctx, tracker=tracker, store=store)
+    sup = Supervisor(runtime=runtime, ctx=ctx, tracker=tracker, store=store,
+                     max_continuations=cfg.max_continuations)
 
     # Audit-fix M2: single asyncio.run() wraps supervise + shutdown so tasks stay on one loop.
     async def _run_once() -> SupervisorResult:
@@ -357,6 +441,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
         "decisions": len(result.decisions), "tool_calls": len(result.tool_calls),
         "usage": result.usage,
         "terminal_reason": result.terminal_reason,
+        "continuations": result.continuations,
     }
     print(json.dumps(payload, indent=2))
     return 0 if result.terminal == "completed" else 1

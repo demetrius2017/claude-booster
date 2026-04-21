@@ -43,8 +43,12 @@ class FakeRuntime:
         self._state: SJA._TaskState | None = None
         self._drained: list = []
         self.cancel_calls: list[str] = []
+        self.submit_calls: list[dict] = []  # for continuation assertions
 
-    async def submit_task(self, prompt, system_prompt=None, model=None, cwd=None):
+    async def submit_task(self, prompt, system_prompt=None, model=None, cwd=None, resume_session=None):
+        self.submit_calls.append({"prompt": prompt, "resume_session": resume_session})
+        # Reset drained state for each submit so a new attempt replays fresh fixture lines.
+        self._drained = []
         proc = FakeProc(self._lines, returncode=self._returncode)
         self._state = SJA._TaskState(task_id="fake-tid", proc=proc)
         runtime = SJA.StreamJsonRuntime()
@@ -72,6 +76,9 @@ class FakeRuntime:
 
     def terminal_reason(self, task_id):
         return self._state.terminal_reason if self._state else None
+
+    def cli_session_id(self, task_id):
+        return self._state.cli_session_id if self._state else None
 
     async def cancel(self, task_id):
         self.cancel_calls.append(task_id)
@@ -378,6 +385,128 @@ class TestConfigTypeValidation(unittest.TestCase):
             json_path.write_text(json.dumps({"tier2_trusted_repo": "yes"}))
             with self.assertRaises(ValueError):
                 SupervisorConfig.from_yaml(yaml_path)
+
+
+class MultiAttemptFakeRuntime:
+    """FakeRuntime variant that replays a DIFFERENT fixture per submit_task call.
+    Used to test the auto-continuation loop: first submit returns max_turns,
+    second submit (with --resume) returns success.
+    """
+
+    def __init__(self, fixtures_per_attempt: list[list[str]], cli_session: str = "cli-sess-1"):
+        self._per_attempt = list(fixtures_per_attempt)
+        self._cli_session = cli_session
+        self._state: SJA._TaskState | None = None
+        self._drained: list = []
+        self.submit_calls: list[dict] = []
+        self.cancel_calls: list[str] = []
+
+    async def submit_task(self, prompt, system_prompt=None, model=None, cwd=None, resume_session=None):
+        self.submit_calls.append({"prompt": prompt, "resume_session": resume_session})
+        if not self._per_attempt:
+            raise RuntimeError("MultiAttemptFakeRuntime: no more fixtures queued")
+        lines = self._per_attempt.pop(0)
+        proc = FakeProc(lines)
+        self._state = SJA._TaskState(task_id=f"fake-tid-{len(self.submit_calls)}", proc=proc)
+        rt = SJA.StreamJsonRuntime()
+        await rt._reader(self._state)
+        self._drained = []
+        while True:
+            item = await self._state.queue.get()
+            if item is None:
+                break
+            self._drained.append(item)
+        return self._state.task_id
+
+    async def events(self, task_id):
+        for ev in self._drained:
+            yield ev
+
+    def terminal_state(self, task_id): return self._state.terminal if self._state else None
+    def tool_invocations(self, task_id): return list(self._state.tool_calls) if self._state else []
+    def usage(self, task_id): return self._state.usage_snapshot if self._state else None
+    def terminal_reason(self, task_id): return self._state.terminal_reason if self._state else None
+    def cli_session_id(self, task_id): return self._cli_session
+    async def cancel(self, task_id): self.cancel_calls.append(task_id)
+    async def shutdown(self): return None
+
+
+class TestAutoContinuation(unittest.IsolatedAsyncioTestCase):
+    async def test_max_turns_triggers_resume_attempt(self):
+        """Regression: on subtype=error_max_turns, supervisor re-submits with
+        resume_session so the user doesn't have to manually chain."""
+        max_turns_result = {
+            "type": "result", "subtype": "error_max_turns",
+            "stop_reason": "max_turns", "num_turns": 25,
+            "duration_ms": 200000, "is_error": True, "api_error_status": None,
+            "usage": {"input_tokens": 1000, "output_tokens": 9000},
+        }
+        success_result = {
+            "type": "result", "subtype": "success",
+            "stop_reason": "end_turn", "num_turns": 3,
+            "duration_ms": 15000, "is_error": False, "api_error_status": None,
+            "usage": {"input_tokens": 200, "output_tokens": 400},
+        }
+        attempt1 = [json.dumps(m) for m in (_fixture_init(session="cli-1"), _fixture_text("doing"), max_turns_result)]
+        attempt2 = [json.dumps(m) for m in (_fixture_init(session="cli-1"), _fixture_text("continuing"), success_result)]
+        runtime = MultiAttemptFakeRuntime([attempt1, attempt2], cli_session="cli-1")
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-cont")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store, max_continuations=3)
+            result = await sup.supervise(prompt="do a big thing", estimated_tokens=1000)
+            self.assertEqual(result.terminal, "completed")
+            self.assertEqual(result.continuations, 1)
+            self.assertEqual(len(runtime.submit_calls), 2)
+            self.assertIsNone(runtime.submit_calls[0]["resume_session"])
+            self.assertEqual(runtime.submit_calls[1]["resume_session"], "cli-1")
+            self.assertIn("Continue the task", runtime.submit_calls[1]["prompt"])
+            # Usage accumulates across attempts.
+            self.assertEqual(result.usage["output_tokens"], 9000 + 400)
+            self.assertEqual(result.usage["input_tokens"], 1000 + 200)
+        finally:
+            os.unlink(path)
+
+    async def test_max_continuations_cap_respected(self):
+        """Regression: supervisor gives up after max_continuations attempts."""
+        max_turns_result = {
+            "type": "result", "subtype": "error_max_turns",
+            "stop_reason": "max_turns", "num_turns": 25, "duration_ms": 1, "is_error": True,
+            "usage": {"input_tokens": 10, "output_tokens": 10},
+        }
+        lines = [json.dumps(m) for m in (_fixture_init(session="cli-2"), _fixture_text("..."), max_turns_result)]
+        # Need 3 attempts: initial + 2 continuations = max_continuations=2 → total 3 submits.
+        runtime = MultiAttemptFakeRuntime([lines, lines, lines], cli_session="cli-2")
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-cap")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store, max_continuations=2)
+            result = await sup.supervise(prompt="x", estimated_tokens=100)
+            self.assertEqual(result.terminal, "failed")
+            self.assertEqual(result.continuations, 2)
+            self.assertEqual(len(runtime.submit_calls), 3)
+        finally:
+            os.unlink(path)
+
+    async def test_success_first_try_no_continuation(self):
+        """Healthy first attempt = no retry, continuations=0."""
+        success_result = {
+            "type": "result", "subtype": "success",
+            "stop_reason": "end_turn", "num_turns": 1, "duration_ms": 2000, "is_error": False,
+            "usage": {"input_tokens": 5, "output_tokens": 10},
+        }
+        lines = [json.dumps(m) for m in (_fixture_init(session="cli-3"), _fixture_text("done"), success_result)]
+        runtime = MultiAttemptFakeRuntime([lines], cli_session="cli-3")
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-ok")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store)
+            result = await sup.supervise(prompt="x", estimated_tokens=100)
+            self.assertEqual(result.terminal, "completed")
+            self.assertEqual(result.continuations, 0)
+            self.assertEqual(len(runtime.submit_calls), 1)
+        finally:
+            os.unlink(path)
 
 
 class TestTerminalReasonSurfaced(unittest.IsolatedAsyncioTestCase):

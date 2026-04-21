@@ -79,6 +79,7 @@ class _TaskState:
     started_monotonic: float = 0.0
     stderr_path: object = None  # Path | None — per-task stderr log for diagnostics
     terminal_reason: dict | None = None  # {subtype, stop_reason, num_turns, duration_ms} from result event
+    cli_session_id: str | None = None    # populated from system/init; used for --resume continuations
 
 
 class StreamJsonRuntime:
@@ -102,6 +103,7 @@ class StreamJsonRuntime:
         system_prompt: str | None = None,
         model: str | None = None,
         cwd: str | None = None,
+        resume_session: str | None = None,
     ) -> str:
         if self._shutdown:
             raise RuntimeError("runtime already shut down")
@@ -111,6 +113,10 @@ class StreamJsonRuntime:
             args += ["--model", model or self.model]
         if system_prompt:
             args += ["--append-system-prompt", system_prompt]
+        # Continuation support: `--resume <session_id>` re-attaches to the
+        # CLI's prior conversation so auto-chaining after max_turns works.
+        if resume_session:
+            args += ["--resume", resume_session]
         args += [prompt]
         # Capture stderr into a per-task log (open file, not a PIPE — avoids
         # H-stderr pipe-buffer deadlock but preserves diagnostics when the
@@ -154,6 +160,11 @@ class StreamJsonRuntime:
         Keys: subtype, stop_reason, terminal_reason, num_turns, duration_ms,
         is_error, api_error_status. None if CLI never emitted result."""
         return self._state(task_id).terminal_reason
+
+    def cli_session_id(self, task_id: str) -> str | None:
+        """The CLI's own session id (from system/init) — used for --resume
+        continuations after a max_turns interruption."""
+        return self._state(task_id).cli_session_id
 
     async def cancel(self, task_id: str) -> None:
         state = self._state(task_id)
@@ -256,6 +267,7 @@ class StreamJsonRuntime:
         mtype = msg.get("type")
         out: list[WorkerEvent] = []
         if mtype == "system" and msg.get("subtype") == "init":
+            state.cli_session_id = msg.get("session_id")  # capture for --resume on max_turns continuation
             out.append(WorkerEvent("message_start", state.task_id, ts, {"session": msg.get("session_id"), "model": msg.get("model")}))
             return out
         if mtype == "assistant":
