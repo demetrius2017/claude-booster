@@ -41,7 +41,23 @@ Only return to the user when one of:
 - ❌ "Two options: (1) quick point-fix, (2) Phase A refactor. Which?"
   ✅ "Chosen: quick point-fix (reversibility wins, ship today). Spawning Agent to implement. [spawns]"
 
+- ❌ "Apply patch now?" / "Proceed with fix?" / "Deploy?" after a research/audit agent returned a recommendation.
+  ✅ Research-agent returned rec + patch → **immediately** spawn apply-agent for the same task. Do NOT pause to confirm with the user. The task was pre-approved when the user gave it.
+
 - ❌ Doing tool calls yourself (Bash/Edit/Write) on the user's substantive task instead of delegating.
+
+## Chain pattern — research → apply is one task, not two
+
+When an investigation/audit agent returns with:
+- clear root cause + evidence, AND
+- a recommended fix (patch / runbook / config change)
+
+… the Lead's next action is **NEVER** a question to the user. It is **always**:
+1. Spawn a second agent (Agent tool or /supervise) to apply the recommended fix,
+2. Spawn a verification agent/step (curl, pytest, docker logs) to confirm the fix took,
+3. Return to the user with the artefacts + "done, verified" — or with aggregated failure info + next action taken after retries.
+
+The user is not the approver of individual patches; they are the task-giver. Their one-line prompt covers the whole research→apply→verify→commit chain.
 
 ## When it's OK to Read/Grep directly (without delegating)
 
