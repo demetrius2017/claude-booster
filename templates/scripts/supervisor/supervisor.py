@@ -310,6 +310,11 @@ class Supervisor:
 # -------------------------- CLI --------------------------
 
 def _cmd_run(args: argparse.Namespace) -> int:
+    # REMAINDER gives us a list of tokens — join back into a single prompt.
+    prompt = " ".join(args.prompt).strip() if isinstance(args.prompt, list) else (args.prompt or "").strip()
+    if not prompt:
+        print("supervisor: empty prompt — nothing to run. Usage: /supervise <your task>", file=sys.stderr)
+        return 2
     # Audit-fix M3: when --cwd is given, default config lookup relative to that project root,
     # not the shell's cwd. Prevents repo-A-configs bleeding into repo-B runs.
     base_dir = Path(args.cwd).resolve() if args.cwd else Path.cwd()
@@ -331,7 +336,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     async def _run_once() -> SupervisorResult:
         try:
             return await sup.supervise(
-                prompt=args.prompt, cwd=args.cwd, estimated_tokens=cfg.estimated_tokens,
+                prompt=prompt, cwd=args.cwd, estimated_tokens=cfg.estimated_tokens,
             )
         finally:
             await runtime.shutdown()
@@ -394,10 +399,12 @@ def _build_parser() -> argparse.ArgumentParser:
     sub = ap.add_subparsers(dest="cmd")
 
     run = sub.add_parser("run", help="Run a supervised worker session")
-    run.add_argument("prompt", help="Prompt to pass to the worker")
     run.add_argument("--cwd", help="Working directory for worker + policy scope (default: current directory)")
     run.add_argument("--session", help="Session id (auto if omitted)")
     run.add_argument("--config", help="Path to supervisor.yaml (default: <cwd>/.claude/supervisor.yaml)")
+    # REMAINDER so users can type `/supervise run fix the bug in foo.py` without
+    # needing to wrap the prompt in quotes. Flags MUST come before the prompt.
+    run.add_argument("prompt", nargs=argparse.REMAINDER, help="Prompt text — quotes optional, spaces fine")
     run.set_defaults(func=_cmd_run)
 
     status = sub.add_parser("status", help="Show quota snapshot for a session")
@@ -417,7 +424,17 @@ def _build_parser() -> argparse.ArgumentParser:
     return ap
 
 
+_SUBCOMMANDS = {"run", "status", "decisions", "sessions"}
+
+
 def main(argv: list[str] | None = None) -> int:
+    if argv is None:
+        argv = sys.argv[1:]
+    # UX shortcut: `supervisor.py fix the bug in foo.py` → implicit `run`.
+    # If the first arg is neither a known subcommand nor a flag, treat the
+    # whole argv as a free-form prompt for `run`. Quotes become optional.
+    if argv and argv[0] not in _SUBCOMMANDS and not argv[0].startswith("-"):
+        argv = ["run", *argv]
     parser = _build_parser()
     args = parser.parse_args(argv)
     if args.cmd is None:

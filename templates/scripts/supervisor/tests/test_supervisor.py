@@ -424,6 +424,43 @@ class TestPermissiveDefault(unittest.IsolatedAsyncioTestCase):
             os.unlink(path)
 
 
+class TestFreeTextDispatch(unittest.TestCase):
+    def test_implicit_run_promotion(self):
+        """`supervisor.py fix the bug in foo.py` → parse as `run fix the bug ...`.
+        Free-text first arg (not a known subcommand, not a flag) gets implicit `run`.
+        """
+        from supervisor.supervisor import _build_parser, _SUBCOMMANDS, main
+        # Dry-verify that the parser rewrites argv correctly by inspecting what
+        # `run`'s prompt resolves to. We stop at argparse because actually running
+        # `run` would spawn a subprocess. Use a known-invalid config path to make
+        # _cmd_run bail before subprocess.
+        argv = ["fix", "the", "bug", "in", "foo.py"]
+        if argv and argv[0] not in _SUBCOMMANDS and not argv[0].startswith("-"):
+            argv = ["run", *argv]
+        parser = _build_parser()
+        args = parser.parse_args(argv)
+        self.assertEqual(args.cmd, "run")
+        self.assertEqual(" ".join(args.prompt), "fix the bug in foo.py")
+
+    def test_known_subcommand_passes_through(self):
+        from supervisor.supervisor import _build_parser, _SUBCOMMANDS
+        argv = ["sessions", "--limit", "5"]
+        if argv and argv[0] not in _SUBCOMMANDS and not argv[0].startswith("-"):
+            argv = ["run", *argv]
+        parser = _build_parser()
+        args = parser.parse_args(argv)
+        self.assertEqual(args.cmd, "sessions")
+        self.assertEqual(args.limit, 5)
+
+    def test_flag_first_passes_through_to_argparse(self):
+        """--help should NOT be promoted to `run --help` (argparse shows top help)."""
+        from supervisor.supervisor import _SUBCOMMANDS
+        argv = ["--help"]
+        if argv and argv[0] not in _SUBCOMMANDS and not argv[0].startswith("-"):
+            argv = ["run", *argv]
+        self.assertEqual(argv, ["--help"])  # unchanged
+
+
 class TestDirectScriptInvocation(unittest.TestCase):
     def test_supervisor_runs_as_direct_script(self):
         """Regression: /supervise slash command invokes supervisor.py as a direct

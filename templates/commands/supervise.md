@@ -1,6 +1,6 @@
 ---
 description: Run a supervised worker session (Tier 0/1/2 policy + quota + silence detection) or inspect its state
-argument-hint: run "<prompt>" | sessions | status --session ID | decisions --session ID
+argument-hint: <free-form prompt> | sessions | status --session ID | decisions --session ID
 ---
 
 # Supervise — Claude Booster Supervisor Agent v1.2.0
@@ -18,26 +18,29 @@ is a session-level control that spawns its own `claude` subprocess.
 ## Invocations
 
 ```bash
+# Simplest: free-form prompt, no quotes needed, no explicit `run`:
+python3 ~/.claude/scripts/supervisor/supervisor.py fix the bug in foo.py
+
 # Bare invocation — prints help + summary of all known sessions:
 python3 ~/.claude/scripts/supervisor/supervisor.py
 
-# Run a one-shot supervised session. `cwd` and config path default to
-# your CURRENT directory — no need to pass --cwd unless you want a
-# different project scope for the worker:
-python3 ~/.claude/scripts/supervisor/supervisor.py run "$ARGUMENTS"
-
-# Optional: override cwd + config for a one-off
-python3 ~/.claude/scripts/supervisor/supervisor.py run "task" --cwd /path/to/other/repo
-
-# Status snapshot of a session's quota:
+# Explicit subcommands (also valid):
+python3 ~/.claude/scripts/supervisor/supervisor.py run fix the bug
+python3 ~/.claude/scripts/supervisor/supervisor.py run --cwd /other/repo do thing
 python3 ~/.claude/scripts/supervisor/supervisor.py status --session <id>
-
-# Recent decisions for a session:
 python3 ~/.claude/scripts/supervisor/supervisor.py decisions --session <id> --limit 20
-
-# Table of all sessions (session_id, started, worker_tokens, circuit, decisions):
 python3 ~/.claude/scripts/supervisor/supervisor.py sessions [--limit N] [--json]
 ```
+
+**Actual execution of this slash command:**
+
+```bash
+python3 ~/.claude/scripts/supervisor/supervisor.py $ARGUMENTS
+```
+
+`$ARGUMENTS` goes through untouched. If first token is a known
+subcommand (`run`/`status`/`decisions`/`sessions`) it's used as-is;
+otherwise everything is treated as the prompt under implicit `run`.
 
 **Do NOT query `~/.claude/rolling_memory.db` directly** with ad-hoc
 sqlite3 — the schema uses `started_at` / `worker_tokens` /
