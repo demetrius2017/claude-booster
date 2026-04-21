@@ -284,9 +284,16 @@ class Supervisor:
             self.result.terminal_reason = tr  # always reflect the latest
 
             # Decide: done, or continue?
+            # Retry on ANY non-success interruption: error_max_turns,
+            # aborted_streaming, error_network, error_rate_limit, etc.
+            # Field log 2026-04-21 had `aborted_streaming` (worker cut off mid
+            # tool_use at num_turns=26) and continuation didn't fire because
+            # the gate only matched error_max_turns. Policy-kill / quota-open
+            # gates below still short-circuit the retry.
+            subtype = (tr or {}).get("subtype")
+            retriable = subtype is not None and subtype != "success"
             should_continue = (
-                tr is not None
-                and tr.get("subtype") == "error_max_turns"
+                retriable
                 and attempt < self.max_continuations
                 and self.detector.state is not State.CANCELLED  # respect policy-kills
                 and self.tracker.state is not CircuitState.OPEN  # respect quota circuit

@@ -488,6 +488,40 @@ class TestAutoContinuation(unittest.IsolatedAsyncioTestCase):
         finally:
             os.unlink(path)
 
+    async def test_aborted_streaming_triggers_resume(self):
+        """Regression (field log 2026-04-21 session f56113ccb39c41c1):
+        real CLI returned subtype=aborted_streaming at num_turns=26. The
+        old gate matched only error_max_turns → continuation didn't fire.
+        Should now retry on any non-success subtype."""
+        aborted = {
+            "type": "result", "subtype": "aborted_streaming",
+            "stop_reason": "aborted", "num_turns": 26,
+            "duration_ms": 200000, "is_error": True,
+            "api_error_status": None,
+            "usage": {"input_tokens": 2000, "output_tokens": 5600},
+        }
+        success = {
+            "type": "result", "subtype": "success",
+            "stop_reason": "end_turn", "num_turns": 5,
+            "duration_ms": 20000, "is_error": False,
+            "api_error_status": None,
+            "usage": {"input_tokens": 300, "output_tokens": 600},
+        }
+        attempt1 = [json.dumps(m) for m in (_fixture_init(session="cli-abort"), _fixture_text("midwork"), aborted)]
+        attempt2 = [json.dumps(m) for m in (_fixture_init(session="cli-abort"), _fixture_text("cont"), success)]
+        runtime = MultiAttemptFakeRuntime([attempt1, attempt2], cli_session="cli-abort")
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-abort")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store, max_continuations=3)
+            result = await sup.supervise(prompt="big investigation", estimated_tokens=40000)
+            self.assertEqual(result.terminal, "completed")
+            self.assertEqual(result.continuations, 1)
+            self.assertEqual(len(runtime.submit_calls), 2)
+            self.assertEqual(runtime.submit_calls[1]["resume_session"], "cli-abort")
+        finally:
+            os.unlink(path)
+
     async def test_success_first_try_no_continuation(self):
         """Healthy first attempt = no retry, continuations=0."""
         success_result = {
