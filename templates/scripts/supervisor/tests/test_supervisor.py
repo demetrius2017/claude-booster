@@ -509,6 +509,57 @@ class TestAutoContinuation(unittest.IsolatedAsyncioTestCase):
             os.unlink(path)
 
 
+class TestAutonomyDirective(unittest.IsolatedAsyncioTestCase):
+    async def test_autonomy_directive_passed_to_worker(self):
+        """Regression: default spawn sends AUTONOMY_DIRECTIVE as system_prompt
+        so the worker doesn't fall back to 'A or B?' admin mode."""
+        from supervisor.supervisor import AUTONOMY_DIRECTIVE
+        captured: dict = {}
+
+        class CapturingRuntime(MultiAttemptFakeRuntime):
+            async def submit_task(self, prompt, system_prompt=None, model=None, cwd=None, resume_session=None):
+                captured["system_prompt"] = system_prompt
+                return await super().submit_task(prompt, system_prompt, model, cwd, resume_session)
+
+        success = {"type": "result", "subtype": "success", "stop_reason": "end_turn",
+                   "num_turns": 1, "duration_ms": 100, "is_error": False,
+                   "usage": {"input_tokens": 1, "output_tokens": 1}}
+        lines = [json.dumps(m) for m in (_fixture_init(), _fixture_text("ok"), success)]
+        runtime = CapturingRuntime([lines])
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-auto")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store)
+            await sup.supervise(prompt="x", estimated_tokens=100, autonomy_directive=True)
+            self.assertIsNotNone(captured["system_prompt"])
+            self.assertIn("Work fully autonomously", captured["system_prompt"])
+            self.assertIn("Do NOT ask the user clarifying questions", captured["system_prompt"])
+        finally:
+            os.unlink(path)
+
+    async def test_autonomy_directive_can_be_disabled(self):
+        captured: dict = {}
+
+        class CapturingRuntime(MultiAttemptFakeRuntime):
+            async def submit_task(self, prompt, system_prompt=None, model=None, cwd=None, resume_session=None):
+                captured["system_prompt"] = system_prompt
+                return await super().submit_task(prompt, system_prompt, model, cwd, resume_session)
+
+        success = {"type": "result", "subtype": "success", "stop_reason": "end_turn",
+                   "num_turns": 1, "duration_ms": 100, "is_error": False,
+                   "usage": {"input_tokens": 1, "output_tokens": 1}}
+        lines = [json.dumps(m) for m in (_fixture_init(), _fixture_text("ok"), success)]
+        runtime = CapturingRuntime([lines])
+        store, path = _store_tmp()
+        try:
+            tracker = QuotaTracker(session_id="sess-noauto")
+            sup = Supervisor(runtime=runtime, ctx=_ctx(Path.cwd()), tracker=tracker, store=store)
+            await sup.supervise(prompt="x", estimated_tokens=100, autonomy_directive=False)
+            self.assertIsNone(captured["system_prompt"])
+        finally:
+            os.unlink(path)
+
+
 class TestTerminalReasonSurfaced(unittest.IsolatedAsyncioTestCase):
     async def test_stop_reason_makes_it_to_result(self):
         """Regression (field log 2026-04-21): workers that hit CLI max-turns

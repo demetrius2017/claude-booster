@@ -87,6 +87,7 @@ tier1_tools:
 tier2_trusted_repo: false
 estimated_tokens: 10000
 max_continuations: 5       # how many times to re-spawn on CLI max_turns
+autonomy_directive: true   # tell worker "act, don't ask A/B" via system-prompt
 ```
 
 `paranoid_mode: true` restores the v1.2.0-original whitelist behaviour:
@@ -98,6 +99,16 @@ credential-rich projects or CI-only runs where trust is low.
 chain. Set to 0 to disable auto-continuation (one-shot mode). Set
 higher for very long research tasks; each continuation is still gated
 by the quota circuit-breaker so a runaway loop can't blow the budget.
+
+`autonomy_directive` (default `true`) injects an AUTONOMY_DIRECTIVE
+system prompt into the worker spawn: "work autonomously, pick a path
+using reversibility + scope + risk, don't ask the user A/B questions,
+don't narrate plans asking for approval, 51%-rule on ambiguity". Set
+to `false` if you want the worker to behave like an un-directed
+interactive session (useful for pair-programming probes where you
+want the worker to ask questions). Worker also gets
+`--permission-mode auto` in either case so permission prompts don't
+stall the subprocess.
 
 ## Persistence
 

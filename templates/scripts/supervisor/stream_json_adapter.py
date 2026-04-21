@@ -104,11 +104,16 @@ class StreamJsonRuntime:
         model: str | None = None,
         cwd: str | None = None,
         resume_session: str | None = None,
+        permission_mode: str | None = "auto",
     ) -> str:
         if self._shutdown:
             raise RuntimeError("runtime already shut down")
         task_id = uuid.uuid4().hex[:16]
         args = [self.cli, "-p", "--output-format", "stream-json", "--verbose"]
+        # --permission-mode auto keeps the worker from stalling on permission
+        # prompts (the supervisor is the gate, not the Claude CLI's own UI).
+        if permission_mode:
+            args += ["--permission-mode", permission_mode]
         if model or self.model:
             args += ["--model", model or self.model]
         if system_prompt:

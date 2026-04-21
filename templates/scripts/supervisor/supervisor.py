@@ -82,6 +82,23 @@ CONTINUATION_PROMPT = (
     "summary of what you did."
 )
 
+AUTONOMY_DIRECTIVE = (
+    "You are running under Claude Booster supervisor. Work fully autonomously:\n"
+    "- Do NOT ask the user clarifying questions or offer A/B choices. If you face a "
+    "decision, pick the best path using reversibility + scope + risk (small, reversible "
+    "fix > large refactor; ship > discuss) and proceed.\n"
+    "- Do NOT narrate plans in prose asking for approval. State the chosen approach in "
+    "one line and act.\n"
+    "- Do NOT stop to confirm before editing, running tests, or committing. The "
+    "supervisor policy engine gates unsafe actions; within that sandbox, act.\n"
+    "- If blocked by missing info, make the 51% best-guess, state the assumption in one "
+    "line in your output, and continue.\n"
+    "- End the session by summarising what you actually changed + any residual risk, "
+    "not by asking what to do next.\n"
+    "The supervisor records every tool call and final decision in "
+    "~/.claude/rolling_memory.db; the user can override afterwards."
+)
+
 
 class HaikuEscalator(Protocol):
     """Called only when `policy.evaluate` returns escalate. Implementations
@@ -112,6 +129,7 @@ class SupervisorConfig:
     estimated_tokens: int = DEFAULT_ESTIMATED_TOKENS
     paranoid_mode: bool = False  # True = old whitelist-default; False = permissive blacklist
     max_continuations: int = DEFAULT_MAX_CONTINUATIONS  # cap on auto-respawns after max_turns
+    autonomy_directive: bool = True  # append AUTONOMY_DIRECTIVE as worker system-prompt
 
     @classmethod
     def from_yaml(cls, path: Path) -> "SupervisorConfig":
@@ -134,6 +152,7 @@ class SupervisorConfig:
         estimated = data.get("estimated_tokens", DEFAULT_ESTIMATED_TOKENS)
         paranoid = data.get("paranoid_mode", False)
         max_cont = data.get("max_continuations", DEFAULT_MAX_CONTINUATIONS)
+        autonomy = data.get("autonomy_directive", True)
         if not isinstance(tier1, list) or not all(isinstance(x, str) for x in tier1):
             raise ValueError(f"tier1_tools must be a list of strings in {path}")
         if not isinstance(trusted, bool):
@@ -144,10 +163,12 @@ class SupervisorConfig:
             raise ValueError(f"paranoid_mode must be true/false in {path}")
         if not isinstance(max_cont, int) or max_cont < 0:
             raise ValueError(f"max_continuations must be a non-negative integer in {path}")
+        if not isinstance(autonomy, bool):
+            raise ValueError(f"autonomy_directive must be true/false in {path}")
         return cls(
             tier1_tools=set(tier1), tier2_trusted_repo=trusted,
             estimated_tokens=estimated, paranoid_mode=paranoid,
-            max_continuations=max_cont,
+            max_continuations=max_cont, autonomy_directive=autonomy,
         )
 
 
@@ -209,6 +230,7 @@ class Supervisor:
         system_prompt: str | None = None,
         cwd: str | None = None,
         estimated_tokens: int = DEFAULT_ESTIMATED_TOKENS,
+        autonomy_directive: bool = True,
     ) -> SupervisorResult:
         """Run a supervised task, auto-continuing across CLI max_turns.
 
@@ -227,6 +249,16 @@ class Supervisor:
             self._record_decision("_admit", {"estimate": estimated_tokens}, "deny", None, reason, "regex")
             return self.result
 
+        # Inject the autonomy directive as part of the system-prompt so the
+        # worker doesn't stall on "A or B?" administrative questions. Callers
+        # that already pass a system_prompt get it appended.
+        effective_system_prompt = system_prompt
+        if autonomy_directive:
+            effective_system_prompt = (
+                AUTONOMY_DIRECTIVE if not system_prompt
+                else f"{AUTONOMY_DIRECTIVE}\n\n{system_prompt}"
+            )
+
         current_prompt = prompt
         resume_session: str | None = None
         accumulated_tool_calls: list[dict] = []
@@ -238,7 +270,7 @@ class Supervisor:
             # (loop-guard, quota tracker) is session-scoped, not attempt-scoped.
             self.detector = WorkerStateDetector()
             task_id = await self._run_one_attempt(
-                current_prompt, system_prompt, cwd, resume_session,
+                current_prompt, effective_system_prompt, cwd, resume_session,
             )
             # Accumulate cross-attempt
             accumulated_tool_calls.extend(self.runtime.tool_invocations(task_id))
@@ -420,12 +452,15 @@ def _cmd_run(args: argparse.Namespace) -> int:
     runtime = StreamJsonRuntime()
     sup = Supervisor(runtime=runtime, ctx=ctx, tracker=tracker, store=store,
                      max_continuations=cfg.max_continuations)
+    # Stash for use inside supervise()
+    sup._autonomy_directive_enabled = cfg.autonomy_directive
 
     # Audit-fix M2: single asyncio.run() wraps supervise + shutdown so tasks stay on one loop.
     async def _run_once() -> SupervisorResult:
         try:
             return await sup.supervise(
                 prompt=prompt, cwd=args.cwd, estimated_tokens=cfg.estimated_tokens,
+                autonomy_directive=cfg.autonomy_directive,
             )
         finally:
             await runtime.shutdown()
