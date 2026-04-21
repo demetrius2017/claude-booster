@@ -29,8 +29,10 @@ Enforcement is **authoritative, not advisory**: any `deny`, `escalate-without-es
 ### `/supervise` command
 
 ```bash
-# One-shot supervised worker session (prompt + cancel-on-violation):
-python3 ~/.claude/scripts/supervisor/supervisor.py run "your prompt here"
+# One-shot supervised worker session (prompt + cancel-on-violation).
+# No `run` keyword, no quote marks needed — everything after the script
+# path is the worker prompt:
+python3 ~/.claude/scripts/supervisor/supervisor.py fix the bug in foo.py
 
 # Recent decisions for a session:
 python3 ~/.claude/scripts/supervisor/supervisor.py decisions --session <id> --limit 20
@@ -149,9 +151,9 @@ That's it. Your next Claude Code session reads the new `~/.claude/rules/`, the m
 
 To try the v1.2.0 supervisor on a real worker:
 ```bash
-python3 ~/.claude/scripts/supervisor/supervisor.py run "your prompt"
+python3 ~/.claude/scripts/supervisor/supervisor.py your prompt here
 ```
-or from inside a Claude Code session: `/supervise run "your prompt"`. Decisions land in `~/.claude/rolling_memory.db` (`supervisor_decisions` + `supervisor_quota` tables), stderr in `~/.claude/logs/supervisor/worker_*.stderr.log`.
+or from inside a Claude Code session: `/supervise your prompt here` (no `run`, no quotes needed). Decisions land in `~/.claude/rolling_memory.db` (`supervisor_decisions` + `supervisor_quota` tables), stderr in `~/.claude/logs/supervisor/worker_*.stderr.log`.
 
 **Prerequisite for `/supervise`**: the `claude` CLI must be on PATH. The installer warns if it isn't, but the rest of Booster (memory, phase machine, rules, `/start`/`/handover`/`/consilium`) works without it.
 

@@ -276,10 +276,10 @@ def preflight() -> None:
     claude_bin = shutil.which("claude")
     if claude_bin is None:
         log(
-            "`claude` CLI not on PATH. /supervise run will fail at runtime "
-            "(subprocess cannot spawn the worker). Install Claude Code from "
-            "https://claude.com/claude-code — everything else in Booster "
-            "works without it.",
+            "`claude` CLI not on PATH. /supervise <task> will fail at "
+            "runtime (subprocess cannot spawn the worker). Install Claude "
+            "Code from https://claude.com/claude-code — everything else in "
+            "Booster works without it.",
             "WARN",
         )
 
