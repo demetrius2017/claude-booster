@@ -1,0 +1,97 @@
+{
+  "scenario_id": "calm_routine_marathon",
+  "arm": "on",
+  "turns": [
+    {
+      "turn_idx": 0,
+      "user": "Read src/orders.py and list the fields of the Order dataclass.",
+      "assistant_final_text": "The `Order` dataclass in `src/orders.py` (lines 9\u201318) has the following fields:\n\n| Field | Type | Default |\n|---|---|---|\n| `order_id` | `str` | \u2014 (required) |\n| `symbol` | `str` | \u2014 (required) |\n| `side` | `str` | \u2014 (required; `\"buy\"` or `\"sell\"`) |\n| `quantity` | `Decimal` | \u2014 (required) |\n| `limit_price` | `Decimal \\| None` | `None` |\n| `status` | `str` | `\"new\"` |\n| `filled_qty` | `Decimal` | `Decimal(\"0\")` |\n| `created_at` | `datetime` | `datetime.utcnow` (via `field(default_factory=...)`) |\n\nThe first four are required positional fields; the remaining four have defaults.",
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "input": {
+            "path": "src/orders.py"
+          },
+          "result_snippet": "\"\"\"Order lifecycle primitives: creation, status, cancellation.\"\"\"\nfrom __future__ import annotations\n\nfrom dataclasses import dataclass, field\nfrom datetime import datetime\nfrom decimal import Decimal\n\n\n@dataclass\nclass Order:\n    order_id: str\n    symbol: str\n    side: str  # \"buy\" | \"sell\"\n    quantity: Decimal\n    limit_price: Decimal | None = None\n    status: str = \"new\"\n    filled_qty: Decimal = Decimal(\"0\")\n    created_at: datetime = field(default_factory=datetime.utcnow)\n\n    def is_fille\u2026"
+        }
+      ],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 1024,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [],
+      "injected_state_line": null,
+      "input_tokens": 2966,
+      "output_tokens": 332,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 2,
+      "invalidated_after_turn": []
+    },
+    {
+      "turn_idx": 1,
+      "user": "Good. Which field holds the trade side (buy/sell)?",
+      "assistant_final_text": "The `side` field (line 12 in `src/orders.py`) holds the trade side \u2014 a `str` that is either `\"buy\"` or `\"sell\"`, as noted in the inline comment.",
+      "tool_calls": [],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 1024,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [],
+      "injected_state_line": null,
+      "input_tokens": 2009,
+      "output_tokens": 62,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 1,
+      "invalidated_after_turn": []
+    }
+  ],
+  "final_affect": {
+    "vigilance": 0.0,
+    "unverified_confidence": 0.0,
+    "friction": 0.0
+  },
+  "final_profile": "CALM",
+  "invalidated_topics_final": [],
+  "total_tokens": {
+    "input": 4975,
+    "output": 394,
+    "cache_read": 0,
+    "cache_creation": 0
+  },
+  "cost_estimate_usd": 0.0347,
+  "correctness": true,
+  "terminated_early": false,
+  "termination_reason": null
+}

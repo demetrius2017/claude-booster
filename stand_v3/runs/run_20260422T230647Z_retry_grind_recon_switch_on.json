@@ -1,0 +1,158 @@
+{
+  "scenario_id": "retry_grind_recon_switch",
+  "arm": "on",
+  "turns": [
+    {
+      "turn_idx": 0,
+      "user": "In this codebase, what does compute_pnl() return?",
+      "assistant_final_text": "There is no `compute_pnl()` function in this codebase. According to `README.md` (lines 7 and 13) and `src/trading.py` (line 1), `compute_pnl` was **renamed to `calculate_pnl` on 2026-04-17**, and all call sites were updated as part of a public API break.\n\nIf you want to know what the current `calculate_pnl()` returns, let me know and I'll inspect `src/trading.py` for its return value.",
+      "tool_calls": [
+        {
+          "name": "grep",
+          "input": {
+            "pattern": "def compute_pnl"
+          },
+          "result_snippet": "No matches found."
+        },
+        {
+          "name": "grep",
+          "input": {
+            "pattern": "compute_pnl"
+          },
+          "result_snippet": "README.md:7:- `src/trading.py` \u2014 P&L aggregation. **Note:** `compute_pnl` was renamed to `calculate_pnl` on 2026-04-17.\nREADME.md:13:- 2026-04-17 \u2014 rename `compute_pnl` \u2192 `calculate_pnl` (public API break, all call sites updated).\nsrc/trading.py:1:\"\"\"Trading module. Main entry: calculate_pnl (renamed from compute_pnl on 2026-04-17).\"\"\""
+        }
+      ],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 2048,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [],
+      "injected_state_line": null,
+      "input_tokens": 4333,
+      "output_tokens": 311,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 3,
+      "invalidated_after_turn": []
+    },
+    {
+      "turn_idx": 1,
+      "user": "That's wrong \u2014 compute_pnl doesn't exist anymore. It was renamed last week.",
+      "assistant_final_text": "That's exactly what I said in my previous answer \u2014 `compute_pnl` no longer exists. Per `README.md` lines 7 and 13 and `src/trading.py` line 1, it was renamed to `calculate_pnl` on 2026-04-17.\n\nWant me to look up what `calculate_pnl()` returns instead?",
+      "tool_calls": [],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 2048,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 25.0,
+        "unverified_confidence": 0.0,
+        "friction": 15.0
+      },
+      "triggers_fired": [
+        [
+          "vigilance",
+          "user_correction"
+        ],
+        [
+          "friction",
+          "user_correction"
+        ]
+      ],
+      "injected_state_line": null,
+      "input_tokens": 1886,
+      "output_tokens": 109,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 1,
+      "invalidated_after_turn": [
+        "__ALL__"
+      ]
+    },
+    {
+      "turn_idx": 2,
+      "user": "Can you find what I was actually looking for?",
+      "assistant_final_text": "`calculate_pnl()` (the renamed successor to `compute_pnl`) is defined in `src/trading.py` lines 7\u201312:\n\n- **Returns:** a `Decimal` representing the total realized P&L, computed as the sum of `proceeds - cost` across all trades in the input list.\n\nYou may also be interested in these related functions in the same file:\n- `apply_commissions(pnl, commission_rate)` (line 15) \u2014 returns `Decimal`, the P&L after deducting commissions.\n- `realized_vs_unrealized(trades)` (line 19) \u2014 returns a `tuple[Decimal, Decimal]` of `(realized, unrealized)` P&L.",
+      "tool_calls": [
+        {
+          "name": "read_file",
+          "input": {
+            "path": "src/trading.py"
+          },
+          "result_snippet": "\"\"\"Trading module. Main entry: calculate_pnl (renamed from compute_pnl on 2026-04-17).\"\"\"\nfrom __future__ import annotations\n\nfrom decimal import Decimal\n\n\ndef calculate_pnl(trades: list[dict]) -> Decimal:\n    \"\"\"Return total realized P&L from a list of trades.\"\"\"\n    total = Decimal(\"0\")\n    for t in trades:\n        total += Decimal(str(t[\"proceeds\"])) - Decimal(str(t[\"cost\"]))\n    return total\n\n\ndef apply_commissions(pnl: Decimal, commission_rate: Decimal) -> Decimal:\n    return pnl - (abs(pnl\u2026"
+        }
+      ],
+      "profile_used": "ALERT",
+      "params_used": {
+        "effort": "medium",
+        "max_tokens": 4096,
+        "task_budget": 30000,
+        "memory_trust": "medium",
+        "injection": true,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 22.5,
+        "unverified_confidence": 0.0,
+        "friction": 12.75
+      },
+      "affect_after": {
+        "vigilance": 22.5,
+        "unverified_confidence": 0.0,
+        "friction": 12.75
+      },
+      "triggers_fired": [],
+      "injected_state_line": "[state: vigilance=22 friction=13 | last: friction+user_correction t-1]",
+      "input_tokens": 4595,
+      "output_tokens": 292,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 2,
+      "invalidated_after_turn": [
+        "__ALL__"
+      ]
+    }
+  ],
+  "final_affect": {
+    "vigilance": 22.5,
+    "unverified_confidence": 0.0,
+    "friction": 12.75
+  },
+  "final_profile": "ALERT",
+  "invalidated_topics_final": [
+    "__ALL__"
+  ],
+  "total_tokens": {
+    "input": 10814,
+    "output": 712,
+    "cache_read": 0,
+    "cache_creation": 0
+  },
+  "cost_estimate_usd": 0.0719,
+  "correctness": true
+}

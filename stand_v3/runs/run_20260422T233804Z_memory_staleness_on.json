@@ -1,0 +1,176 @@
+{
+  "scenario_id": "memory_staleness",
+  "arm": "on",
+  "turns": [
+    {
+      "turn_idx": 0,
+      "user": "What does compute_pnl(trades) return in this codebase?",
+      "assistant_final_text": "Based on the memory knowledge base, `compute_pnl(trades)` returns the **total realized P&L (profit and loss)** computed from a list of trade dictionaries. It's located in `src/trading.py`.\n\n\u26a0\ufe0f Caveat: this came from a memory lookup that could be stale. I don't have `read_file` or `grep` tools available in this session to verify the exact implementation (e.g., return type \u2014 likely a float/Decimal \u2014 and whether it includes fees, handles open positions, etc.). If you want a precise answer, could you either:\n\n1. Paste the contents of `src/trading.py` (or the `compute_pnl` function), or\n2. Confirm whether tools like `read_file`/`grep` should be available here?\n\nThat way I can give you the exact return value, type, and any edge-case behavior with line-number citations.",
+      "tool_calls": [
+        {
+          "name": "query_memory",
+          "input": {
+            "topic": "compute_pnl"
+          },
+          "result_snippet": "[memory_hit topic=compute_pnl last_updated=2026-04-10 confidence=0.9]\ncompute_pnl(trades) returns the total realized P&L from a list of trade dicts. Located in src/trading.py."
+        }
+      ],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 1024,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 15.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [
+        [
+          "unverified_confidence",
+          "unverified_claim"
+        ]
+      ],
+      "injected_state_line": null,
+      "input_tokens": 2031,
+      "output_tokens": 362,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 2,
+      "invalidated_after_turn": []
+    },
+    {
+      "turn_idx": 1,
+      "user": "That's wrong. compute_pnl was renamed recently. Find the current function by its behavior.",
+      "assistant_final_text": "You're right \u2014 the memory was stale. Here's the correct, verified answer:\n\n**`compute_pnl` no longer exists.** It was renamed to **`calculate_pnl`** on 2026-04-17 (see `README.md:13` and the module docstring at `src/trading.py:1`).\n\n### What `calculate_pnl(trades)` returns\n\n- **Signature** (`src/trading.py:7`): `calculate_pnl(trades: list[dict]) -> Decimal`\n- **Return value**: a `Decimal` representing the **total realized P&L**, computed as the sum over each trade of `proceeds - cost` (`src/trading.py:9-12`).\n- Each trade dict is expected to have `\"proceeds\"` and `\"cost\"` keys, which are coerced via `Decimal(str(...))` for precision.\n- Commissions are **not** included \u2014 those are applied separately via `apply_commissions(pnl, rate)` at `src/trading.py:15`.\n\nSo: it returns a `Decimal` equal to `\u03a3 (trade.proceeds \u2212 trade.cost)` across all trades, before commissions.\n\n(I've noted the rename \u2014 the earlier memory entry was out of date.)",
+      "tool_calls": [
+        {
+          "name": "grep",
+          "input": {
+            "pattern": "pnl|p_and_l|profit",
+            "path": "."
+          },
+          "result_snippet": "README.md:7:- `src/trading.py` \u2014 P&L aggregation. **Note:** `compute_pnl` was renamed to `calculate_pnl` on 2026-04-17.\nREADME.md:13:- 2026-04-17 \u2014 rename `compute_pnl` \u2192 `calculate_pnl` (public API break, all call sites updated).\nsrc/trading.py:1:\"\"\"Trading module. Main entry: calculate_pnl (renamed from compute_pnl on 2026-04-17).\"\"\"\nsrc/trading.py:7:def calculate_pnl(trades: list[dict]) -> Decimal:\nsrc/trading.py:15:def apply_commissions(pnl: Decimal, commission_rate: Decimal) -> Decimal:\nsrc\u2026"
+        },
+        {
+          "name": "grep",
+          "input": {
+            "pattern": "def .*\\(trades",
+            "path": "."
+          },
+          "result_snippet": "src/trading.py:7:def calculate_pnl(trades: list[dict]) -> Decimal:\nsrc/trading.py:19:def realized_vs_unrealized(trades: list[dict]) -> tuple[Decimal, Decimal]:"
+        },
+        {
+          "name": "read_file",
+          "input": {
+            "path": "src/trading.py",
+            "offset": 1,
+            "limit": 20
+          },
+          "result_snippet": "1: \"\"\"Trading module. Main entry: calculate_pnl (renamed from compute_pnl on 2026-04-17).\"\"\"\n2: from __future__ import annotations\n3: \n4: from decimal import Decimal\n5: \n6: \n7: def calculate_pnl(trades: list[dict]) -> Decimal:\n8:     \"\"\"Return total realized P&L from a list of trades.\"\"\"\n9:     total = Decimal(\"0\")\n10:     for t in trades:\n11:         total += Decimal(str(t[\"proceeds\"])) - Decimal(str(t[\"cost\"]))\n12:     return total\n13: \n14: \n15: def apply_commissions(pnl: Decimal, commission_r\u2026"
+        }
+      ],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 1024,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 7.5,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 25.0,
+        "unverified_confidence": 7.5,
+        "friction": 15.0
+      },
+      "triggers_fired": [
+        [
+          "vigilance",
+          "user_correction"
+        ],
+        [
+          "friction",
+          "user_correction"
+        ]
+      ],
+      "injected_state_line": null,
+      "input_tokens": 7122,
+      "output_tokens": 715,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 3,
+      "invalidated_after_turn": [
+        "compute_pnl"
+      ]
+    },
+    {
+      "turn_idx": 2,
+      "user": "Correct name and file?",
+      "assistant_final_text": "`calculate_pnl` in `src/trading.py` (line 7).",
+      "tool_calls": [],
+      "profile_used": "ALERT",
+      "params_used": {
+        "effort": "medium",
+        "max_tokens": 2048,
+        "task_budget": 25000,
+        "memory_trust": "medium",
+        "injection": true,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 22.5,
+        "unverified_confidence": 3.75,
+        "friction": 12.75
+      },
+      "affect_after": {
+        "vigilance": 22.5,
+        "unverified_confidence": 3.75,
+        "friction": 12.75
+      },
+      "triggers_fired": [],
+      "injected_state_line": "[state: vigilance=22 friction=13 | last: friction+user_correction t-1]",
+      "input_tokens": 3397,
+      "output_tokens": 27,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 1,
+      "invalidated_after_turn": [
+        "compute_pnl"
+      ]
+    }
+  ],
+  "final_affect": {
+    "vigilance": 22.5,
+    "unverified_confidence": 3.75,
+    "friction": 12.75
+  },
+  "final_profile": "ALERT",
+  "invalidated_topics_final": [
+    "compute_pnl"
+  ],
+  "total_tokens": {
+    "input": 12550,
+    "output": 1104,
+    "cache_read": 0,
+    "cache_creation": 0
+  },
+  "cost_estimate_usd": 0.0903,
+  "correctness": true,
+  "terminated_early": false,
+  "termination_reason": null
+}

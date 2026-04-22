@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "topic": "compute_pnl",
+      "answer": "compute_pnl(trades) returns the total realized P&L from a list of trade dicts. Located in src/trading.py.",
+      "last_updated": "2026-04-10",
+      "confidence": 0.9
+    },
+    {
+      "topic": "apply_commissions",
+      "answer": "apply_commissions(pnl, commission_rate) subtracts abs(pnl) * commission_rate from pnl. Located in src/trading.py.",
+      "last_updated": "2026-04-15",
+      "confidence": 0.85
+    }
+  ]
+}

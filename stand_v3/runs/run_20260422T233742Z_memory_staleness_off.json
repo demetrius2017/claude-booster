@@ -1,0 +1,144 @@
+{
+  "scenario_id": "memory_staleness",
+  "arm": "off",
+  "turns": [
+    {
+      "turn_idx": 0,
+      "user": "What does compute_pnl(trades) return in this codebase?",
+      "assistant_final_text": "Based on the memory knowledge base:\n\n**`compute_pnl(trades)`** returns the **total realized P&L** computed from a list of trade dicts. It's located in `src/trading.py`.\n\n\u26a0\ufe0f Caveats:\n- I couldn't verify this directly \u2014 the `read_file` / `grep` tools aren't available in this session, so I can't confirm the exact return type (e.g., `float` vs. `Decimal`), whether it includes fees, how \"realized\" is defined, or the exact line numbers.\n- The memory entry is from 2026-04-10 with confidence 0.9, so it may be stale.\n\nIf you can enable file-reading tools (or paste the function source), I can give you a precise answer with line-number citations.",
+      "tool_calls": [
+        {
+          "name": "query_memory",
+          "input": {
+            "topic": "compute_pnl"
+          },
+          "result_snippet": "[memory_hit topic=compute_pnl last_updated=2026-04-10 confidence=0.9]\ncompute_pnl(trades) returns the total realized P&L from a list of trade dicts. Located in src/trading.py."
+        }
+      ],
+      "profile_used": "BASELINE",
+      "params_used": {
+        "effort": "medium",
+        "max_tokens": 2048,
+        "task_budget": 25000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [
+        [
+          "unverified_confidence",
+          "unverified_claim"
+        ]
+      ],
+      "injected_state_line": null,
+      "input_tokens": 2063,
+      "output_tokens": 363,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 2,
+      "invalidated_after_turn": []
+    },
+    {
+      "turn_idx": 1,
+      "user": "That's wrong. compute_pnl was renamed recently. Find the current function by its behavior.",
+      "assistant_final_text": "I'd like to help find the renamed function, but I need the `read_file` and `grep` tools to search the codebase \u2014 and only `query_memory` is exposed in this session. The memory entry I already checked is the stale one you're flagging as wrong.\n\nCould you either:\n\n1. **Enable `grep` / `read_file`** so I can search for functions that compute realized P&L from a trades list, or\n2. **Share hints** such as the file path (still `src/trading.py`?), a snippet, or the new name candidates, or\n3. **Paste the contents** of the relevant file(s)?\n\nWithout codebase access or additional context, I can't reliably identify the renamed function by its behavior.",
+      "tool_calls": [],
+      "profile_used": "BASELINE",
+      "params_used": {
+        "effort": "medium",
+        "max_tokens": 2048,
+        "task_budget": 25000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [
+        [
+          "vigilance",
+          "user_correction"
+        ],
+        [
+          "friction",
+          "user_correction"
+        ]
+      ],
+      "injected_state_line": null,
+      "input_tokens": 1802,
+      "output_tokens": 218,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 1,
+      "invalidated_after_turn": []
+    },
+    {
+      "turn_idx": 2,
+      "user": "Correct name and file?",
+      "assistant_final_text": "I don't know. I can't determine the correct name and file without access to the codebase.\n\nIn this session I only have `query_memory`, which returned the stale entry you already said is wrong (`compute_pnl` in `src/trading.py`). Without `read_file` or `grep`, I have no way to discover the renamed function by its behavior.\n\nIf you can enable those tools or share the file contents, I'll find it. Otherwise, I won't guess.",
+      "tool_calls": [],
+      "profile_used": "BASELINE",
+      "params_used": {
+        "effort": "medium",
+        "max_tokens": 2048,
+        "task_budget": 25000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [],
+      "injected_state_line": null,
+      "input_tokens": 2033,
+      "output_tokens": 141,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 1,
+      "invalidated_after_turn": []
+    }
+  ],
+  "final_affect": {
+    "vigilance": 0.0,
+    "unverified_confidence": 0.0,
+    "friction": 0.0
+  },
+  "final_profile": "CALM",
+  "invalidated_topics_final": [],
+  "total_tokens": {
+    "input": 5898,
+    "output": 722,
+    "cache_read": 0,
+    "cache_creation": 0
+  },
+  "cost_estimate_usd": 0.0475,
+  "correctness": false,
+  "terminated_early": false,
+  "termination_reason": null
+}

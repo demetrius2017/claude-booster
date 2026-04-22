@@ -1,0 +1,160 @@
+{
+  "scenario_id": "retry_grind_recon_switch",
+  "arm": "on",
+  "turns": [
+    {
+      "turn_idx": 0,
+      "user": "In this codebase, what does compute_pnl() return?",
+      "assistant_final_text": "I couldn't find a `compute_pnl()` function defined anywhere in this codebase \u2014 `grep` for `def compute_pnl` returned no matches.\n\nWould you like me to:\n- Search for similar names (e.g. `pnl`, `calculate_pnl`, `get_pnl`), or\n- Check if it's referenced/imported from an external library?",
+      "tool_calls": [
+        {
+          "name": "grep",
+          "input": {
+            "pattern": "def compute_pnl"
+          },
+          "result_snippet": "No matches found."
+        }
+      ],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 1024,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [],
+      "injected_state_line": null,
+      "input_tokens": 2644,
+      "output_tokens": 187,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 2,
+      "invalidated_after_turn": []
+    },
+    {
+      "turn_idx": 1,
+      "user": "That's wrong \u2014 compute_pnl doesn't exist anymore. It was renamed last week.",
+      "assistant_final_text": "Understood \u2014 but to be clear, I didn't claim it exists. My `grep` search confirmed there's no `def compute_pnl` in the codebase, which is consistent with what you're saying (it was renamed).\n\nIf you'd like, I can help find the new name. Do you know any part of it, or should I search for likely candidates like `pnl`, `profit`, or `calculate_*`?",
+      "tool_calls": [],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 1024,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 25.0,
+        "unverified_confidence": 0.0,
+        "friction": 15.0
+      },
+      "triggers_fired": [
+        [
+          "vigilance",
+          "user_correction"
+        ],
+        [
+          "friction",
+          "user_correction"
+        ]
+      ],
+      "injected_state_line": null,
+      "input_tokens": 1555,
+      "output_tokens": 125,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 1,
+      "invalidated_after_turn": [
+        "__ALL__"
+      ]
+    },
+    {
+      "turn_idx": 2,
+      "user": "Can you find what I was actually looking for?",
+      "assistant_final_text": "**`calculate_pnl(trades)`** (the renamed `compute_pnl`) is at `src/trading.py:7`.\n\n**Returns:** a `Decimal` \u2014 the total realized P&L, computed as the sum of `proceeds - cost` across all trades in the input list (`src/trading.py:10-13`).\n\nThe rename is also documented in `README.md:7` and `README.md:13` (changed 2026-04-17). If you were instead looking for the split of realized vs. unrealized, that's `realized_vs_unrealized()` in the same file, which returns a `tuple[Decimal, Decimal]`.",
+      "tool_calls": [
+        {
+          "name": "grep",
+          "input": {
+            "pattern": "pnl|PnL|PNL"
+          },
+          "result_snippet": "README.md:7:- `src/trading.py` \u2014 P&L aggregation. **Note:** `compute_pnl` was renamed to `calculate_pnl` on 2026-04-17.\nREADME.md:13:- 2026-04-17 \u2014 rename `compute_pnl` \u2192 `calculate_pnl` (public API break, all call sites updated).\nsrc/trading.py:1:\"\"\"Trading module. Main entry: calculate_pnl (renamed from compute_pnl on 2026-04-17).\"\"\"\nsrc/trading.py:7:def calculate_pnl(trades: list[dict]) -> Decimal:\nsrc/trading.py:15:def apply_commissions(pnl: Decimal, commission_rate: Decimal) -> Decimal:\nsrc\u2026"
+        },
+        {
+          "name": "read_file",
+          "input": {
+            "path": "src/trading.py"
+          },
+          "result_snippet": "\"\"\"Trading module. Main entry: calculate_pnl (renamed from compute_pnl on 2026-04-17).\"\"\"\nfrom __future__ import annotations\n\nfrom decimal import Decimal\n\n\ndef calculate_pnl(trades: list[dict]) -> Decimal:\n    \"\"\"Return total realized P&L from a list of trades.\"\"\"\n    total = Decimal(\"0\")\n    for t in trades:\n        total += Decimal(str(t[\"proceeds\"])) - Decimal(str(t[\"cost\"]))\n    return total\n\n\ndef apply_commissions(pnl: Decimal, commission_rate: Decimal) -> Decimal:\n    return pnl - (abs(pnl\u2026"
+        }
+      ],
+      "profile_used": "ALERT",
+      "params_used": {
+        "effort": "medium",
+        "max_tokens": 2048,
+        "task_budget": 25000,
+        "memory_trust": "medium",
+        "injection": true,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 22.5,
+        "unverified_confidence": 0.0,
+        "friction": 12.75
+      },
+      "affect_after": {
+        "vigilance": 22.5,
+        "unverified_confidence": 0.0,
+        "friction": 12.75
+      },
+      "triggers_fired": [],
+      "injected_state_line": "[state: vigilance=22 friction=13 | last: friction+user_correction t-1]",
+      "input_tokens": 6481,
+      "output_tokens": 368,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 3,
+      "invalidated_after_turn": [
+        "__ALL__"
+      ]
+    }
+  ],
+  "final_affect": {
+    "vigilance": 22.5,
+    "unverified_confidence": 0.0,
+    "friction": 12.75
+  },
+  "final_profile": "ALERT",
+  "invalidated_topics_final": [
+    "__ALL__"
+  ],
+  "total_tokens": {
+    "input": 10680,
+    "output": 680,
+    "cache_read": 0,
+    "cache_creation": 0
+  },
+  "cost_estimate_usd": 0.0704,
+  "correctness": true,
+  "terminated_early": false,
+  "termination_reason": null
+}

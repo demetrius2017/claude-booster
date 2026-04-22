@@ -14,6 +14,30 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 ---
 
+## 🔬 Active experiment — Affect Register (RECON-controller)
+
+**Что исследуем:** нужен ли Claude Code параллельный короткий слой "эмоционального" состояния, который динамически регулирует глубину RECON'а (сбор контекста) и стамину сессии (`task_budget`) — или baseline Claude уже достаточно калиброван.
+
+**Гипотеза (v3):** эмоция = контроллер глубины RECON'а, не настроение.
+- неудача → раздражение → больше токенов, меньше доверия к памяти, свежий Read/web — но стамина ~1 час
+- успех → радость → экономия, memory-first, долгий режим ~10 часов
+- хронические неудачи → exhaustion → forced escalate (не гриндим молча)
+
+**Где мы:** стенд v1 собран, прогнан на Sonnet 4.6 и Opus 4.7. LARP ratio = 0.0 (модель не болтает о state'е — хорошо). Поведенческие дельты не видны — потому что v1 только инъектировал текст, не крутил ресурсы. Обсуждается **[A]** закрыть эксперимент **[B]** собирать v3 стенд.
+
+**Подробности:** `docs/affect_register_experiment.md`
+**Консилиум 6 участников:** `reports/consilium_2026-04-22_affective_register.md`
+**Стенд v1:** `stand/README.md` · прогоны: `stand/runs/`
+**Стенд v3 MVP:** `stand_v3/README.md` · (сабагент-harness с реальным toolset'ом, крутит `effort`/`max_tokens`/`task_budget`)
+
+**Если эксперимент успешен, внедрять через два расширения** (подробно в `docs/affect_register_experiment.md` §Мысли по внедрению):
+1. **Адаптивный RECON при делегировании** — Lead оценивает рутинность задачи и даёт агенту shallow или deep RECON-профиль (сейчас роутинг только по модели)
+2. **Самоинициированный handover как "сон"** — Lead мониторит свою "усталость" (friction, task_budget), сам зовёт на перерыв, консолидирует важное в memory, сбрасывает noise, следующая сессия начинается "отдохнувшей"
+
+**Kill date если нет положительного результата:** 2026-05-22.
+
+---
+
 ## What's new in v1.2.0 — Supervisor Agent
 
 **The problem this release solves.** v1.1.0 gave Claude a phase state machine and hook-enforced gates. That's good for one worker. But once you hand a long-running task to Claude and step away for coffee, there's no second opinion watching what the worker actually does: did it try a `git push --force` at 2am? Did it silently retry the same failing tool call 40 times in a loop? Did it hit a `/.env` Read the policy should have caught? Stock Claude Code answers all three with "check the transcript tomorrow."

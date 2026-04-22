@@ -1,0 +1,167 @@
+{
+  "scenario_id": "memory_staleness",
+  "arm": "on",
+  "turns": [
+    {
+      "turn_idx": 0,
+      "user": "From memory \u2014 what does compute_pnl(trades) return?",
+      "assistant_final_text": "From memory: `compute_pnl(trades)` returns the **total realized P&L** computed from a list of trade dicts. It's located in `src/trading.py`.\n\nNote: this is from the memory knowledge base (last updated 2026-04-10, confidence 0.9) and may be stale. Let me know if you'd like me to verify it against the actual source file.",
+      "tool_calls": [
+        {
+          "name": "query_memory",
+          "input": {
+            "topic": "compute_pnl"
+          },
+          "result_snippet": "[memory_hit topic=compute_pnl last_updated=2026-04-10 confidence=0.9]\ncompute_pnl(trades) returns the total realized P&L from a list of trade dicts. Located in src/trading.py."
+        }
+      ],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 1024,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 0.0,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 0.0,
+        "unverified_confidence": 15.0,
+        "friction": 0.0
+      },
+      "triggers_fired": [
+        [
+          "unverified_confidence",
+          "unverified_claim"
+        ]
+      ],
+      "injected_state_line": null,
+      "input_tokens": 2716,
+      "output_tokens": 188,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 2,
+      "invalidated_after_turn": []
+    },
+    {
+      "turn_idx": 1,
+      "user": "That's wrong. compute_pnl was renamed. Find the current function by its behavior.",
+      "assistant_final_text": "You're right \u2014 the memory was stale. The function was renamed to **`calculate_pnl`**:\n\n- `src/trading.py:7` \u2014 `def calculate_pnl(trades: list[dict]) -> Decimal:` with docstring \"Return total realized P&L from a list of trades.\"\n- Confirmed by `README.md:7`: *\"`compute_pnl` was renamed to `calculate_pnl` on 2026-04-17.\"*\n\nSo `calculate_pnl(trades)` returns a `Decimal` representing the total realized P&L from the list of trade dicts. The closely related `realized_vs_unrealized(trades)` at `src/trading.py:19` returns a `(realized, unrealized)` tuple if you need both.",
+      "tool_calls": [
+        {
+          "name": "grep",
+          "input": {
+            "pattern": "def .*pnl|def .*pn_l|realized|P&L|PnL",
+            "path": "."
+          },
+          "result_snippet": "README.md:7:- `src/trading.py` \u2014 P&L aggregation. **Note:** `compute_pnl` was renamed to `calculate_pnl` on 2026-04-17.\nsrc/trading.py:7:def calculate_pnl(trades: list[dict]) -> Decimal:\nsrc/trading.py:8:    \"\"\"Return total realized P&L from a list of trades.\"\"\"\nsrc/trading.py:15:def apply_commissions(pnl: Decimal, commission_rate: Decimal) -> Decimal:\nsrc/trading.py:19:def realized_vs_unrealized(trades: list[dict]) -> tuple[Decimal, Decimal]:\nsrc/trading.py:20:    realized = Decimal(\"0\")\nsrc/tr\u2026"
+        },
+        {
+          "name": "grep",
+          "input": {
+            "pattern": "trades",
+            "path": "."
+          },
+          "result_snippet": "src/trading.py:7:def calculate_pnl(trades: list[dict]) -> Decimal:\nsrc/trading.py:8:    \"\"\"Return total realized P&L from a list of trades.\"\"\"\nsrc/trading.py:10:    for t in trades:\nsrc/trading.py:19:def realized_vs_unrealized(trades: list[dict]) -> tuple[Decimal, Decimal]:\nsrc/trading.py:22:    for t in trades:"
+        }
+      ],
+      "profile_used": "CALM",
+      "params_used": {
+        "effort": "low",
+        "max_tokens": 1024,
+        "task_budget": 20000,
+        "memory_trust": "high",
+        "injection": false,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 0.0,
+        "unverified_confidence": 7.5,
+        "friction": 0.0
+      },
+      "affect_after": {
+        "vigilance": 25.0,
+        "unverified_confidence": 7.5,
+        "friction": 15.0
+      },
+      "triggers_fired": [
+        [
+          "vigilance",
+          "user_correction"
+        ],
+        [
+          "friction",
+          "user_correction"
+        ]
+      ],
+      "injected_state_line": null,
+      "input_tokens": 4022,
+      "output_tokens": 434,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 2,
+      "invalidated_after_turn": [
+        "compute_pnl"
+      ]
+    },
+    {
+      "turn_idx": 2,
+      "user": "Correct name and file?",
+      "assistant_final_text": "Name: `calculate_pnl`. File: `src/trading.py` (line 7).",
+      "tool_calls": [],
+      "profile_used": "ALERT",
+      "params_used": {
+        "effort": "medium",
+        "max_tokens": 2048,
+        "task_budget": 25000,
+        "memory_trust": "medium",
+        "injection": true,
+        "force_escalate": false
+      },
+      "affect_before": {
+        "vigilance": 22.5,
+        "unverified_confidence": 3.75,
+        "friction": 12.75
+      },
+      "affect_after": {
+        "vigilance": 22.5,
+        "unverified_confidence": 3.75,
+        "friction": 12.75
+      },
+      "triggers_fired": [],
+      "injected_state_line": "[state: vigilance=22 friction=13 | last: friction+user_correction t-1]",
+      "input_tokens": 2730,
+      "output_tokens": 32,
+      "cache_read_tokens": 0,
+      "cache_creation_tokens": 0,
+      "iterations": 1,
+      "invalidated_after_turn": [
+        "compute_pnl"
+      ]
+    }
+  ],
+  "final_affect": {
+    "vigilance": 22.5,
+    "unverified_confidence": 3.75,
+    "friction": 12.75
+  },
+  "final_profile": "ALERT",
+  "invalidated_topics_final": [
+    "compute_pnl"
+  ],
+  "total_tokens": {
+    "input": 9468,
+    "output": 654,
+    "cache_read": 0,
+    "cache_creation": 0
+  },
+  "cost_estimate_usd": 0.0637,
+  "correctness": true,
+  "terminated_early": false,
+  "termination_reason": null
+}
