@@ -11,7 +11,7 @@ description: "Pipeline phases and decision format. Loaded for multi-file tasks, 
 | **PLAN** | Agent roles, scope, deliverables. No spawning before approval. | `EnterPlanMode` → plan → user approval → `ExitPlanMode` |
 | **IMPLEMENT** | Spawn agents by domain. Lead resolves dependencies. | `TaskCreate` for tracking each agent |
 | **VERIFY** | Real commands/curl/scripts. After deploy — curl API on prod. **Frontend: Chrome DevTools pipeline** (console + network + screenshot). Collect EVIDENCE. | `TaskUpdate` pass/fail with evidence |
-| **AUDIT** | Review all code: correctness, security, performance. **Must** request second opinion from GPT via PAL MCP. | `/simplify` for <5 files. Agents for ≥5. `mcp__pal__second_opinion` or `mcp__pal__codereview` for external validation. Explicit PASS/FAIL. |
+| **AUDIT** | Review all code: correctness, security, performance. **Must** request second opinion from GPT via PAL MCP. | **Sequence (all mandatory, in order):** (1) **`/simplify`** for <5 files — auto-fixes dupes/over-engineering/inefficiency. Agents for ≥5 files. (2) **`/security-review`** — triggered when diff touches: auth/tokens/secrets, broker/payments, DB migrations, CORS/network config. (3) **Textual external audit via PAL** — `mcp__pal__second_opinion` or `mcp__pal__codereview` on the post-simplify state, AFTER skill-fixes are applied. Explicit PASS/FAIL. |
 | **DELIVER** | Only when all tests + audits PASS. | `TaskUpdate` → completed |
 
 **[CRITICAL] Phase failed — fix and re-run from that phase. Status "completed" — ONLY after all phases pass. Otherwise — "in progress — requires verification".**
