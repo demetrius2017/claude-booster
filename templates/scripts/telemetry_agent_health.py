@@ -59,6 +59,7 @@ ENV/Files:
 from __future__ import annotations
 
 import argparse
+import collections
 import datetime as _dt
 import json
 import math
@@ -69,9 +70,40 @@ import sqlite3
 import subprocess
 import sys
 
+# Reuse the gates' own CLAUDE_HOME-honouring logs_dir() so telemetry and
+# the enforcement path look at the SAME file. Without this a test (or any
+# install) that sets CLAUDE_HOME would have telemetry read ~/.claude/logs
+# while the gates write to $CLAUDE_HOME/logs — silent miss of bypass
+# attempts is the exact scenario we're trying to surface.
+try:
+    from _gate_common import logs_dir as _gate_logs_dir
+except ImportError:
+    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+    try:
+        from _gate_common import logs_dir as _gate_logs_dir  # type: ignore[no-redef]
+    except ImportError:
+        _gate_logs_dir = None  # type: ignore[assignment]
+
 DB_PATH = pathlib.Path.home() / ".claude" / "rolling_memory.db"
 RULES_DIR = pathlib.Path.home() / ".claude" / "rules"
 AUTOMEMORY_ROOT = pathlib.Path.home() / ".claude" / "projects"
+BYPASS_LOG_NAME = "gate_bypass_attempts.jsonl"
+
+
+def _logs_dir() -> pathlib.Path:
+    """Resolve the gate log directory at call time (env-sensitive)."""
+    if _gate_logs_dir is not None:
+        return pathlib.Path(_gate_logs_dir())
+    base = os.environ.get("CLAUDE_HOME")
+    if base:
+        return pathlib.Path(base) / "logs"
+    return pathlib.Path.home() / ".claude" / "logs"
+
+# How many recent rows of gate_bypass_attempts.jsonl count toward the
+# "last 10 sessions" surveillance signal. One bypass event ≈ one session
+# firing a gate with an off-mode file present, so N=10 is a reasonable
+# proxy. Re-validate once gate telemetry has a month of data.
+BYPASS_RECENT_N = 10
 
 # Per audit_2026-04-18_startup_token_budget §Measurement: fixed always-on
 # overhead from Claude Code harness + deferred tool names + MCP skill list +
@@ -366,6 +398,47 @@ def _cadence(files: list[pathlib.Path], today: _dt.date, window_days: int) -> di
     return {"handovers_in_window": count, "window_days": window_days, "note": note, "ok": ok}
 
 
+def _gate_bypass_attempts(limit: int = BYPASS_RECENT_N) -> dict:
+    """Inspect the tail of ``gate_bypass_attempts.jsonl`` and report counts.
+
+    Returns a dict with ``recent`` (rows in the inspected window),
+    ``refused`` (rows with decision=='bypass_refused'), and ``ok`` (True
+    when no refused rows recently — any refused attempt flips to ⚠).
+    Missing log file → zero counts, ok=True (treat as "no bypasses seen").
+    """
+    bypass_log_file = _logs_dir() / BYPASS_LOG_NAME
+    if not bypass_log_file.is_file():
+        return {"recent": 0, "refused": 0, "ok": True, "note": "log absent"}
+    # O(1) memory tail: deque(maxlen=limit) drops oldest lines as we read.
+    # The entire file is NOT held in memory, which matters once the log
+    # grows past tens of thousands of rows.
+    try:
+        with open(bypass_log_file, "r", encoding="utf-8") as f:
+            if limit and limit > 0:
+                tail_lines = list(collections.deque(f, maxlen=limit))
+            else:
+                tail_lines = list(f)
+    except OSError as exc:
+        return {"recent": 0, "refused": 0, "ok": True, "note": f"log unreadable: {exc}"}
+
+    tail: list[dict] = []
+    for line in tail_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            tail.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    refused = sum(1 for r in tail if r.get("decision") == "bypass_refused")
+    return {
+        "recent": len(tail),
+        "refused": refused,
+        "ok": refused == 0,
+        "target": "0 refused attempts in last 10",
+    }
+
+
 def _prose_line(label: str, text: str, ok: bool) -> str:
     marker = "✓" if ok else "⚠"
     return f"{label}: {text} {marker}"
@@ -430,6 +503,17 @@ def render_prose(project: str, signals: dict, inspected: int, window: int, budge
         )
     )
 
+    by = signals.get("gate_bypass")
+    if by is not None:
+        if by.get("note"):
+            bypass_text = f"{by['recent']} recent ({by['note']})"
+        else:
+            bypass_text = (
+                f"{by['recent']} in last {BYPASS_RECENT_N} sessions "
+                f"({by['refused']} refused)"
+            )
+        lines.append(_prose_line("Gate bypass attempts", bypass_text, by["ok"]))
+
     return "\n".join(lines)
 
 
@@ -456,6 +540,7 @@ def main() -> int:
         "overdue_tags": _overdue_tags(today),
         "stale_citations": _stale_citations(recent_files),
         "cadence": _cadence(all_files, today, args.window),
+        "gate_bypass": _gate_bypass_attempts(),
     }
     budget = _token_budget(project)
     files = recent_files

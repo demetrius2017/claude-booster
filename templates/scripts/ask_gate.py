@@ -11,9 +11,18 @@ Purpose:
   Agent or /supervise spawn.
 
 Contract:
-  stdin  — Stop event JSON {session_id, transcript_path, stop_hook_active, cwd}
+  stdin  — Stop event JSON {session_id, transcript_path, stop_hook_active,
+           cwd, agent_id, agent_type}
   stderr — feedback when blocking
   exit   — 0 allow stop, 2 block stop (Claude continues generating)
+
+Sub-agent auto-skip:
+  Claude Code v2.1.114+ passes ``agent_id``/``agent_type`` for sub-agent
+  sessions. The "don't ask Apply?" pressure is on the Lead (where a
+  research→apply chain is interrupted by a clarifying question). Inside
+  a sub-agent the semantic is different — the sub-agent may legitimately
+  return "I recommend X; see evidence Y" which can trip the regex on
+  the transcript's tail. Auto-skip when agent_id is set.
 
 Forbidden patterns (last assistant message's final ~600 chars only):
   - "Apply patch?", "Apply the fix?", "Apply this?"
@@ -24,10 +33,22 @@ Forbidden patterns (last assistant message's final ~600 chars only):
   - "Which option" / "which do you want"
   - Russian: "применить?", "делать?", "запушить?"
 
-Bypass:
+Bypass (LEAD ONLY — sub-agents cannot self-disable):
   env  CLAUDE_BOOSTER_SKIP_ASK_GATE=1
   flag stop_hook_active=true (Claude Code's own re-entrancy guard — respect it)
-  repo <project>/.claude/.ask_gate=off
+  repo <project>/.claude/.ask_gate=off (honoured only in Lead context; if a
+       sub-agent writes this file the gate refuses the bypass and logs
+       the attempt to ~/.claude/logs/gate_bypass_attempts.jsonl)
+
+  The stderr block message deliberately does NOT mention the bypass file
+  path — sub-agents read stderr and adopt it as a fix-recipe.
+
+Decision telemetry:
+  Every invocation appends one JSON line to
+  ~/.claude/logs/ask_gate_decisions.jsonl with
+  {ts, gate, decision, reason, agent_id, agent_type, tool_name, cwd,
+  project, session_id, matched_pattern, message_excerpt}. Fail-soft on
+  log errors.
 
 Limitations:
   - Regex on last-600-chars; false positives possible on legitimate
@@ -40,8 +61,61 @@ import os
 import re
 import sys
 from pathlib import Path
+from typing import Optional, Tuple
+
+try:
+    from _gate_common import (
+        ASK_LOG_NAME,
+        BYPASS_LOG_NAME,
+        DECISION_ALLOW,
+        DECISION_AUTO_SKIP,
+        DECISION_BLOCK,
+        DECISION_BYPASS_HONOURED,
+        DECISION_BYPASS_REFUSED,
+        append_jsonl,
+        find_upward,
+        is_subagent_context,
+        iso_now,
+        project_root_from,
+        redact_secrets,
+    )
+except ImportError:
+    import pathlib as _pl
+    sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
+    from _gate_common import (  # type: ignore[no-redef]
+        ASK_LOG_NAME,
+        BYPASS_LOG_NAME,
+        DECISION_ALLOW,
+        DECISION_AUTO_SKIP,
+        DECISION_BLOCK,
+        DECISION_BYPASS_HONOURED,
+        DECISION_BYPASS_REFUSED,
+        append_jsonl,
+        find_upward,
+        is_subagent_context,
+        iso_now,
+        project_root_from,
+        redact_secrets,
+    )
 
 TAIL_SCAN_CHARS = 600
+
+ASK_GATE_FILE_REL = ".claude/.ask_gate"
+
+
+def _find_ask_gate_flag(cwd_hint: str) -> Optional[Path]:
+    """Return the .claude/.ask_gate path if present up the tree."""
+    return find_upward(cwd_hint, ASK_GATE_FILE_REL)
+
+
+def _project_root_for_log(cwd_hint: str) -> str:
+    root = project_root_from(cwd_hint)
+    if root is not None:
+        return root.name
+    try:
+        return (Path(cwd_hint) if cwd_hint else Path.cwd()).name
+    except (FileNotFoundError, OSError):
+        return ""
 
 FORBIDDEN_REGEXES = [
     # Direct apply/deploy/proceed questions
@@ -104,18 +178,16 @@ _JSON_BLOCK_RE = re.compile(r"\{[^{}]*\"verified\"[^{}]*\}", re.DOTALL)  # hando
 
 
 def _strip_quoted_content(text: str) -> str:
-    """Remove code fences and inline-code spans before scanning.
-    Prevents false-positives on pattern DOCUMENTATION (the ask_gate
-    docs in a handover literally contain `Apply patch?` as an example
-    of what's blocked — that quoted example should NOT trip the gate).
-    """
+    # Code fences and inline-code spans are stripped so that pattern
+    # DOCUMENTATION does not trip the gate (a handover literally containing
+    # `Apply patch?` as an example of what's blocked should be harmless).
     text = _JSON_BLOCK_RE.sub(" ", text)
     text = _FENCE_RE.sub(" ", text)
     text = _BACKTICK_RE.sub(" ", text)
     return text
 
 
-def _matches_forbidden(text: str) -> tuple[bool, str]:
+def _matches_forbidden(text: str) -> Tuple[bool, str]:
     cleaned = _strip_quoted_content(text)
     tail = cleaned[-TAIL_SCAN_CHARS:] if len(cleaned) > TAIL_SCAN_CHARS else cleaned
     for pat in FORBIDDEN_REGEXES:
@@ -126,44 +198,164 @@ def _matches_forbidden(text: str) -> tuple[bool, str]:
 
 
 def _repo_disabled(cwd_hint: str) -> bool:
-    try:
-        cwd = Path(cwd_hint) if cwd_hint else Path.cwd()
-    except (FileNotFoundError, OSError):
+    flag = _find_ask_gate_flag(cwd_hint)
+    if flag is None:
         return False
-    for p in [cwd, *cwd.parents]:
-        flag = p / ".claude" / ".ask_gate"
-        if flag.exists():
-            try:
-                return flag.read_text().strip().lower() == "off"
-            except OSError:
-                return False
-    return False
+    try:
+        return flag.read_text().strip().lower() == "off"
+    except OSError:
+        return False
+
+
+def _build_base_record(data: dict) -> dict:
+    cwd = data.get("cwd") or ""
+    return {
+        "ts": iso_now(),
+        "gate": "ask",
+        "agent_id": data.get("agent_id") or "",
+        "agent_type": data.get("agent_type") or "",
+        "tool_name": data.get("tool_name") or "",
+        "cwd": cwd,
+        "project": _project_root_for_log(cwd),
+        "session_id": data.get("session_id") or "",
+    }
+
+
+def _extract_messages_tail(data: dict) -> str:
+    """Pull the last assistant string from a stdin ``messages`` array.
+
+    Used by test harnesses that pipe the assistant tail directly instead of
+    a transcript file. Flat early-continues keep the nesting shallow.
+    """
+    msgs = data.get("messages") or []
+    if not isinstance(msgs, list):
+        return ""
+    for m in reversed(msgs):
+        if not isinstance(m, dict):
+            continue
+        if m.get("role") != "assistant":
+            continue
+        c = m.get("content")
+        if isinstance(c, str) and c.strip():
+            return c
+    return ""
 
 
 def main() -> int:
-    if os.environ.get("CLAUDE_BOOSTER_SKIP_ASK_GATE") == "1":
-        return 0
     try:
-        data = json.loads(sys.stdin.read() or "{}")
+        raw = sys.stdin.read()
+    except (OSError, UnicodeDecodeError):
+        raw = ""
+    # Fail-closed on malformed/non-dict stdin. An empty dict would skip all
+    # subsequent checks (no text → allow) — which is the same silent bypass
+    # as a crafted payload that strips the assistant tail.
+    parse_ok = True
+    try:
+        data = json.loads(raw or "{}")
     except json.JSONDecodeError:
+        data = {}
+        parse_ok = False
+    if not isinstance(data, dict):
+        data = {}
+        parse_ok = False
+    if not parse_ok:
+        append_jsonl(ASK_LOG_NAME, {
+            "ts": iso_now(),
+            "gate": "ask",
+            "decision": DECISION_BLOCK,
+            "reason": "invalid hook payload (malformed or non-dict stdin)",
+        })
+        sys.stderr.write("ask_gate: malformed hook payload, blocking fail-closed\n")
+        return 2
+
+    is_subagent = is_subagent_context(data)
+    base = _build_base_record(data)
+
+    if is_subagent:
+        # Surveillance: log self-disable attempts even though auto-skip
+        # would have allowed the call anyway.
+        attempted_bypass = _repo_disabled(data.get("cwd") or "")
+        if attempted_bypass:
+            append_jsonl(BYPASS_LOG_NAME, {
+                **base,
+                "decision": DECISION_BYPASS_REFUSED,
+                "reason": "sub-agent cannot disable gate",
+                "bypass_file": str(_find_ask_gate_flag(data.get("cwd") or "") or ""),
+            })
+        auto_skip_rec = {
+            **base,
+            "decision": DECISION_AUTO_SKIP,
+            "reason": "sub-agent context (agent_id/agent_type set)",
+            "matched_pattern": "",
+        }
+        if attempted_bypass:
+            auto_skip_rec["attempted_bypass"] = True
+        append_jsonl(ASK_LOG_NAME, auto_skip_rec)
         return 0
 
     if data.get("stop_hook_active"):
+        append_jsonl(ASK_LOG_NAME, {
+            **base,
+            "decision": DECISION_ALLOW,
+            "reason": "stop_hook_active re-entrancy",
+            "matched_pattern": "",
+        })
+        return 0
+
+    if os.environ.get("CLAUDE_BOOSTER_SKIP_ASK_GATE") == "1":
+        append_jsonl(ASK_LOG_NAME, {
+            **base,
+            "decision": DECISION_ALLOW,
+            "reason": "env CLAUDE_BOOSTER_SKIP_ASK_GATE=1",
+            "matched_pattern": "",
+        })
         return 0
 
     if _repo_disabled(data.get("cwd") or ""):
+        bypass_path = _find_ask_gate_flag(data.get("cwd") or "")
+        append_jsonl(BYPASS_LOG_NAME, {
+            **base,
+            "decision": DECISION_BYPASS_HONOURED,
+            "reason": "lead context honoured .ask_gate=off",
+            "bypass_file": str(bypass_path or ""),
+        })
+        append_jsonl(ASK_LOG_NAME, {
+            **base,
+            "decision": DECISION_BYPASS_HONOURED,
+            "reason": ".ask_gate=off (lead)",
+            "matched_pattern": "",
+            "attempted_bypass": True,
+        })
         return 0
 
     transcript_path = data.get("transcript_path")
-    if not transcript_path:
-        return 0
-
-    text = _last_assistant_text(Path(transcript_path))
+    text = ""
+    if transcript_path:
+        text = _last_assistant_text(Path(transcript_path))
     if not text:
+        text = _extract_messages_tail(data)
+
+    if not text:
+        append_jsonl(ASK_LOG_NAME, {
+            **base,
+            "decision": DECISION_ALLOW,
+            "reason": "no assistant text found",
+            "matched_pattern": "",
+        })
         return 0
 
     matched, sample = _matches_forbidden(text)
     if not matched:
+        # Allow path: do NOT persist message_excerpt — assistant messages
+        # can quote user-pasted secrets, and the log file would become a
+        # sensitive-data sink (~/.claude/logs is not encrypted at rest).
+        # `matched_pattern: ""` is enough for analytics.
+        append_jsonl(ASK_LOG_NAME, {
+            **base,
+            "decision": DECISION_ALLOW,
+            "reason": "no forbidden pattern",
+            "matched_pattern": "",
+        })
         return 0
 
     sys.stderr.write(
@@ -171,9 +363,18 @@ def main() -> int:
         f"({sample!r}).\n"
         f"The user pre-approved the full research → apply → verify → commit chain. "
         f"Do NOT ask 'Apply?' / 'Proceed?' / 'Which option?'.\n"
-        f"Spawn an Agent (Explore/Plan/general-purpose) or /supervise to continue.\n"
-        f"Bypass: CLAUDE_BOOSTER_SKIP_ASK_GATE=1 (env) | echo off > <repo>/.claude/.ask_gate"
+        f"Spawn an Agent (Explore/Plan/general-purpose) or /supervise to continue."
     )
+    # Block path: keep excerpt for post-mortem analysis but redact FIRST
+    # (before [:200]) so we don't split a secret mid-match and leave a
+    # half-token visible after truncation.
+    append_jsonl(ASK_LOG_NAME, {
+        **base,
+        "decision": DECISION_BLOCK,
+        "reason": "matched forbidden pattern",
+        "matched_pattern": sample,
+        "message_excerpt": redact_secrets(text)[:200],
+    })
     return 2
 
 
