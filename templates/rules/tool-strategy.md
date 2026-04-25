@@ -9,7 +9,7 @@ description: "Tool strategy: direct tools, agents, PAL MCP, Context7, Browser MC
   - `subagent_type: Plan` — architectural planning
   - `general-purpose` — implementation, testing, audit
 - **Skills:** `/simplify` for code review (AUDIT phase). `/frontend-design` for UI tasks with Design Gate.
-- **PAL MCP (GPT-5.4)** — mandatory in AUDIT and consilium phases. `ask` for questions, `thinkdeep` for architecture, `consensus` for debates, `second_opinion`/`codereview` for validation.
+- **PAL MCP (GPT-5.5)** — mandatory in AUDIT and consilium phases. `ask` for questions, `thinkdeep` for architecture, `consensus` for debates, `second_opinion`/`codereview` for validation.
   - **[CRITICAL] PAL file handling:** PAL server **reads files from disk itself** via `relevant_files`. NEVER paste file contents into `step`/`findings`/`problem_context` — GPT won't see them (truncation). Correct pattern:
     - `relevant_files`: array of **absolute paths** (PAL reads them itself, max 1MB/file, token budgeting)
     - `step`: description of current analysis step (what we're doing, what we're checking)
