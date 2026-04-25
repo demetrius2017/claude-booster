@@ -12,7 +12,7 @@ Every Python file — up-to-date module docstring: Purpose, Contract (inputs/out
 # Commands
 
 ## start
-1. Read `README`, `roadmap.html` (or `.md`). For the latest `reports/handover_*.md`, read ONLY the `## Summary` and the "first step tomorrow" / "First step" section (Russian or English) — use `Read` with `offset`/`limit` narrow slices, not the whole file. If those sections cite a specific file needed for today's task, `Read` that too. Only read the full handover if you cannot locate the needed context from the two sections. (Saves ~5,000 tokens per /start — per `reports/audit_2026-04-18_startup_token_budget.md` R2.) If `docs/` or `doc/` folder exists — read key files (architecture, API, setup, conventions).
+1. Read `README.md` (always present). For roadmap, **try `Read roadmap.html` then `Read roadmap.md` — if the tool returns "file does not exist", move on; do NOT probe via shell glob like `ls roadmap.*` (zsh `nomatch` aborts the command before redirects apply, and one shell error in a parallel tool-call block cancels every sibling call).** For the latest `reports/handover_*.md`, read ONLY the `## Summary` and the "first step tomorrow" / "First step" section (Russian or English) — use `Read` with `offset`/`limit` narrow slices, not the whole file. If those sections cite a specific file needed for today's task, `Read` that too. Only read the full handover if you cannot locate the needed context from the two sections. (Saves ~5,000 tokens per /start — per `reports/audit_2026-04-18_startup_token_budget.md` R2.) If `docs/` or `doc/` folder exists — read key files (architecture, API, setup, conventions).
 2. **[CRITICAL] Review existing knowledge base — cross-project, category-biased:**
    - Run: `python ~/.claude/scripts/rolling_memory.py start-context --scope "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"` — lists indexed consilium/audit rows. The git-toplevel resolution ensures the project category is correct even when Claude is launched from a subdirectory; the helper also walks ancestors to find the indexed project root, so a non-git project still resolves correctly. Lines marked `*` are this project's own; `-` are cross-project rows that may still be relevant. Each line has the source path — `Read` the ones relevant to the current task.
    - Topic-driven: same command + `--query "<keywords>"` — FTS5 search across the same corpus, current-project hits ranked first.
@@ -25,7 +25,7 @@ Every Python file — up-to-date module docstring: Purpose, Contract (inputs/out
 3. `EnterPlanMode` → summary report + action plan (informed by prior reports) → the user's approval → `ExitPlanMode`
 
 ## handover
-Auto-collect: `git log --oneline --since="8 hours ago"` + `roadmap.html` (what moved to DONE).
+Auto-collect: `git log --oneline --since="8 hours ago"` + `Read roadmap.html` if it exists (else `roadmap.md`, else skip — do NOT shell-glob it; see /start step 1 for the nomatch+cascade reason).
 Save `reports/handover_YYYY-MM-DD_HHMMSS.md`: summary, tools used, first step tomorrow (copy-paste command), problems/solutions. Update roadmap. Git add + commit + push.
 
 **[CRITICAL] Verify-gate JSON block — required before `git add`/`git commit` of the handover file.**

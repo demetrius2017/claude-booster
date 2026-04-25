@@ -11,6 +11,13 @@ description: "Core rules: anti-loop, work principles, prohibited actions. Always
 - After deploy: curl API endpoints on prod — confirm they work.
 - Config files (docker-compose, Dockerfile, YAML) — Edit tool only, not sed.
 
+# [CRITICAL] Shell hygiene — zsh nomatch + parallel-cancel cascade
+The default Claude Code shell on macOS is zsh, which has `nomatch` enabled by default: a glob with no match (`ls roadmap.*` when no roadmap exists) aborts the command at parse time **before** redirects apply, so `2>/dev/null` does not silence it. **And** when one tool call in a parallel-tool-call block exits non-zero, the harness cancels every sibling call in the same block — one stray glob can void 5 unrelated probes.
+- **Use `Read` for "does file X exist" probes**, not Bash globs. `Read missing.md` returns a clean error; the harness does not cancel siblings on a Read miss.
+- If you must glob in Bash, use `(N)` qualifier on zsh: `ls /path/roadmap.*(N) 2>/dev/null` — `(N)` makes a non-matching glob expand to nothing instead of erroring.
+- Or list candidates explicitly: `ls roadmap.html roadmap.md 2>/dev/null; true` (no glob, exit code suppressed).
+- **Never group fragile probes with critical telemetry in one parallel block** (`/start` canary, `check_review_ages`, `telemetry_agent_health`). Run telemetry in a separate, no-glob block so a typo in an unrelated `ls` cannot kill it.
+
 # Work Principles
 - **[CRITICAL] 51% Rule — do not ask clarifying questions you can answer yourself.**
   If you estimate ≥51% confidence in the answer from available context (code, memory, prior session, reports, obvious defaults), **act on your best guess** and state the assumption in one line ("Assuming X because Y — correct if wrong"). Do NOT interrupt with "which option do you want?" / "should I proceed?" / "did you mean X or Y?" when the evidence already points to an answer.
