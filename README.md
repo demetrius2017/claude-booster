@@ -360,6 +360,10 @@ Key tradeoffs:
 6. **External drive unmount mid-install**: the backup is staged in `$TMPDIR` (local tmpfs), so rollback still works even if `~/.claude/` lives on a drive that disappears.
 7. **FileVault + power-loss**: on macOS we additionally call `F_FULLFSYNC` for each atomic write (platter flush, not just OS buffer) — reduces but does not eliminate the corruption window.
 
+**Recently fixed:**
+
+- **`delegate_gate` no longer treats `$HOME` as a project root** (2026-04-25). Previously, launching Claude from the home directory (or any non-project dir) caused `project_root_from()` to match `~/.claude/` (the global config dir) as a project marker. The delegate-budget counter was then written to `~/.claude/.delegate_counter` and shared across every non-project session, so the very first `Bash`/`Edit` call could be blocked with "budget exhausted (2/1)". Fix: `_gate_common.project_root_from()` now excludes the `~/.claude/` marker when the candidate path equals `Path.home()` (a real `.git/` at HOME is still respected); `delegate_gate.main()` adds a defense-in-depth early-exit when `root == Path.home()`, logging `decision=allow / reason="no project context"`.
+
 **Out of scope (v2):**
 - Native Windows support (requires `fcntl`→`msvcrt`, cmd-dispatched hooks, case-insensitive FS handling, `\\?\` long paths).
 - `uninstall.py` (use manifest to selectively revert).
