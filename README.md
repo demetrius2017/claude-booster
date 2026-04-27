@@ -141,7 +141,7 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | **Architectural decision** | Lost in terminal scrollback | `consilium` spawns 3–5 bio-specific agents + GPT via PAL MCP, auto-saves to `reports/`, auto-indexed for retrieval |
 | **"Did I run the tests?"** | Honor system | `verify_gate.py` PreToolUse hook blocks handover commits without an evidence JSON block |
 | **Hand-off between sessions** | "read the chat log" | Structured `handover` protocol with verify-gate evidence + first-step-tomorrow command |
-| **`CLAUDE.md` bloated to 500 lines** | Everything loaded on every prompt | 9 scoped rules — `paths:` filtering, description-gated loading, always-on kept minimal |
+| **`CLAUDE.md` bloated to 500 lines** | Everything loaded on every prompt | 10 scoped rules — `paths:` filtering, description-gated loading, always-on kept minimal |
 | **Claude re-implements existing code** | No recon-before-code rule | `core.md` enforces Grep-first; auto-consilium fires on high-risk edits |
 | **Same bug class hits you 3 times** | Fix → forget → repeat | Error-taxonomy classifier promotes recurring patterns into `institutional.md` as permanent rules |
 
@@ -154,7 +154,7 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | Claude forgets everything between sessions | No persistent memory layer | `rolling_memory.db` (SQLite + FTS5), ~1900-LOC memory engine, SessionStart hook injects relevant context under a token budget |
 | Every project starts at zero | No cross-project knowledge transfer | `/start` pulls cross-project consilium/audit rows, category-biased ORDER BY, topic-driven FTS5 search |
 | Clarifying-question spam | No confidence threshold | `core.md` 51% Rule — act on best guess, state assumption in one line |
-| `CLAUDE.md` monolith | One big file loaded always | 9 scoped files in `~/.claude/rules/` — frontmatter `paths:` or `description:` gating |
+| `CLAUDE.md` monolith | One big file loaded always | 10 scoped files in `~/.claude/rules/` — frontmatter `paths:` or `description:` gating |
 | Decisions lost | No structured save | `consilium` / `audit` / `handover` protocol, auto-indexed for retrieval |
 | Hooks broken silently | No self-check | `check_rules_loaded.py` canary + 5-signal agent-health telemetry |
 | "Fake evidence" in commits | No verification gate | `verify_gate.py` PreToolUse hook — blocks handover commits without real curl/SQL/HTTP evidence markers |
@@ -195,7 +195,7 @@ Under `~/.claude/`:
 
 | Path | Content |
 |------|---------|
-| `rules/*.md` | 9 rule files — anti-loop, tool strategy, pipeline phases, `/start` + `/handover` + `/consilium` / `/audit` commands, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection |
+| `rules/*.md` | 10 rule files — anti-loop, tool strategy, pipeline phases, `/start` + `/handover` + `/consilium` / `/audit` commands, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection, communication-style ("professor" tone) |
 | `scripts/*.py` | 19 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
 | `scripts/supervisor/` | v1.2.0 Supervisor Agent — 8 modules (`supervisor.py` CLI + orchestration, `policy.py` Tier 0/1/2 engine, `quota.py` admission + circuit-breaker, `detector.py` adaptive-silence FSM, `stream_json_adapter.py` Path A runtime, `persistence.py` sqlite writers, `runtime.py` transport Protocol, `schema.sql`) + `prompts/supervisor_v1.md` Haiku escalation contract |
 | `commands/*.md` | `/phase`, `/supervise`, `/verify-after-edit`, `/verify-flow` slash commands |
@@ -311,7 +311,7 @@ claude-booster/
 ├── requirements.txt          # pyyaml (runtime dep for index_reports.py)
 ├── .gitignore                # excludes all per-user runtime data
 ├── templates/
-│   ├── rules/                # 9 .md files
+│   ├── rules/                # 10 .md files
 │   ├── scripts/              # 12 .py files
 │   ├── commands/             # 2 slash commands
 │   ├── agents/               # 5 protocol files + 2 JSON schemas
