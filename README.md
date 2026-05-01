@@ -236,12 +236,50 @@ Under `~/.claude/`:
 | `rules/*.md` | 11 rule files — anti-loop, tool strategy, pipeline phases, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection, communication-style ("professor" tone), quality/Three-Nos, paired-verification |
 | `scripts/*.py` | 19 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
 | `scripts/supervisor/` | v1.2.0 Supervisor Agent — 8 modules (`supervisor.py` CLI + orchestration, `policy.py` Tier 0/1/2 engine, `quota.py` admission + circuit-breaker, `detector.py` adaptive-silence FSM, `stream_json_adapter.py` Path A runtime, `persistence.py` sqlite writers, `runtime.py` transport Protocol, `schema.sql`) + `prompts/supervisor_v1.md` Haiku escalation contract |
-| `commands/*.md` | `/start`, `/handover`, `/consilium`, `/lead`, `/phase`, `/verify-after-edit`, `/verify-flow`, `/delegate` slash commands |
+| `commands/*.md` | 9 slash commands: `/start`, `/handover`, `/consilium`, `/lead`, `/update`, `/phase`, `/delegate`, `/verify-after-edit`, `/verify-flow` |
 | `agents/*.md`, `*.json` | Agent team protocols — lifecycle, ownership schema, worktree safety, readiness gates, roadmap convention |
 | `settings.json` | Hooks wired to Claude Code, **merged** into any existing config |
 | `.booster-manifest.json` | Installer metadata — SHA-256 per file, version, for idempotency and selective rollback |
 | `.booster-config.json` | Your git author identity (used for rule-template substitution) |
 | `backups/booster_install_*.tar.gz` | Rollback tarball captured before any mutation |
+
+### Slash commands
+
+All commands are on-demand — their instructions load only when you invoke them, saving ~3000 tokens per session compared to the pre-v1.3.0 monolithic approach.
+
+| Command | What it does |
+|---------|-------------|
+| `/start` | Initialize a session: read README, last handover, knowledge base (FTS5 cross-project search), telemetry, canary check, stuck-loop detection. Ends with `EnterPlanMode`. |
+| `/handover` | End-of-session report: auto-collects git log, saves structured report with Goal+KPI, Required reading, Session reference, verify-gate evidence block. |
+| `/consilium` | Multi-agent debate: RECON first (code, not reports), spawn 3–5 bio-specific agents + GPT via PAL MCP, synthesize positions, save to `reports/`. Also handles `/audit`. |
+| `/lead` | Supervised worker: spawns a `claude -p` subprocess under policy gating (Tier 0/1/2 deny-list), quota circuit-breaker, adaptive silence detection. Replaces old `/supervise`. |
+| `/update` | Mid-session auto-update: `git pull --ff-only` + `install.py --yes`. Rules and commands hot-reload immediately. Dirty tree = abort. |
+| `/phase` | Show or set workflow phase (`RECON → PLAN → IMPLEMENT → AUDIT → VERIFY → MERGE`). |
+| `/delegate` | Inspect the delegate-gate budget (Lead must delegate, not do inline work). |
+| `/verify-after-edit` | Post-edit UI verification via Chrome DevTools. |
+| `/verify-flow` | End-to-end UI flow verification. |
+
+### Speed & model routing
+
+Claude Booster routes delegated agents to the right model tier automatically:
+
+| Tier | Model | Use case |
+|------|-------|----------|
+| Trivial | Haiku 4.5 | Grep, file lookup, path search, simple regex |
+| Medium | Sonnet 4.6 | Research, test writing, single-file review, routine audits |
+| **Coding** | **Sonnet 4.6** | **Worker agents writing code: features, fixes, refactors (≥20 lines)** |
+| Hard | Opus 4.7 | Architecture, security review, deep debugging, consilium |
+
+The Lead (orchestrator) always stays on **Opus 4.7** (strongest reasoning). Speed gains come from routing delegates, not weakening the orchestrator.
+
+**For supervised workers** (`/lead`), pass `--model` explicitly:
+```bash
+/lead --model claude-sonnet-4-6 implement the feature from spec.md
+```
+
+**Fast mode** (`/fast` toggle in Claude Code) uses Opus 4.6 with ~2.5x faster output. Available on Claude Max subscription. When active, coding agents inherit the speed benefit naturally.
+
+> **Not on Claude Max?** Fast mode is included in Max subscription at no extra cost. On API/pay-per-token plans, fast mode costs ~6x standard Opus rates. To disable model routing and use a single model for everything, remove the `[CRITICAL] Model routing` section from `~/.claude/rules/tool-strategy.md`.
 
 ---
 
