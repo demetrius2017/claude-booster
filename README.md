@@ -38,6 +38,39 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 ---
 
+## What's new in v1.3.0 — Command architecture + Supervisor UX
+
+**Three problems this release solves:**
+
+1. **`/supervise` naming conflict.** A third-party plugin intercepted the `/supervise` command prefix. Renamed to `/lead` — same supervisor engine, no collision. All rules, README, and delegate references updated.
+
+2. **Long-prompt crash.** The supervisor passed prompts as CLI arguments (`args += [prompt]`), which broke on prompts >100KB with "chunk is longer than limit". Fix: prompt is now written to a tempfile and fed via stdin to the `claude` subprocess.
+
+3. **No model routing for supervised workers.** `supervisor.py` had no `--model` flag — model was only configurable via `CLAUDE_BOOSTER_MODEL` env var. Now: `/lead --model claude-sonnet-4-6 "your task"` works directly.
+
+**Additional changes:**
+
+- **Coding/implementation tier** in `tool-strategy.md` — Worker agents that write code route to `model: "sonnet"` by default. For `/lead`, use `--model claude-sonnet-4-6` explicitly.
+- **Command files extracted** from `rules/commands.md` — `/start`, `/handover`, `/consilium` are now standalone files in `commands/`. Saves ~3000 tokens per session (command instructions load on-demand, not always-on).
+- **Template sync** — `templates/rules/tool-strategy.md` now matches the installed version (model routing section was previously missing).
+
+### `/lead` command
+
+```bash
+# Same as old /supervise, new name:
+/lead fix the bug in foo.py
+
+# With explicit model:
+/lead --model claude-sonnet-4-6 implement the feature from spec.md
+
+# Inspect state:
+/lead sessions
+/lead status --session <id>
+/lead decisions --session <id>
+```
+
+---
+
 ## What's new in v1.2.0 — Supervisor Agent
 
 **The problem this release solves.** v1.1.0 gave Claude a phase state machine and hook-enforced gates. That's good for one worker. But once you hand a long-running task to Claude and step away for coffee, there's no second opinion watching what the worker actually does: did it try a `git push --force` at 2am? Did it silently retry the same failing tool call 40 times in a loop? Did it hit a `/.env` Read the policy should have caught? Stock Claude Code answers all three with "check the transcript tomorrow."
@@ -48,11 +81,11 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 2. **Adaptive silence detector** (`detector.py`). `clamp(3 × median_event_gap, 20s, 180s)` with a 60s post-start grace. A hung or deadlocked worker gets cancelled automatically — no infinite stall, no infinite spend.
 3. **Quota admission control** (`quota.py`). 15% supervisor reserve carved out of the 5-hour Max/Pro window. Circuit-breaker `CLOSED → HALF_OPEN (≥50% usage) → OPEN (≥85%)`. Pre-spawn admission check refuses workers that would blow the session cap.
 4. **Auto-continuation on `max_turns`**. The Claude CLI has an internal turn limit (~25 turns per `-p` invocation). On long multi-file research or multi-step fixes, vanilla `claude -p` just stops mid-task with `error_max_turns`. The supervisor catches that, re-spawns the worker with `--resume <cli_session_id>` and a "continue where you left off" prompt, and stitches the chain together transparently — up to `max_continuations` (default 5) per session. Users write one prompt; the supervisor handles the chaining. Policy + quota + silence detection stay session-wide. Circuit-breaker still trips if cumulative spend blows the 5-hour budget.
-5. **Autonomy directive + auto permission mode**. Every worker is spawned with `--permission-mode auto` (so permission prompts don't stall the subprocess) AND an `--append-system-prompt` that reads: *"Work fully autonomously. Do NOT ask the user clarifying questions or offer A/B choices. If you face a decision, pick the best path using reversibility + scope + risk and proceed."* This is the directive that converts `/supervise` from "another Claude session that falls back to admin mode" into actual autonomous execution. Disable per-repo via `autonomy_directive: false` in supervisor.yaml if you want the worker to behave like a vanilla interactive session.
+5. **Autonomy directive + auto permission mode**. Every worker is spawned with `--permission-mode auto` (so permission prompts don't stall the subprocess) AND an `--append-system-prompt` that reads: *"Work fully autonomously. Do NOT ask the user clarifying questions or offer A/B choices. If you face a decision, pick the best path using reversibility + scope + risk and proceed."* This is the directive that converts `/lead` from "another Claude session that falls back to admin mode" into actual autonomous execution. Disable per-repo via `autonomy_directive: false` in supervisor.yaml if you want the worker to behave like a vanilla interactive session.
 
 Enforcement is **authoritative, not advisory**: any `deny`, `escalate-without-escalator`, `loop-guard`, `blocked-by-quota` verdict triggers `SIGINT → SIGTERM → SIGKILL` on the worker and records the decision to `rolling_memory.db.supervisor_decisions` before the worker can finish the tool call.
 
-### `/supervise` command
+### `/lead` command
 
 ```bash
 # One-shot supervised worker session (prompt + cancel-on-violation).
@@ -67,7 +100,7 @@ python3 ~/.claude/scripts/supervisor/supervisor.py decisions --session <id> --li
 python3 ~/.claude/scripts/supervisor/supervisor.py status --session <id>
 ```
 
-Also available as `/supervise <args>` from inside a Claude Code session — the slash command wraps the same CLI, and `install.py` auto-allowlists the bash pattern so you don't hit the auto-mode classifier on first try.
+Also available as `/lead <args>` from inside a Claude Code session — the slash command wraps the same CLI, and `install.py` auto-allowlists the bash pattern so you don't hit the auto-mode classifier on first try.
 
 ### Per-project config
 
@@ -144,7 +177,7 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | **Next session starts blind on goal** | North star and KPI only exist in your head | `## Goal + KPI` section in every handover — north star + current milestone + KPI, carried forward or updated each session |
 | **Next session reads wrong files first** | No mandatory context list | `## Required reading` section — bulleted list of files with reasons; `/start` reads them before anything else |
 | **"What did we actually try last time?"** | Buried in terminal history, gone by morning | `## Session reference` in handover — UUID + JSONL path; grep the transcript during RECON to understand what failed and why |
-| **`CLAUDE.md` bloated to 500 lines** | Everything loaded on every prompt | 10 scoped rules — `paths:` filtering, description-gated loading, always-on kept minimal |
+| **`CLAUDE.md` bloated to 500 lines** | Everything loaded on every prompt | 11 scoped rules — `paths:` filtering, description-gated loading, always-on kept minimal |
 | **Claude re-implements existing code** | No recon-before-code rule | `core.md` enforces Grep-first; auto-consilium fires on high-risk edits |
 | **Same bug class hits you 3 times** | Fix → forget → repeat | Error-taxonomy classifier promotes recurring patterns into `institutional.md` as permanent rules |
 
@@ -157,7 +190,7 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | Claude forgets everything between sessions | No persistent memory layer | `rolling_memory.db` (SQLite + FTS5), ~1900-LOC memory engine, SessionStart hook injects relevant context under a token budget |
 | Every project starts at zero | No cross-project knowledge transfer | `/start` pulls cross-project consilium/audit rows, category-biased ORDER BY, topic-driven FTS5 search |
 | Clarifying-question spam | No confidence threshold | `core.md` 51% Rule — act on best guess, state assumption in one line |
-| `CLAUDE.md` monolith | One big file loaded always | 10 scoped files in `~/.claude/rules/` — frontmatter `paths:` or `description:` gating |
+| `CLAUDE.md` monolith | One big file loaded always | 11 scoped files in `~/.claude/rules/` — frontmatter `paths:` or `description:` gating |
 | Decisions lost | No structured save | `consilium` / `audit` / `handover` protocol, auto-indexed for retrieval |
 | Hooks broken silently | No self-check | `check_rules_loaded.py` canary + 5-signal agent-health telemetry |
 | "Fake evidence" in commits | No verification gate | `verify_gate.py` PreToolUse hook — blocks handover commits without real curl/SQL/HTTP evidence markers |
@@ -184,9 +217,9 @@ To try the v1.2.0 supervisor on a real worker:
 ```bash
 python3 ~/.claude/scripts/supervisor/supervisor.py your prompt here
 ```
-or from inside a Claude Code session: `/supervise your prompt here` (no `run`, no quotes needed). Decisions land in `~/.claude/rolling_memory.db` (`supervisor_decisions` + `supervisor_quota` tables), stderr in `~/.claude/logs/supervisor/worker_*.stderr.log`.
+or from inside a Claude Code session: `/lead your prompt here` (no `run`, no quotes needed). Decisions land in `~/.claude/rolling_memory.db` (`supervisor_decisions` + `supervisor_quota` tables), stderr in `~/.claude/logs/supervisor/worker_*.stderr.log`.
 
-**Prerequisite for `/supervise`**: the `claude` CLI must be on PATH. The installer warns if it isn't, but the rest of Booster (memory, phase machine, rules, `/start`/`/handover`/`/consilium`) works without it.
+**Prerequisite for `/lead`**: the `claude` CLI must be on PATH. The installer warns if it isn't, but the rest of Booster (memory, phase machine, rules, `/start`/`/handover`/`/consilium`) works without it.
 
 **Staying up-to-date.** `install.py` records the source repo's `repo_path` / `git_sha` / `git_branch` into the manifest. A SessionStart hook (`check_booster_update.py`) runs on every Claude Code session start: it `git fetch`es the booster repo and, if origin is ahead, injects an `additionalContext` notice telling Claude "N commits behind, run `cd <repo> && python3 install.py --yes` to update". For fully-autonomous updates, export `CLAUDE_BOOSTER_AUTO_UPDATE=1` — the hook runs the installer itself and reports the outcome. Offline / no git / tar-extracted install = silent no-op.
 
@@ -200,10 +233,10 @@ Under `~/.claude/`:
 
 | Path | Content |
 |------|---------|
-| `rules/*.md` | 10 rule files — anti-loop, tool strategy, pipeline phases, `/start` + `/handover` + `/consilium` / `/audit` commands, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection, communication-style ("professor" tone) |
+| `rules/*.md` | 11 rule files — anti-loop, tool strategy, pipeline phases, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection, communication-style ("professor" tone), quality/Three-Nos, paired-verification |
 | `scripts/*.py` | 19 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
 | `scripts/supervisor/` | v1.2.0 Supervisor Agent — 8 modules (`supervisor.py` CLI + orchestration, `policy.py` Tier 0/1/2 engine, `quota.py` admission + circuit-breaker, `detector.py` adaptive-silence FSM, `stream_json_adapter.py` Path A runtime, `persistence.py` sqlite writers, `runtime.py` transport Protocol, `schema.sql`) + `prompts/supervisor_v1.md` Haiku escalation contract |
-| `commands/*.md` | `/phase`, `/supervise`, `/verify-after-edit`, `/verify-flow` slash commands |
+| `commands/*.md` | `/start`, `/handover`, `/consilium`, `/lead`, `/phase`, `/verify-after-edit`, `/verify-flow`, `/delegate` slash commands |
 | `agents/*.md`, `*.json` | Agent team protocols — lifecycle, ownership schema, worktree safety, readiness gates, roadmap convention |
 | `settings.json` | Hooks wired to Claude Code, **merged** into any existing config |
 | `.booster-manifest.json` | Installer metadata — SHA-256 per file, version, for idempotency and selective rollback |

@@ -3,7 +3,7 @@ description: Run a supervised worker session (Tier 0/1/2 policy + quota + silenc
 argument-hint: <free-form prompt> | sessions | status --session ID | decisions --session ID
 ---
 
-# Supervise — Claude Booster Supervisor Agent v1.2.0
+# Lead — Claude Booster Supervisor Agent v1.2.0
 
 Spawns a second Claude worker under deterministic policy gating, quota
 admission control, and adaptive silence detection. The worker's tool

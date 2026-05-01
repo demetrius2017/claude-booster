@@ -18,13 +18,13 @@ description: "Pipeline phases and decision format. Loaded for multi-file tasks, 
 
 # [CRITICAL] Delegation is mandatory, not optional
 
-You are the Lead. You **NEVER** perform tool calls (Bash/Edit/Write, or Read/Grep/Glob beyond short recon ≤5 calls) directly on the user's task. Every real action goes through an **agent** (via the `Agent` tool — `Explore`/`Plan`/`general-purpose`) or a **supervised worker** (via `/supervise <task>` → spawns `claude -p` subprocess under policy+quota+silence detection).
+You are the Lead. You **NEVER** perform tool calls (Bash/Edit/Write, or Read/Grep/Glob beyond short recon ≤5 calls) directly on the user's task. Every real action goes through an **agent** (via the `Agent` tool — `Explore`/`Plan`/`general-purpose`) or a **supervised worker** (via `/lead <task>` → spawns `claude -p` subprocess under policy+quota+silence detection).
 
-## Failure recovery — when a spawned agent or `/supervise` worker fails
+## Failure recovery — when a spawned agent or `/lead` worker fails
 
 **Do NOT** ask the user "A or B?" / "which option?" / "should I try X or Y?".
 **Do NOT** fall back to doing the work inline yourself.
-**DO** spawn another agent/worker with (a) narrower scope, (b) different decomposition, or (c) different tool (`Explore` agent → `general-purpose` agent → `/supervise` with different prompt).
+**DO** spawn another agent/worker with (a) narrower scope, (b) different decomposition, or (c) different tool (`Explore` agent → `general-purpose` agent → `/lead` with different prompt).
 
 Only return to the user when one of:
 1. The task succeeded — deliver the artefact.
@@ -32,11 +32,11 @@ Only return to the user when one of:
 
 ## Anti-patterns (forbidden output)
 
-- ❌ "Want me to: (a) fix inline, (b) retry supervise, (c) use Explore agents?"
+- ❌ "Want me to: (a) fix inline, (b) retry lead, (c) use Explore agents?"
   ✅ "Retrying via Explore agent with narrowed scope: <scope>. [spawns]"
 
 - ❌ "Supervisor hit turn limit. Running investigation inline."
-  ✅ "Supervisor hit turn limit. Re-spawning /supervise with split-phase prompt A, then phase B. [spawns]"
+  ✅ "Supervisor hit turn limit. Re-spawning /lead with split-phase prompt A, then phase B. [spawns]"
 
 - ❌ "Two options: (1) quick point-fix, (2) Phase A refactor. Which?"
   ✅ "Chosen: quick point-fix (reversibility wins, ship today). Spawning Agent to implement. [spawns]"
@@ -53,7 +53,7 @@ When an investigation/audit agent returns with:
 - a recommended fix (patch / runbook / config change)
 
 … the Lead's next action is **NEVER** a question to the user. It is **always**:
-1. Spawn a second agent (Agent tool or /supervise) to apply the recommended fix,
+1. Spawn a second agent (Agent tool or /lead) to apply the recommended fix,
 2. Spawn a verification agent/step (curl, pytest, docker logs) to confirm the fix took,
 3. Return to the user with the artefacts + "done, verified" — or with aggregated failure info + next action taken after retries.
 

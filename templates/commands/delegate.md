@@ -66,7 +66,7 @@ Soft rules in `pipeline.md` (*"You are the Lead. Orchestrate agents, do
 not write code directly."*) get interpreted as *"can do tool calls too as
 part of orchestration"* and the Lead ends up doing 20 direct Bash/Edit
 calls inline. Field logs 2026-04-21 had multiple sessions where the Lead
-fell back to inline work after `/supervise` failed. Physical hook = no
+fell back to inline work after `/lead` failed. Physical hook = no
 interpretation room.
 
 ## Behaviour on block
@@ -80,7 +80,7 @@ The Lead orchestrates; delegate via Agent(type=Explore|Plan|general-purpose)
 or `/supervise <task>` (→ python3 <repo>/.claude/scripts/supervisor/supervisor.py <prompt>).
 ```
 
-The tool call fails with exit 2. Lead must spawn an Agent or `/supervise`
+The tool call fails with exit 2. Lead must spawn an Agent or `/lead`
 worker to reset the counter, then can do another direct action.
 
 ## Allowlist (free, always)

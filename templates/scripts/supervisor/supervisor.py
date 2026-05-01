@@ -440,7 +440,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     # REMAINDER gives us a list of tokens — join back into a single prompt.
     prompt = " ".join(args.prompt).strip() if isinstance(args.prompt, list) else (args.prompt or "").strip()
     if not prompt:
-        print("supervisor: empty prompt — nothing to run. Usage: /supervise <your task>", file=sys.stderr)
+        print("supervisor: empty prompt — nothing to run. Usage: /lead <your task>", file=sys.stderr)
         return 2
     # Audit-fix M3: when --cwd is given, default config lookup relative to that project root,
     # not the shell's cwd. Prevents repo-A-configs bleeding into repo-B runs.
@@ -456,7 +456,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     )
     tracker = QuotaTracker(session_id=session_id)
     store = SupervisorPersistence()
-    runtime = StreamJsonRuntime()
+    runtime = StreamJsonRuntime(model=getattr(args, 'model', None))
     sup = Supervisor(runtime=runtime, ctx=ctx, tracker=tracker, store=store,
                      max_continuations=cfg.max_continuations)
     # Stash for use inside supervise()
@@ -537,7 +537,8 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--cwd", help="Working directory for worker + policy scope (default: current directory)")
     run.add_argument("--session", help="Session id (auto if omitted)")
     run.add_argument("--config", help="Path to supervisor.yaml (default: <cwd>/.claude/supervisor.yaml)")
-    # REMAINDER so users can type `/supervise run fix the bug in foo.py` without
+    run.add_argument("--model", help="Model override for the worker (e.g. claude-opus-4-6, claude-sonnet-4-6)")
+    # REMAINDER so users can type `/lead run fix the bug in foo.py` without
     # needing to wrap the prompt in quotes. Flags MUST come before the prompt.
     run.add_argument("prompt", nargs=argparse.REMAINDER, help="Prompt text — quotes optional, spaces fine")
     run.set_defaults(func=_cmd_run)

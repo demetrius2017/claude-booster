@@ -47,6 +47,7 @@ import asyncio
 import json
 import os
 import signal
+import tempfile
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -122,7 +123,6 @@ class StreamJsonRuntime:
         # CLI's prior conversation so auto-chaining after max_turns works.
         if resume_session:
             args += ["--resume", resume_session]
-        args += [prompt]
         # Capture stderr into a per-task log (open file, not a PIPE — avoids
         # H-stderr pipe-buffer deadlock but preserves diagnostics when the
         # worker fails to spawn or emits non-stream-json errors).
@@ -130,13 +130,28 @@ class StreamJsonRuntime:
         log_dir.mkdir(parents=True, exist_ok=True)
         state_stderr_path = log_dir / f"worker_{task_id}.stderr.log"
         stderr_fh = open(state_stderr_path, "wb")
+        # Write prompt to a tempfile and pipe it as stdin to avoid CLI arg
+        # length limits that cause "Separator is found, but chunk is longer
+        # than limit" crashes on long prompts. claude -p reads the prompt
+        # from stdin when no positional arg is present.
+        prompt_fd, prompt_path = tempfile.mkstemp(prefix="supervisor_prompt_", suffix=".txt")
+        try:
+            os.write(prompt_fd, prompt.encode("utf-8"))
+        finally:
+            os.close(prompt_fd)
+        prompt_fh = open(prompt_path, "rb")
         proc = await asyncio.create_subprocess_exec(
             *args,
-            stdin=asyncio.subprocess.DEVNULL,
+            stdin=prompt_fh,
             stdout=asyncio.subprocess.PIPE,
             stderr=stderr_fh,
             cwd=cwd or self.default_cwd,
         )
+        prompt_fh.close()
+        try:
+            os.unlink(prompt_path)
+        except OSError:
+            pass
         state = _TaskState(task_id=task_id, proc=proc, started_monotonic=time.monotonic())
         state.stderr_path = state_stderr_path
         state.reader_task = asyncio.create_task(self._reader(state))
