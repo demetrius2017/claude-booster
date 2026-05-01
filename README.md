@@ -17,6 +17,44 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 ---
 
+## Three quality innovations
+
+Claude Booster ships three mechanisms that address the three failure modes of LLM agents working on multi-session projects:
+
+### 1. Paired Worker+Verifier — kills in-session self-evaluation bias
+
+When Claude delegates a coding task, it spawns **two agents in parallel**: a Worker that implements the change and an independent Verifier that writes an executable acceptance test — without seeing the Worker's prompt or approach. The Lead runs the test and reads the exit code. PASS/FAIL is the test's verdict, never the Lead's judgment of the Worker's code.
+
+**Why this matters:** Single-agent workflows suffer from self-evaluation bias — the same model that wrote the code reviews it and "confidently praises even mediocre work" (Anthropic). The Verifier breaks this loop by testing observable behavior, not implementation details.
+
+**In practice:** Every implementation task in this session used paired verification. The Verifier caught a real bug (awk range pattern in handover format validation) that the Worker missed — exit code 1, classified as V-failure, test fixed, re-run → exit 0. This is the mechanism working as designed.
+
+See `~/.claude/rules/paired-verification.md` for the full protocol: Artifact Contract, W/V/A/E failure classification, test legitimacy standard, skip criteria.
+
+### 2. Temporal-causal 3D memory — kills cross-session stuck loops
+
+Standard memory stores facts. Claude Booster's memory stores **causal chains**: what was tried → what happened → what was concluded → what's still open. The stuck-loop detector hashes normalized topic keywords across handovers and fires when the same problem reappears 3+ times without a `verify_gate=pass` resolution.
+
+**Why this matters:** Without causality, each session re-discovers the same problem, proposes the same fix, and fails the same way — across days or weeks. The 3D structure (time × topic × outcome) lets `/start` detect this pattern and force a reframe (Q1–Q4 questions) before the session repeats the loop.
+
+**In practice:** `rolling_memory.py start-context --stuck-check` surfaces candidates with hash, appearance count, and reframe questions. The session must answer Q1–Q4 or explicitly supersede the topic. Silently re-listing a stuck topic is blocked.
+
+See `~/.claude/scripts/rolling_memory.py` for the hash algorithm and `~/.claude/rules/commands.md` (now `/start` command) for the stuck-loop discipline.
+
+### 3. Model routing + fast mode — 2-4x faster agent execution
+
+Instead of running every agent on Opus 4.7 (slowest, most expensive), Claude Booster routes by task complexity:
+
+- **Grep/lookup** → Haiku 4.5 (10x cheaper, 3x faster)
+- **Code generation** → Sonnet 4.6 (2x faster than Opus, near-equal code quality)
+- **Architecture/security** → Opus 4.7 (full reasoning)
+
+The Lead (orchestrator) stays on Opus 4.7 for synthesis and judgment. Speed gains come from routing **delegates**, not weakening the orchestrator. On Claude Max with `/fast` mode, coding agents get an additional ~2.5x output speed boost.
+
+**Result:** A typical 6-agent parallel task (3 Workers + 3 Verifiers) completes in 60-90 seconds instead of 3-5 minutes — because 5 of 6 agents run on Sonnet/Haiku while only the Lead uses Opus.
+
+---
+
 ## What's new in v1.3.0 — Command architecture + Supervisor UX
 
 **Three problems this release solves:**
@@ -159,6 +197,9 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | **`CLAUDE.md` bloated to 500 lines** | Everything loaded on every prompt | 11 scoped rules — `paths:` filtering, description-gated loading, always-on kept minimal |
 | **Claude re-implements existing code** | No recon-before-code rule | `core.md` enforces Grep-first; auto-consilium fires on high-risk edits |
 | **Same bug class hits you 3 times** | Fix → forget → repeat | Error-taxonomy classifier promotes recurring patterns into `institutional.md` as permanent rules |
+| **Agent writes code, Lead says "looks good"** | Self-evaluation bias — Lead authored the brief, naturally sees the result as matching | Paired Worker+Verifier: independent acceptance test with executable exit code. Lead runs the test, doesn't read the code to judge |
+| **Same bug resurfaces every 3 sessions** | No causal memory — each session re-discovers and re-proposes the same fix | Temporal-causal 3D memory: stuck-loop detector hashes topics across handovers, forces reframe (Q1–Q4) when pattern detected |
+| **Every agent runs on Opus, session takes 10 min** | No model routing — all delegates inherit the Lead's expensive model | 4-tier routing: Haiku for lookups, Sonnet for coding, Opus only for architecture. 2-4x faster, 3-5x cheaper per delegation |
 
 ---
 
@@ -178,6 +219,9 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | Post-mortem impossible: "what did we try?" | Session transcript unreachable | `## Session reference` links the JSONL transcript; RECON agent can grep it for tried approaches, failure modes, rejected alternatives |
 | Personal install breaks on new machine | Manual copy of `~/.claude/` | `install.py` — one command, atomic, idempotent, safe by default |
 | Worker loops on a failing tool call at 2am, burns quota | No watchdog | v1.2.0 Supervisor Agent — `policy.py` + `detector.py` + `quota.py`, SIGINT-ladder-cancels worker on deny / silence / quota breach |
+| Agent self-evaluates its own work | Same model writes and reviews — bias | Paired Worker+Verifier: independent executable acceptance test, exit code = verdict |
+| Same problem loops across sessions | No causal chains in memory | Temporal-causal 3D memory + stuck-loop detector, hash-based recurrence detection |
+| Slow agents burn Opus budget | All delegates on Opus 4.7 | 4-tier model routing (Haiku/Sonnet/Opus) + `/fast` mode for coding agents |
 
 ---
 
