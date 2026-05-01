@@ -134,13 +134,16 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | Daily scenario | Stock Claude Code | With Claude Booster |
 |---|---|---|
 | **New session starts** | Reads `CLAUDE.md`, asks what changed since yesterday | `/start` auto-loads last session's decisions + relevant prior consiliums/audits — scoped to the current project, biased by category |
-| **Finished a hard debugging session** | Wisdom evaporates when you close the laptop | `/handover` captures decisions + next-step command. Next session picks up exactly where you left off |
+| **Finished a hard debugging session** | Wisdom evaporates when you close the laptop | `/handover` captures decisions, Goal+KPI, Required reading list, and session transcript reference. Next session reads exactly what it must before touching code |
 | **Moving to a new project** | Zero context carry-over | FTS5 cross-project search surfaces relevant lessons from every other project you've worked on |
 | **"Which approach do you want?"** | Claude asks, you tie-break, lose a round-trip | **51% Rule**: Claude acts on best guess, states the assumption in one line, you course-correct only if wrong |
 | **Hook silently broken** | Discovered 3 weeks later when something "feels weird" | `check_rules_loaded.py` canary + `telemetry_agent_health.py` surface 5 anti-theater signals every `/start` |
 | **Architectural decision** | Lost in terminal scrollback | `consilium` spawns 3–5 bio-specific agents + GPT via PAL MCP, auto-saves to `reports/`, auto-indexed for retrieval |
 | **"Did I run the tests?"** | Honor system | `verify_gate.py` PreToolUse hook blocks handover commits without an evidence JSON block |
-| **Hand-off between sessions** | "read the chat log" | Structured `handover` protocol with verify-gate evidence + first-step-tomorrow command |
+| **Hand-off between sessions** | "read the chat log" | Structured `handover` with Goal+KPI (north star + measurable KPI), Required reading (files the next session must read before acting), Session reference (JSONL transcript path for RECON), verify-gate evidence |
+| **Next session starts blind on goal** | North star and KPI only exist in your head | `## Goal + KPI` section in every handover — north star + current milestone + KPI, carried forward or updated each session |
+| **Next session reads wrong files first** | No mandatory context list | `## Required reading` section — bulleted list of files with reasons; `/start` reads them before anything else |
+| **"What did we actually try last time?"** | Buried in terminal history, gone by morning | `## Session reference` in handover — UUID + JSONL path; grep the transcript during RECON to understand what failed and why |
 | **`CLAUDE.md` bloated to 500 lines** | Everything loaded on every prompt | 10 scoped rules — `paths:` filtering, description-gated loading, always-on kept minimal |
 | **Claude re-implements existing code** | No recon-before-code rule | `core.md` enforces Grep-first; auto-consilium fires on high-risk edits |
 | **Same bug class hits you 3 times** | Fix → forget → repeat | Error-taxonomy classifier promotes recurring patterns into `institutional.md` as permanent rules |
@@ -158,7 +161,9 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | Decisions lost | No structured save | `consilium` / `audit` / `handover` protocol, auto-indexed for retrieval |
 | Hooks broken silently | No self-check | `check_rules_loaded.py` canary + 5-signal agent-health telemetry |
 | "Fake evidence" in commits | No verification gate | `verify_gate.py` PreToolUse hook — blocks handover commits without real curl/SQL/HTTP evidence markers |
-| Session ends, notes scattered | No handover contract | `/handover` auto-collects git log + roadmap delta, formats structured report with evidence block |
+| Session ends, notes scattered | No handover contract | `/handover` auto-collects git log + roadmap delta; requires Goal+KPI, Required reading, Session reference — structured report that next session can act on, not just read |
+| Next session drifts off the goal | KPI only lives in the current session | `## Goal + KPI` in handover is persistent — copy-forward each session, update only when milestone changes; goal survives context resets |
+| Post-mortem impossible: "what did we try?" | Session transcript unreachable | `## Session reference` links the JSONL transcript; RECON agent can grep it for tried approaches, failure modes, rejected alternatives |
 | Personal install breaks on new machine | Manual copy of `~/.claude/` | `install.py` — one command, atomic, idempotent, safe by default |
 | Worker loops on a failing tool call at 2am, burns quota | No watchdog | v1.2.0 Supervisor Agent — `policy.py` + `detector.py` + `quota.py`, SIGINT-ladder-cancels worker on deny / silence / quota breach |
 
