@@ -41,17 +41,24 @@ Standard memory stores facts. Claude Booster's memory stores **causal chains**: 
 
 See `~/.claude/scripts/rolling_memory.py` for the hash algorithm and `~/.claude/rules/commands.md` (now `/start` command) for the stuck-loop discipline.
 
-### 3. Model routing + fast mode — 2-4x faster agent execution
+### 3. Smart model routing — fast agents without extra cost on Max
 
-Instead of running every agent on Opus 4.7 (slowest, most expensive), Claude Booster routes by task complexity:
+Claude Booster doesn't run every agent on the same model. The Lead routes each delegate to the right tier:
 
-- **Grep/lookup** → Haiku 4.5 (10x cheaper, 3x faster)
-- **Code generation** → Sonnet 4.6 (2x faster than Opus, near-equal code quality)
-- **Architecture/security** → Opus 4.7 (full reasoning)
+| Tier | Model | When |
+|------|-------|------|
+| Trivial | Haiku 4.5 | Grep, file lookup, path search — instant, lightweight |
+| Coding | Sonnet 4.6 | Workers and Verifiers writing code, tests, configs (≥20 lines) |
+| Medium | Sonnet 4.6 | Research, single-file review, routine audits |
+| Hard | Opus 4.7 | Architecture, security review, consilium, deep debugging |
 
-The Lead (orchestrator) stays on Opus 4.7 for synthesis and judgment. Speed gains come from routing **delegates**, not weakening the orchestrator. On Claude Max with `/fast` mode, coding agents get an additional ~2.5x output speed boost.
+The **Lead** (orchestrator) stays on **Opus 4.7** — strongest model for synthesis, routing, and judgment. On Claude Max with `/fast` toggle, the Lead runs on **Opus 4.6 fast output** (~2.5x faster tokens).
 
-**Result:** A typical 6-agent parallel task (3 Workers + 3 Verifiers) completes in 60-90 seconds instead of 3-5 minutes — because 5 of 6 agents run on Sonnet/Haiku while only the Lead uses Opus.
+A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explore agent on Haiku — all in parallel. The Lead orchestrates on Opus. Total wall-clock: 60–90 seconds for what would take 3–5 minutes with everything on one model.
+
+**On Claude Max:** all of this works out of the box, no extra charges. Fast mode, parallel agents, model routing — included in the subscription.
+
+**On API / pay-per-token plans:** model routing still works and actually *saves* money (Haiku and Sonnet are significantly cheaper than Opus). But you're paying per token, so budget accordingly. To disable routing and use a single model, remove the `[CRITICAL] Model routing` section from `~/.claude/rules/tool-strategy.md`.
 
 ---
 
@@ -284,25 +291,20 @@ All commands are on-demand — their instructions load only when you invoke them
 
 ### Speed & model routing
 
-Claude Booster routes delegated agents to the right model tier automatically:
+See [Three quality innovations → Smart model routing](#3-smart-model-routing--fast-agents-without-extra-cost-on-max) above for the full breakdown. Quick reference:
 
 | Tier | Model | Use case |
 |------|-------|----------|
 | Trivial | Haiku 4.5 | Grep, file lookup, path search, simple regex |
-| Medium | Sonnet 4.6 | Research, test writing, single-file review, routine audits |
-| **Coding** | **Sonnet 4.6** | **Worker agents writing code: features, fixes, refactors (≥20 lines)** |
+| Coding / Medium | Sonnet 4.6 | Code generation, research, test writing, reviews |
 | Hard | Opus 4.7 | Architecture, security review, deep debugging, consilium |
 
-The Lead (orchestrator) always stays on **Opus 4.7** (strongest reasoning). Speed gains come from routing delegates, not weakening the orchestrator.
-
-**For supervised workers** (`/lead`), pass `--model` explicitly:
+For supervised workers (`/lead`), pass `--model` explicitly:
 ```bash
 /lead --model claude-sonnet-4-6 implement the feature from spec.md
 ```
 
-**Fast mode** (`/fast` toggle in Claude Code) uses Opus 4.6 with ~2.5x faster output. Available on Claude Max subscription. When active, coding agents inherit the speed benefit naturally.
-
-> **Not on Claude Max?** Fast mode is included in Max subscription at no extra cost. On API/pay-per-token plans, fast mode costs ~6x standard Opus rates. To disable model routing and use a single model for everything, remove the `[CRITICAL] Model routing` section from `~/.claude/rules/tool-strategy.md`.
+**Claude Max:** everything works at no extra cost. **API plans:** model routing saves money (cheaper models for delegates), but budget total token spend.
 
 ---
 
