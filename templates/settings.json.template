@@ -1,10 +1,17 @@
 {
+  "effortLevel": "high",
   "env": {
-    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1"
+    "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS": "1",
+    "ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-opus-4-7",
+    "MAX_THINKING_TOKENS": "12000",
+    "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "80",
+    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "16000"
   },
   "permissions": {
     "allow": [
       "Bash(*)",
+      "Bash(python3 ~/.claude/scripts/supervisor/supervisor.py *)",
+      "Bash(python3 */.claude/scripts/supervisor/supervisor.py *)",
       "Read",
       "Edit",
       "Write",
@@ -41,6 +48,24 @@
       "Bash(* || rm *)",
       "Bash(* | xargs rm *)"
     ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git push -f*)",
+      "Bash(git push * --force*)",
+      "Bash(git push * -f *)",
+      "Bash(git reset --hard*)",
+      "Bash(git clean -f*)",
+      "Bash(git clean -d*)",
+      "Bash(git branch -D*)",
+      "Bash(rm -rf /*)",
+      "Bash(rm -rf ~*)",
+      "Bash(rm -rf $HOME*)",
+      "Bash(kubectl delete*)",
+      "Bash(docker system prune*)",
+      "Bash(docker volume rm*)",
+      "Bash(dd if=*)",
+      "Bash(mkfs*)"
+    ],
     "defaultMode": "auto",
     "additionalDirectories": []
   },
@@ -51,6 +76,22 @@
           {
             "type": "command",
             "command": "${PYTHON} ${CLAUDE_HOME}/scripts/memory_session_start.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          },
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/check_booster_update.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/phase_prompt_inject.py",
             "source": "booster@${BOOSTER_VERSION}"
           }
         ]
@@ -63,6 +104,45 @@
           {
             "type": "command",
             "command": "${PYTHON} ${CLAUDE_HOME}/scripts/verify_gate.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|NotebookEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/require_task.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          },
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/phase_gate.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          },
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/delegate_gate.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash|Agent|TaskCreate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/delegate_gate.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/approval_counter.py",
             "source": "booster@${BOOSTER_VERSION}"
           }
         ]
@@ -79,9 +159,36 @@
         ]
       }
     ],
+    "TaskCompleted": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/require_evidence.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/preserve_plan_context.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      }
+    ],
     "Stop": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/ask_gate.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          },
           {
             "type": "command",
             "command": "${PYTHON} ${CLAUDE_HOME}/scripts/memory_session_end.py",

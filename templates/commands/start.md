@@ -1,0 +1,22 @@
+---
+description: "Initialize a session: read README, handover, knowledge base, telemetry, then plan."
+---
+
+1. Read `README.md` (always present). For roadmap, **try `Read roadmap.html` then `Read roadmap.md` — if the tool returns "file does not exist", move on; do NOT probe via shell glob like `ls roadmap.*` (zsh `nomatch` aborts the command before redirects apply, and one shell error in a parallel tool-call block cancels every sibling call).** For the latest `reports/handover_*.md`, read ONLY the `## Summary`, the "first step tomorrow" / "First step" section (Russian or English), and the `## Required reading` section — use `Read` with `offset`/`limit` narrow slices, not the whole file. Read every file listed under `## Required reading` before touching any code. If those sections cite a specific file needed for today's task, `Read` that too. Only read the full handover if you cannot locate the needed context from these sections. (Saves ~5,000 tokens per /start — per `reports/audit_2026-04-18_startup_token_budget.md` R2.) If `docs/` or `doc/` folder exists — read key files (architecture, API, setup, conventions).
+2. **[CRITICAL] Review existing knowledge base — cross-project, category-biased:**
+   - Run: `python ~/.claude/scripts/rolling_memory.py start-context --scope "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"` — lists indexed consilium/audit rows. The git-toplevel resolution ensures the project category is correct even when Claude is launched from a subdirectory; the helper also walks ancestors to find the indexed project root, so a non-git project still resolves correctly. Lines marked `*` are this project's own; `-` are cross-project rows that may still be relevant. Each line has the source path — `Read` the ones relevant to the current task.
+   - Topic-driven: same command + `--query "<keywords>"` — FTS5 search across the same corpus, current-project hits ranked first.
+   - Extract from each read: decisions made, rejected alternatives, identified risks, recommendations.
+   - Factor these decisions into the plan — do not revisit what was already justified unless context has changed.
+   - **If `start-context` returns "(no consilium/audit reports indexed...)"** or "DB not initialized": run `python ~/.claude/scripts/index_reports.py` once, then retry. Indexer is idempotent.
+   - **Tag hygiene check**: `python ~/.claude/scripts/check_review_ages.py` — surfaces `[UNDER REVIEW]` tags that have passed their `resolve by` date or are missing canonical structure. Exit 0 = clean; exit 1 = at least one OVERDUE/MALFORMED line on stdout. Any finding must be resolved (retag `[SUPERSEDED by ...]` with replacement rule, restore to `[ACTIVE]`, or delete) before the session's main task — overdue tags are the T2.3 supersession mechanism rotting, per scenario #4.
+   - **Rules-load canary**: `python ~/.claude/scripts/check_rules_loaded.py` — echoes the expected canary token. **Cross-check**: search the current session's loaded instructions for the same token. If the file is OK on disk but the token is not visible in Claude's system-reminder / loaded-rules, the `~/.claude/rules/` auto-load mechanism is broken (likely hook/upgrade regression, scenario #7). Surface the mismatch to the user before proceeding with the session's main task.
+   - **Agent-health telemetry**: `python ~/.claude/scripts/telemetry_agent_health.py` — prints 5 anti-theater signals (evidence density, N/A ratio, overdue [UNDER REVIEW] tags, stale citations, session cadence). Informational — always exits 0. `⚠` markers surface regressions that should be acknowledged in the planning step. Reference at least one signal value in handover if any is non-✓. JSON mode available: `--json` for hooks/scripts. Reconsider MCP 2026-06-18 if agent starts parsing prose or needs cross-session queries the script can't answer.
+   - **Stuck-loop discipline**: when `start-context --stuck-check` emits
+     `=== STUCK LOOP CANDIDATE ===`, before `EnterPlanMode` you MUST answer
+     reframe-questions Q1–Q4 inline (one paragraph each). If answers
+     justify continuing — proceed; if not — soft-delete the topic via
+     `python ~/.claude/scripts/rolling_memory.py forget --id <N>` AND drop
+     it from the next handover's First-step. Silently re-listing the topic
+     without answering Q1–Q4 means the next /start re-fires the block.
+3. `EnterPlanMode` → summary report + action plan (informed by prior reports) → the user's approval → `ExitPlanMode`

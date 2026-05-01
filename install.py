@@ -56,7 +56,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-BOOSTER_VERSION = "1.0.1"
+BOOSTER_VERSION = "1.3.0"
 REPO_ROOT = Path(__file__).resolve().parent
 TEMPLATES = REPO_ROOT / "templates"
 CLAUDE_HOME = Path.home() / ".claude"
@@ -269,6 +269,20 @@ def preflight() -> None:
             "The Claude Booster memory engine requires FTS5 for cross-project search.",
         )
 
+    # v1.2.0 supervisor prereq: the `claude` CLI must be reachable via PATH
+    # (supervisor.py subprocess-execs it to spawn the worker). Warn-only —
+    # users can still install and use the rest of Booster without it; only
+    # `/supervise run` will error at runtime.
+    claude_bin = shutil.which("claude")
+    if claude_bin is None:
+        log(
+            "`claude` CLI not on PATH. /supervise <task> will fail at "
+            "runtime (subprocess cannot spawn the worker). Install Claude "
+            "Code from https://claude.com/claude-code — everything else in "
+            "Booster works without it.",
+            "WARN",
+        )
+
     # OneDrive / Dropbox / iCloud detection (cloud-sync folder warning).
     sync_markers = ("onedrive", "dropbox", "google drive", "icloud")
     if any(m in str(CLAUDE_HOME).lower() for m in sync_markers):
@@ -295,6 +309,10 @@ def enumerate_template_files() -> list[tuple[Path, Path]]:
             if src.name.startswith(".") or "__pycache__" in src.parts:
                 continue
             if src.name.endswith((".bak", ".pyc", ".pyo")):
+                continue
+            # Exclude test suites — supervisor ships tests in-repo but they
+            # don't belong in the user's ~/.claude/ tree.
+            if "tests" in src.parts:
                 continue
             rel = src.relative_to(TEMPLATES)
             pairs.append((src, CLAUDE_HOME / rel))
@@ -498,6 +516,13 @@ def merge_settings(user: dict, booster: dict) -> dict:
     # enabledPlugins, mcpServers — preserve user verbatim, do not inject
     result.setdefault("enabledPlugins", {})
 
+    # top-level simple keys: adopt booster default only when user has no value.
+    # User overrides (e.g., effortLevel=max, skipAutoPermissionPrompt=true)
+    # are preserved verbatim.
+    for key in ("effortLevel", "skipAutoPermissionPrompt"):
+        if key in booster and key not in result:
+            result[key] = booster[key]
+
     # ownership marker
     result["_booster"] = booster["_booster"]
 
@@ -641,6 +666,29 @@ def write_settings(dry_run: bool) -> tuple[dict, str]:
     return merged, diff
 
 
+def _git_state(repo: Path) -> dict:
+    """Capture repo/sha/branch so check_booster_update.py can detect drift.
+
+    Returns empty dict when repo isn't a git checkout (e.g. tar-extracted).
+    """
+    if not (repo / ".git").exists():
+        return {}
+    import subprocess
+    try:
+        sha = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "HEAD"], text=True, timeout=3,
+        ).strip()
+        branch = subprocess.check_output(
+            ["git", "-C", str(repo), "rev-parse", "--abbrev-ref", "HEAD"], text=True, timeout=3,
+        ).strip()
+        remote = subprocess.check_output(
+            ["git", "-C", str(repo), "remote", "get-url", "origin"], text=True, timeout=3,
+        ).strip()
+        return {"repo_path": str(repo), "git_sha": sha, "git_branch": branch, "git_remote": remote}
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError):
+        return {"repo_path": str(repo)}
+
+
 def write_manifest(files: list[dict], settings_sha: str) -> None:
     manifest = {
         "version": BOOSTER_VERSION,
@@ -650,6 +698,7 @@ def write_manifest(files: list[dict], settings_sha: str) -> None:
         "files": files,
         "settings_sha256": settings_sha,
         "settings_patch_ids": [f"booster@{BOOSTER_VERSION}"],
+        **_git_state(REPO_ROOT),  # repo_path / git_sha / git_branch / git_remote
     }
     atomic_write(
         MANIFEST_PATH,
@@ -811,8 +860,18 @@ def main() -> int:
         )
 
     if not actions["write"] and state == "BOOSTER_SAME":
-        log("nothing to do — already at current version")
-        return 0
+        # Even when no files changed, settings.json.template may have been
+        # edited (new allow-list patterns, hooks, env vars). Check for drift
+        # and short-circuit only if the merged settings are byte-identical
+        # to what's already on disk.
+        settings_target = CLAUDE_HOME / "settings.json"
+        current_bytes = settings_target.read_bytes() if settings_target.exists() else b""
+        merged_preview, _ = write_settings(dry_run=True)
+        preview_bytes = (json.dumps(merged_preview, indent=2) + "\n").encode()
+        if current_bytes == preview_bytes:
+            log("nothing to do — already at current version")
+            return 0
+        log("settings.json drift detected — will rewrite")
 
     if args.dry_run:
         log("=== DRY RUN ===")

@@ -8,8 +8,17 @@ description: "Tool strategy: direct tools, agents, PAL MCP, Context7, Browser MC
   - `subagent_type: Explore` — codebase search
   - `subagent_type: Plan` — architectural planning
   - `general-purpose` — implementation, testing, audit
+- **[CRITICAL] Model routing for delegated agents — Lead decides by complexity, Lead itself stays on Opus 4.7 (1M):**
+  Pass explicit `model` param to `Agent` tool. Default (omitted) inherits Lead's Opus 4.7 — **do not** leave it blank for mechanical work, that burns Opus budget.
+  - **Trivial / mechanical** (grep, file read, path lookup, simple regex edit, boilerplate, "find X in repo") → `model: "haiku"` — Haiku 4.5, fastest, cheapest.
+  - **Medium** (implementation of a defined change, targeted research, test writing, single-file code review, standard /simplify passes, routine audits) → `model: "sonnet"` — Sonnet 4.6, fast default for most delegations.
+  - **Coding / implementation** (Worker agents that write code: features, bug fixes, refactors, test files, config changes producing ≥20 lines) → `model: "sonnet"` — Sonnet 4.6, optimized for code generation speed+quality. For supervised workers via `/lead`, use `--model claude-sonnet-4-6` explicitly. When the session runs in `/fast` mode (Opus 4.6 fast output), coding agents inherit the speed benefit naturally.
+  - **Hard** (architecture design, cross-system reasoning, security review of auth/broker/payments, deep debugging with unknown root cause, consilium agents, Round-2 audits, synthesis of 3+ agent outputs) → `model: "opus"` — inherits Opus 4.7.
+  - **Tie-breakers:** if the agent will write ≥20 lines of non-boilerplate code → `sonnet`. If the task has a "why" question (root cause, trade-offs, design) → `opus`. If the task is purely "what / where" (locate, list, extract) → `haiku` is enough.
+  - **Do not downgrade the Lead** via `ANTHROPIC_DEFAULT_OPUS_MODEL` / settings.json `model` — the Lead orchestrates, synthesises, and decides routing; that requires the strongest model. Speed gains come from routing delegates, not from weakening the orchestrator.
+- **[CRITICAL] /lead model override for supervised workers:** When spawning workers via `/lead`, always pass `--model` explicitly. Default: `--model claude-sonnet-4-6` for coding tasks. Use `--model claude-opus-4-6` only when the task requires deep reasoning AND fast output. Never omit `--model` — without it, the worker inherits whatever `CLAUDE_BOOSTER_MODEL` env var is set to (or no model override at all).
 - **Skills:** `/simplify` for code review (AUDIT phase). `/frontend-design` for UI tasks with Design Gate.
-- **PAL MCP (GPT-5.4)** — mandatory in AUDIT and consilium phases. `ask` for questions, `thinkdeep` for architecture, `consensus` for debates, `second_opinion`/`codereview` for validation.
+- **PAL MCP (GPT-5.5)** — mandatory in AUDIT and consilium phases. `ask` for questions, `thinkdeep` for architecture, `consensus` for debates, `second_opinion`/`codereview` for validation.
   - **[CRITICAL] PAL file handling:** PAL server **reads files from disk itself** via `relevant_files`. NEVER paste file contents into `step`/`findings`/`problem_context` — GPT won't see them (truncation). Correct pattern:
     - `relevant_files`: array of **absolute paths** (PAL reads them itself, max 1MB/file, token budgeting)
     - `step`: description of current analysis step (what we're doing, what we're checking)

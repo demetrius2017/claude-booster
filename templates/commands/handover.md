@@ -1,0 +1,52 @@
+---
+description: "End-of-session handover: auto-collect git log, save structured report with Goal+KPI, Required reading, Session reference, verify-gate evidence."
+---
+
+Auto-collect: `git log --oneline --since="8 hours ago"` + `Read roadmap.html` if it exists (else `roadmap.md`, else skip — do NOT shell-glob it; see /start step 1 for the nomatch+cascade reason).
+Save `reports/handover_YYYY-MM-DD_HHMMSS.md` with the following required sections: summary, tools used, first step tomorrow (copy-paste command), problems/solutions, **plus these three mandatory sections:**
+
+**`## Goal + KPI`** — three sub-items:
+- *North Star*: one sentence — what the project track achieves long-term.
+- *Current milestone*: what this sprint/session was targeting.
+- *KPI*: a measurable success criterion. Copy from the prior handover unless the milestone changed; update if it did.
+
+**`## Required reading`** — bulleted list of `path` + one-line reason why the next session MUST read it before touching any code. At minimum: this handover file itself. Add any file whose current state the next session cannot safely ignore (e.g. a config whose format changed, a module with a fresh invariant, a migration that altered schema).
+
+**`## Session reference`** — obtain via this snippet and paste the result:
+```bash
+ls -t "$HOME/.claude/projects/$(git rev-parse --show-toplevel 2>/dev/null | sed 's|/|-|g')"/*.jsonl 2>/dev/null | head -1
+```
+Format as: `Session UUID: <uuid>  JSONL: <full-path>`. Add a one-line note that this JSONL can be grepped during RECON to understand what was tried and what failed in this session.
+
+Update roadmap. Git add + commit + push.
+
+**[CRITICAL] Verify-gate JSON block — required before `git add`/`git commit` of the handover file.**
+Before running `git add reports/handover_*.md` or `git commit … reports/handover_*.md`, emit one of these as an assistant text block (the PreToolUse hook `verify_gate.py` scans the last 200 transcript lines for it):
+
+```json
+{"verified": {"status": "pass", "evidence": ["<strong-evidence-1>", "<strong-evidence-2>"], "reason_na": null}}
+```
+
+or, for docs-only sessions:
+
+```json
+{"verified": {"status": "na", "evidence": [], "reason_na": "<why no runtime change to verify>"}}
+```
+
+Strong evidence must include a recognised marker (`curl`, `wget`, `psql`, `sqlite3`, `SELECT`, `PRAGMA`, `HTTP/`, `docker`, `kubectl`, `DevTools`, `pytest`, `exit=<N>`) AND:
+- for HTTP/curl/wget: a 1xx-5xx status code in the same entry;
+- for SQL/DB: a rowcount or `N rows` marker.
+
+Automatically rejected (fake-evidence patterns):
+- `localhost` / `127.0.0.1` as target — must be a real staging/prod URL;
+- `|| true` — swallows failures;
+- `curl -s` without `--fail` / `-o` / `| tee` — suppresses both exit code and body.
+
+`status='na'` is allowed only when `git diff --cached --name-only` touches exclusively allowlisted paths: `docs/`, `reports/`, `audits/`, `.claude/`, `tests/`, `*.md`, `*.txt`, `README*`. Any Python/TypeScript/Dockerfile/YAML change requires `status='pass'` with evidence.
+
+Per-project control via `.claude/CLAUDE.md` YAML frontmatter key `verify_gate: enforcing|warn|off`:
+- `enforcing` — hook blocks the commit (exit 2);
+- `warn` — hook logs to stderr and `~/.claude/logs/verify_gate_decisions.jsonl` but does not block;
+- `off` — hook is a no-op (default for projects without `deploy/` or `.github/workflows/`).
+
+Decisions log (every fire): `~/.claude/logs/verify_gate_decisions.jsonl`. Review weekly — projects silently stuck on `off` are visible there.
