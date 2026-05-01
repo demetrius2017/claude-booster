@@ -12,7 +12,7 @@ Every Python file — up-to-date module docstring: Purpose, Contract (inputs/out
 # Commands
 
 ## start
-1. Read `README.md` (always present). For roadmap, **try `Read roadmap.html` then `Read roadmap.md` — if the tool returns "file does not exist", move on; do NOT probe via shell glob like `ls roadmap.*` (zsh `nomatch` aborts the command before redirects apply, and one shell error in a parallel tool-call block cancels every sibling call).** For the latest `reports/handover_*.md`, read ONLY the `## Summary` and the "first step tomorrow" / "First step" section (Russian or English) — use `Read` with `offset`/`limit` narrow slices, not the whole file. If those sections cite a specific file needed for today's task, `Read` that too. Only read the full handover if you cannot locate the needed context from the two sections. (Saves ~5,000 tokens per /start — per `reports/audit_2026-04-18_startup_token_budget.md` R2.) If `docs/` or `doc/` folder exists — read key files (architecture, API, setup, conventions).
+1. Read `README.md` (always present). For roadmap, **try `Read roadmap.html` then `Read roadmap.md` — if the tool returns "file does not exist", move on; do NOT probe via shell glob like `ls roadmap.*` (zsh `nomatch` aborts the command before redirects apply, and one shell error in a parallel tool-call block cancels every sibling call).** For the latest `reports/handover_*.md`, read ONLY the `## Summary`, the "first step tomorrow" / "First step" section (Russian or English), and the `## Required reading` section — use `Read` with `offset`/`limit` narrow slices, not the whole file. Read every file listed under `## Required reading` before touching any code. If those sections cite a specific file needed for today's task, `Read` that too. Only read the full handover if you cannot locate the needed context from these sections. (Saves ~5,000 tokens per /start — per `reports/audit_2026-04-18_startup_token_budget.md` R2.) If `docs/` or `doc/` folder exists — read key files (architecture, API, setup, conventions).
 2. **[CRITICAL] Review existing knowledge base — cross-project, category-biased:**
    - Run: `python ~/.claude/scripts/rolling_memory.py start-context --scope "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"` — lists indexed consilium/audit rows. The git-toplevel resolution ensures the project category is correct even when Claude is launched from a subdirectory; the helper also walks ancestors to find the indexed project root, so a non-git project still resolves correctly. Lines marked `*` are this project's own; `-` are cross-project rows that may still be relevant. Each line has the source path — `Read` the ones relevant to the current task.
    - Topic-driven: same command + `--query "<keywords>"` — FTS5 search across the same corpus, current-project hits ranked first.
@@ -26,7 +26,22 @@ Every Python file — up-to-date module docstring: Purpose, Contract (inputs/out
 
 ## handover
 Auto-collect: `git log --oneline --since="8 hours ago"` + `Read roadmap.html` if it exists (else `roadmap.md`, else skip — do NOT shell-glob it; see /start step 1 for the nomatch+cascade reason).
-Save `reports/handover_YYYY-MM-DD_HHMMSS.md`: summary, tools used, first step tomorrow (copy-paste command), problems/solutions. Update roadmap. Git add + commit + push.
+Save `reports/handover_YYYY-MM-DD_HHMMSS.md` with the following required sections: summary, tools used, first step tomorrow (copy-paste command), problems/solutions, **plus these three mandatory sections:**
+
+**`## Goal + KPI`** — three sub-items:
+- *North Star*: one sentence — what the project track achieves long-term.
+- *Current milestone*: what this sprint/session was targeting.
+- *KPI*: a measurable success criterion. Copy from the prior handover unless the milestone changed; update if it did.
+
+**`## Required reading`** — bulleted list of `path` + one-line reason why the next session MUST read it before touching any code. At minimum: this handover file itself. Add any file whose current state the next session cannot safely ignore (e.g. a config whose format changed, a module with a fresh invariant, a migration that altered schema).
+
+**`## Session reference`** — obtain via this snippet and paste the result:
+```bash
+ls -t "$HOME/.claude/projects/$(git rev-parse --show-toplevel 2>/dev/null | sed 's|/|-|g')"/*.jsonl 2>/dev/null | head -1
+```
+Format as: `Session UUID: <uuid>  JSONL: <full-path>`. Add a one-line note that this JSONL can be grepped during RECON to understand what was tried and what failed in this session.
+
+Update roadmap. Git add + commit + push.
 
 **[CRITICAL] Verify-gate JSON block — required before `git add`/`git commit` of the handover file.**
 Before running `git add reports/handover_*.md` or `git commit … reports/handover_*.md`, emit one of these as an assistant text block (the PreToolUse hook `verify_gate.py` scans the last 200 transcript lines for it):
