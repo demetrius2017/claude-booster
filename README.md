@@ -41,7 +41,7 @@ Standard memory stores facts. Claude Booster's memory stores **causal chains**: 
 
 See `~/.claude/scripts/rolling_memory.py` for the hash algorithm and `~/.claude/rules/commands.md` (now `/start` command) for the stuck-loop discipline.
 
-### 3. Smart model routing — fast agents without extra cost on Max
+### 3. Smart model routing — right model for the right task
 
 Claude Booster doesn't run every agent on the same model. The Lead routes each delegate to the right tier:
 
@@ -52,11 +52,11 @@ Claude Booster doesn't run every agent on the same model. The Lead routes each d
 | Medium | Sonnet 4.6 | Research, single-file review, routine audits |
 | Hard | Opus 4.7 | Architecture, security review, consilium, deep debugging |
 
-The **Lead** (orchestrator) stays on **Opus 4.7** — strongest model for synthesis, routing, and judgment. On Claude Max with `/fast` toggle, the Lead runs on **Opus 4.6 fast output** (~2.5x faster tokens).
+The **Lead** (orchestrator) stays on **Opus 4.7** — strongest model for synthesis, routing, and judgment. Optionally, with `/fast` toggle, the Lead runs on **Opus 4.6 fast output** (~2.5x faster tokens).
 
 A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explore agent on Haiku — all in parallel. The Lead orchestrates on Opus. Total wall-clock: 60–90 seconds for what would take 3–5 minutes with everything on one model.
 
-**On Claude Max:** all of this works out of the box, no extra charges. Fast mode, parallel agents, model routing — included in the subscription.
+**On Claude Max:** model routing (Haiku/Sonnet/Opus delegation) works out of the box within the subscription. **Fast mode is NOT included in the Max subscription** — it is billed as extra usage at $30/$150 per MTok from the first token, even if you have remaining plan usage. Enable with `/fast` only when speed justifies the cost.
 
 **On API / pay-per-token plans:** model routing still works and actually *saves* money (Haiku and Sonnet are significantly cheaper than Opus). But you're paying per token, so budget accordingly. To disable routing and use a single model, remove the `[CRITICAL] Model routing` section from `~/.claude/rules/tool-strategy.md`.
 
@@ -304,7 +304,7 @@ For supervised workers (`/lead`), pass `--model` explicitly:
 /lead --model claude-sonnet-4-6 implement the feature from spec.md
 ```
 
-**Claude Max:** everything works at no extra cost. **API plans:** model routing saves money (cheaper models for delegates), but budget total token spend.
+**Claude Max:** model routing (Haiku/Sonnet/Opus) is included in the subscription. **Fast mode is extra usage — $30/$150 MTok, billed separately.** Enable with `/fast` when needed. **API plans:** model routing saves money (cheaper models for delegates), but budget total token spend.
 
 ---
 
