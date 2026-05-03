@@ -8,8 +8,8 @@ description: "Pipeline phases and decision format. Loaded for multi-file tasks, 
 
 | Phase | Action | Mechanism |
 |-------|--------|-----------|
-| **PLAN** | Agent roles, scope, deliverables. No spawning before approval. | `EnterPlanMode` → plan → user approval → `ExitPlanMode` |
-| **IMPLEMENT** | Spawn agents by domain. Lead resolves dependencies. | `TaskCreate` for tracking each agent |
+| **PLAN** | Agent roles, scope, deliverables. No spawning before approval. | `EnterPlanMode` → plan → Dmitry's approval → `ExitPlanMode` |
+| **IMPLEMENT** | Spawn agents by domain. Lead resolves dependencies. **Each work-producing `Agent` spawn pairs with an independent Verifier agent** that produces an executable acceptance test (no LLM judgment). See `paired-verification.md` for the Worker/Verifier contract, knowledge boundary, and failure-classification protocol. | `TaskCreate` for tracking each agent |
 | **VERIFY** | Real commands/curl/scripts. After deploy — curl API on prod. **Frontend: Chrome DevTools pipeline** (console + network + screenshot). Collect EVIDENCE. | `TaskUpdate` pass/fail with evidence |
 | **AUDIT** | Review all code: correctness, security, performance. **Must** request second opinion from GPT via PAL MCP. | **Sequence (all mandatory, in order):** (1) **`/simplify`** for <5 files — auto-fixes dupes/over-engineering/inefficiency. Agents for ≥5 files. (2) **`/security-review`** — triggered when diff touches: auth/tokens/secrets, broker/payments, DB migrations, CORS/network config. (3) **Textual external audit via PAL** — `mcp__pal__second_opinion` or `mcp__pal__codereview` on the post-simplify state, AFTER skill-fixes are applied. Explicit PASS/FAIL. |
 | **DELIVER** | Only when all tests + audits PASS. | `TaskUpdate` → completed |
@@ -53,9 +53,10 @@ When an investigation/audit agent returns with:
 - a recommended fix (patch / runbook / config change)
 
 … the Lead's next action is **NEVER** a question to the user. It is **always**:
-1. Spawn a second agent (Agent tool or /lead) to apply the recommended fix,
-2. Spawn a verification agent/step (curl, pytest, docker logs) to confirm the fix took,
-3. Return to the user with the artefacts + "done, verified" — or with aggregated failure info + next action taken after retries.
+1. Spawn a **paired Worker+Verifier** (per `paired-verification.md`) — Worker applies the fix, independent Verifier produces an executable acceptance test from the same Artifact Contract.
+2. Lead runs the Verifier's test; PASS/FAIL is the test's exit code, not Lead's judgment of Worker's code.
+3. On FAIL — classify per W/V/A/E categories (see `paired-verification.md`), respawn the appropriate side, hard cap 3 retries. **On retry: include the failed agent's session** in the new Worker's brief (`python3 ~/.claude/scripts/session_context.py --agent "<failed Worker desc>" --no-thinking`) so it sees what the predecessor tried and where it got stuck — not Lead's summary of it. See `paired-verification.md` §Session context injection.
+4. Return to the user with the artefacts + test path + exit code = "done, verified" — or with aggregated failure info + next action taken after retries.
 
 The user is not the approver of individual patches; they are the task-giver. Their one-line prompt covers the whole research→apply→verify→commit chain.
 
@@ -65,6 +66,7 @@ The user is not the approver of individual patches; they are the task-giver. The
 - Reading prior agent output / log files to decide next delegation.
 - Trivial git status / ls of the repo to contextualize the user's request.
 - Short acknowledgement queries ("does this file exist?" type).
+- Running `python3 ~/.claude/scripts/session_context.py` to extract session history for an agent's brief (see `paired-verification.md` §Session context injection).
 
 Anything beyond these = delegate.
 

@@ -62,6 +62,42 @@ A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explor
 
 ---
 
+## What's new in v1.4.0 — Session Context for Agents
+
+**The problem this release solves.** When a Worker agent fails and Lead re-spawns a new one, the retry agent starts blind — it doesn't know what the predecessor tried, what errors it hit, or what approaches were already ruled out. Lead's summary is lossy (Data Processing Inequality: each hop through an agent boundary is a lossy codec). The retry agent ends up repeating the same failed approach, burning tokens and time.
+
+**What v1.4.0 changes.** Agents can now read the raw session history — their own Lead's conversation, or any specific subagent's JSONL — via `session_context.py`. The tool extracts readable conversation from Claude Code's session files: dialogue, code edits (Edit/Write diffs with full old→new content), Bash commands + results, and agent spawns. Hook noise, permission modes, and file-history snapshots are stripped.
+
+**Key insight: whose context matters.** On retry, the new Worker needs the *failed agent's* session, not Lead's. The failed agent saw stack traces, tried approaches, hit edge cases. Lead only saw the summary. The rules now explicitly distinguish:
+
+| Trigger | Whose context | Command |
+|---|---|---|
+| Retry after Worker failure | Failed agent's | `--agent "<Worker desc>" --no-thinking` |
+| Debug chain (2+ attempts) | Failed agent's | `--agent "<prev Worker>" --grep "<symptom>"` |
+| Discussion back-reference | Lead's | `--tail 15 --no-thinking` |
+| Decision context (why X) | Lead's | `--grep "<topic>" --no-thinking` |
+| Self-audit of session edits | Lead's | `--tools-only --grep "Edit\|Write"` |
+
+**Subagent discovery.** Each Lead session stores subagent JSONLs in `<session-id>/subagents/` with `.meta.json` metadata. `--subagents` lists all agents of a session (description, size, time). `--agent "<keyword>"` reads a specific agent by description or ID prefix.
+
+```bash
+# List all agents spawned in the current session
+python3 ~/.claude/scripts/session_context.py --subagents
+
+# Read what the failed Worker tried
+python3 ~/.claude/scripts/session_context.py --agent "Worker: fix reconcile" --no-thinking
+
+# Lead's last 10 conversation turns for context
+python3 ~/.claude/scripts/session_context.py --tail 10 --no-thinking
+
+# Only code edits from the session
+python3 ~/.claude/scripts/session_context.py --tools-only --grep "Edit|Write"
+```
+
+**Integration with paired-verification.** The Artifact Contract gains an optional `Session context:` field. Decision rules in `paired-verification.md` §Session context injection specify when to include it and whose context to pass. On retry (W/V/A/E failure classification → re-spawn), Lead automatically includes the failed agent's session in the new Worker's brief.
+
+---
+
 ## What's new in v1.3.0 — Command architecture + Supervisor UX
 
 **Three problems this release solves:**
@@ -207,6 +243,7 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | **Agent writes code, Lead says "looks good"** | Self-evaluation bias — Lead authored the brief, naturally sees the result as matching | Paired Worker+Verifier: independent acceptance test with executable exit code. Lead runs the test, doesn't read the code to judge |
 | **Same bug resurfaces every 3 sessions** | No causal memory — each session re-discovers and re-proposes the same fix | Temporal-causal 3D memory: stuck-loop detector hashes topics across handovers, forces reframe (Q1–Q4) when pattern detected |
 | **Every agent runs on Opus, session takes 10 min** | No model routing — all delegates inherit the Lead's expensive model | 4-tier routing: Haiku for lookups, Sonnet for coding, Opus only for architecture. 2-4x faster, 3-5x cheaper per delegation |
+| **Retry agent makes the same mistake** | No knowledge of what predecessor tried or why it failed | `session_context.py` lets retry agents read the failed Worker's raw session — stack traces, attempted edits, error messages — instead of Lead's lossy summary |
 
 ---
 
@@ -229,6 +266,8 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | Agent self-evaluates its own work | Same model writes and reviews — bias | Paired Worker+Verifier: independent executable acceptance test, exit code = verdict |
 | Same problem loops across sessions | No causal chains in memory | Temporal-causal 3D memory + stuck-loop detector, hash-based recurrence detection |
 | Slow agents burn Opus budget | All delegates on Opus 4.7 | 4-tier model routing (Haiku/Sonnet/Opus) + `/fast` mode for coding agents |
+| Retry agent repeats same failed approach | No access to predecessor's session history | `session_context.py --agent "<failed Worker>"` — retry reads the raw JSONL of the failed agent, sees what was tried |
+| "What did the agents do?" | Subagent sessions buried in filesystem | `session_context.py --subagents` lists all agents (description, size, time); `--agent <keyword>` reads any one |
 
 ---
 
@@ -263,8 +302,8 @@ Under `~/.claude/`:
 
 | Path | Content |
 |------|---------|
-| `rules/*.md` | 11 rule files — anti-loop, tool strategy, pipeline phases, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection, communication-style ("professor" tone), quality/Three-Nos, paired-verification |
-| `scripts/*.py` | 19 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
+| `rules/*.md` | 12 rule files — anti-loop, tool strategy, pipeline phases, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection, communication-style ("professor" tone), quality/Three-Nos, paired-verification (with session context injection protocol) |
+| `scripts/*.py` | 20 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), session context extractor (`session_context.py` — readable JSONL extraction for agent delegation), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
 | `scripts/supervisor/` | v1.2.0 Supervisor Agent — 8 modules (`supervisor.py` CLI + orchestration, `policy.py` Tier 0/1/2 engine, `quota.py` admission + circuit-breaker, `detector.py` adaptive-silence FSM, `stream_json_adapter.py` Path A runtime, `persistence.py` sqlite writers, `runtime.py` transport Protocol, `schema.sql`) + `prompts/supervisor_v1.md` Haiku escalation contract |
 | `commands/*.md` | 9 slash commands: `/start`, `/handover`, `/consilium`, `/lead`, `/update`, `/phase`, `/delegate`, `/verify-after-edit`, `/verify-flow` |
 | `agents/*.md`, `*.json` | Agent team protocols — lifecycle, ownership schema, worktree safety, readiness gates, roadmap convention |
@@ -376,6 +415,8 @@ python3 install.py [flags]
 - **Stop**: 3-question smart extraction + error-lesson classification (11-slug taxonomy) → promotes recurring patterns into `institutional.md`.
 
 **Auto-consilium.** `core.md` defines HIGH risk as "change hits 2+ of: production data, auth/security, infrastructure, multi-service, financial logic, irreversible side effects". When triggered, Claude spawns 3-5 bio-specific agents (architect, security, devops, product, ...) + GPT via PAL MCP, synthesizes positions, saves to `reports/consilium_*.md`. Index picks it up.
+
+**Session context injection.** On retry (Worker failure classified as W/V/A/E), Lead includes the failed agent's session in the new Worker's brief via `session_context.py`. The tool reads Claude Code's JSONL session files — both Lead sessions and subagent sessions stored in `<session-id>/subagents/`. Preserves code edits (Edit/Write diffs), Bash commands + output, and dialogue. Strips hook noise, permission modes, file-history snapshots. Decision rules in `paired-verification.md` §Session context injection specify whose context to pass (Lead's vs. failed agent's) based on the trigger type.
 
 **Verify-gate.** PreToolUse-blocks handover commits unless the last 200 lines contain `{"verified": {"status": "pass"|"na", "evidence": [...]}}`. Accepts markers: `curl`, `psql`, `sqlite3`, `HTTP/`, `docker`, `kubectl`, `DevTools`, `pytest`, `exit=<N>`. Rejects fake-evidence patterns: `localhost`, `|| true`, `curl -s` without `--fail`.
 
