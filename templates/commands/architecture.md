@@ -162,12 +162,12 @@ Output format: plain text list, one external system per block. Include file path
 
 ---
 
-## Phase 2 — REDUCE (1 Sonnet Architect agent)
+## Phase 2 — REDUCE (1 Opus Architect agent)
 
 After **all 4 MAP agents return**, collect their full outputs. Then spawn ONE agent:
 
 - `subagent_type: "general-purpose"`
-- `model: "sonnet"`
+- `model: "opus"`
 
 **Prompt:**
 
@@ -422,10 +422,10 @@ When invoked as `/architecture --update`:
 
 `/start` checks for architecture files automatically. If neither `ARCHITECTURE.md` nor `.claude/dep_manifest.json` exists:
 
-- **Project has >20 source files:** `/start` notes the gap in its plan and recommends running `/architecture` before the session's main task. It does NOT block — the session proceeds.
+- **Project has >20 source files:** `/start` **auto-spawns `/architecture` in background** — a `general-purpose` Agent with `model: "opus"` and `run_in_background: true`. The session continues in parallel; architecture generation does not block `/start`. ARCHITECTURE.md and dep_manifest.json will appear when the background agent completes.
 - **Project has ≤20 source files:** `/start` notes the gap with a one-liner ("small project — /architecture optional") and moves on.
 
-`/start` does NOT auto-invoke `/architecture` — the user runs it explicitly when needed. The distinction matters because `/architecture` takes time and the user may already know the architecture.
+The user can still run `/architecture` manually at any time, or `/architecture --update` after major refactors.
 
 ---
 
