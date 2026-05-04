@@ -23,10 +23,10 @@ TMPDIR_TEST="$(mktemp -d)"
 NO_MANIFEST_DIR="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_TEST" "$NO_MANIFEST_DIR"' EXIT
 
-# Create .claude/dep_manifest.json with two components:
+# Create docs/dep_manifest.json with two components:
 #   - "engine" → critical, owns engine/core.py
 #   - "docs"   → not critical, owns docs/overview.md
-mkdir -p "$TMPDIR_TEST/.claude"
+mkdir -p "$TMPDIR_TEST/docs"
 
 jq -n '{
   components: {
@@ -47,7 +47,7 @@ jq -n '{
       notes: "User documentation — no dep review needed"
     }
   }
-}' > "$TMPDIR_TEST/.claude/dep_manifest.json"
+}' > "$TMPDIR_TEST/docs/dep_manifest.json"
 
 # ---------------------------------------------------------------------------
 # Transcript helpers — produce JSONL files the hook reads

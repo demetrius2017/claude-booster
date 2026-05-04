@@ -20,11 +20,11 @@ TMPDIR_TEST="$(mktemp -d)"
 export TMPDIR_TEST
 trap 'rm -rf "$TMPDIR_TEST"' EXIT
 
-# Create .claude/dep_manifest.json inside the temp dir (hook searches for it
+# Create docs/dep_manifest.json inside the temp dir (hook searches for it
 # relative to CWD or HOME — we'll cd into the tmpdir when running the hook).
-mkdir -p "$TMPDIR_TEST/.claude"
+mkdir -p "$TMPDIR_TEST/docs"
 
-cat > "$TMPDIR_TEST/.claude/dep_manifest.json" <<'EOF'
+cat > "$TMPDIR_TEST/docs/dep_manifest.json" <<'EOF'
 {
   "append_only_tables": ["nav_snapshots", "trade_ledger", "audit_log"],
   "data_patches_forbidden": ["positions.quantity", "positions.avg_cost", "broker_orders.status", "account_balances.amount"]
@@ -36,7 +36,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 # run_hook <scenario_label> <expected_exit> <json_payload> [env_override...]
-# Runs the hook from TMPDIR_TEST so it can find .claude/dep_manifest.json.
+# Runs the hook from TMPDIR_TEST so it can find docs/dep_manifest.json.
 run_hook() {
     local label="$1"
     local expected_exit="$2"
