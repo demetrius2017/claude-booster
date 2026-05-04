@@ -1,0 +1,219 @@
+{
+  "_comment": "Dependency manifest for the Horizon portfolio system. Machine-readable companion to ARCHITECTURE.md. Keep in sync — same commit rule applies. Format: version 0.1.0.",
+  "version": "0.1.0",
+  "project": "horizon",
+  "updated": "2026-05-04",
+
+  "components": {
+    "dashboard_ui": {
+      "file": "frontend/src/pages/portfolio.tsx",
+      "reads_from": [
+        "api:GET /portfolio/summary",
+        "api:GET /orders",
+        "api:GET /nav/history"
+      ],
+      "writes_to": [
+        "api:POST /orders"
+      ],
+      "called_by": ["trader_browser"],
+      "critical": true,
+      "notes": "Read-only consumer of API. Any API response shape change breaks rendering."
+    },
+
+    "api_portfolio_summary": {
+      "file": "backend/api/routes/portfolio.py::get_portfolio_summary",
+      "reads_from": [
+        "db:positions",
+        "db:nav_snapshots",
+        "cache:nav:summary"
+      ],
+      "writes_to": [
+        "cache:nav:summary"
+      ],
+      "called_by": ["dashboard_ui", "monitoring_probe"],
+      "critical": true,
+      "notes": "Populates cache on miss. Cache TTL must not exceed 300s per INV-07."
+    },
+
+    "api_post_orders": {
+      "file": "backend/api/routes/orders.py::create_order",
+      "reads_from": [
+        "db:positions",
+        "db:orders"
+      ],
+      "writes_to": [
+        "db:orders",
+        "cache:orders:pending"
+      ],
+      "called_by": ["dashboard_ui"],
+      "critical": true,
+      "notes": "Idempotency key checked against db:orders before insert. Redis stream orders:pending consumed by broker_worker."
+    },
+
+    "calculate_nav": {
+      "file": "backend/domain/nav.py::calculate_nav",
+      "reads_from": [
+        "db:positions",
+        "cache:price:*"
+      ],
+      "writes_to": [],
+      "called_by": ["snapshot_nav", "api_portfolio_summary"],
+      "critical": true,
+      "notes": "Pure function — no side effects. All arithmetic must be Decimal (INV-08). Returns NAVResult, does not write anywhere."
+    },
+
+    "snapshot_nav": {
+      "file": "backend/domain/nav.py::snapshot_nav",
+      "reads_from": [
+        "domain:calculate_nav"
+      ],
+      "writes_to": [
+        "db:nav_snapshots",
+        "cache:nav:summary"
+      ],
+      "called_by": ["scheduler"],
+      "critical": true,
+      "notes": "Append-only insert to nav_snapshots. Post-condition asserts INV-01 before insert. Sets Redis TTL=60s."
+    },
+
+    "apply_fill": {
+      "file": "backend/domain/positions.py::apply_fill",
+      "reads_from": [
+        "db:fills",
+        "db:positions"
+      ],
+      "writes_to": [
+        "db:positions",
+        "cache:nav:*"
+      ],
+      "called_by": ["broker_worker"],
+      "critical": true,
+      "notes": "UPSERT on positions. DEL nav:* on every successful write (INV-07). Enforces INV-02, INV-04, INV-08. Never called directly by API."
+    },
+
+    "reconcile_positions": {
+      "file": "backend/domain/reconcile.py::reconcile_positions",
+      "reads_from": [
+        "db:positions",
+        "db:fills",
+        "external:ibkr_tws_live_state"
+      ],
+      "writes_to": [
+        "db:reconcile_log",
+        "db:positions"
+      ],
+      "called_by": ["scheduler"],
+      "critical": true,
+      "notes": "Positions corrections are the only legitimate non-apply_fill write to positions. All corrections logged to reconcile_log. Append-only on reconcile_log (INV-06)."
+    },
+
+    "broker_worker": {
+      "file": "backend/workers/broker_worker.py",
+      "reads_from": [
+        "cache:orders:pending",
+        "external:ibkr_tws_fill_events",
+        "db:orders"
+      ],
+      "writes_to": [
+        "db:fills",
+        "db:orders",
+        "external:ibkr_tws_submit"
+      ],
+      "called_by": ["ibkr_tws_push", "redis_stream_consumer"],
+      "critical": true,
+      "notes": "Fill handler validates FK (INV-03), normalises commission sign (INV-05), calls apply_fill. Order submission updates orders.status and ibkr_order_id."
+    },
+
+    "scheduler": {
+      "file": "backend/scheduler/jobs.py",
+      "reads_from": [
+        "db:nav_snapshots"
+      ],
+      "writes_to": [],
+      "called_by": ["apscheduler_cron"],
+      "critical": false,
+      "notes": "Calls POST /internal/snapshot every 5 min, POST /internal/reconcile every 15 min. Does not write DB directly — delegates to snapshot_nav and reconcile_positions via HTTP."
+    }
+  },
+
+  "data_patches_forbidden": [
+    "positions.market_value",
+    "positions.unrealized_pnl",
+    "nav_snapshots.total_nav",
+    "orders.filled_quantity",
+    "orders.avg_fill_price"
+  ],
+
+  "append_only_tables": [
+    "nav_snapshots",
+    "reconcile_log",
+    "audit_log",
+    "fills"
+  ],
+
+  "invariants": {
+    "INV-01": {
+      "description": "NAV components must sum: total_nav == cash + sum(positions.market_value) within epsilon",
+      "formula": "abs(total_nav - (cash + sum_market_value)) < 0.01",
+      "enforced_in": "backend/domain/nav.py::snapshot_nav post-condition assert",
+      "on_violation": "raise InconsistentNAVError — snapshot is NOT inserted"
+    },
+    "INV-02": {
+      "description": "positions.quantity must never be zero; zero-quantity rows must be deleted",
+      "formula": "quantity != 0 for all rows in positions",
+      "enforced_in": "backend/domain/positions.py::apply_fill post-condition + DB CHECK CONSTRAINT",
+      "on_violation": "raise ZeroPositionError; DB CHECK blocks write"
+    },
+    "INV-03": {
+      "description": "Every fills row must reference a valid orders.id (no orphan fills)",
+      "formula": "fills.order_id IN (SELECT id FROM orders)",
+      "enforced_in": "DB FK constraint + broker_worker pre-insert validation",
+      "on_violation": "FK violation = DB rejects insert; worker routes to DEAD_LETTER queue"
+    },
+    "INV-04": {
+      "description": "Aggregated fill quantity per order must not exceed order quantity (no overfill)",
+      "formula": "SUM(fills.quantity WHERE order_id=X) <= orders.quantity WHERE id=X",
+      "enforced_in": "backend/domain/positions.py::apply_fill pre-condition",
+      "on_violation": "raise OverfillError — fill is rejected and logged, not applied"
+    },
+    "INV-05": {
+      "description": "fills.commission must be >= 0 after normalisation (broker may return negative)",
+      "formula": "commission = abs(raw_commission) >= 0",
+      "enforced_in": "backend/workers/broker_worker.py::validate_fill normalisation step",
+      "on_violation": "raise FillValidationError if negative after abs()"
+    },
+    "INV-06": {
+      "description": "nav_snapshots, reconcile_log, audit_log, fills are append-only — no UPDATE or DELETE",
+      "formula": "no UPDATE/DELETE DML on these tables from any application code path",
+      "enforced_in": "DB triggers (raise exception on UPDATE/DELETE) + migration guard rules",
+      "on_violation": "DB trigger raises exception; CI migration guard blocks the migration PR"
+    },
+    "INV-07": {
+      "description": "Redis nav:summary TTL must not exceed 300s; must be invalidated on any position write",
+      "formula": "TTL(nav:summary) <= 300 AND DEL(nav:*) called by apply_fill before returning",
+      "enforced_in": "backend/domain/positions.py::apply_fill + backend/domain/nav.py::snapshot_nav",
+      "on_violation": "Stale NAV alert raised by reconcile_positions on next run; TTL violation logged"
+    },
+    "INV-08": {
+      "description": "All monetary arithmetic uses Decimal with ROUND_HALF_EVEN; float is forbidden in financial paths",
+      "formula": "type(value) == Decimal for all quantity, price, nav, pnl, commission values",
+      "enforced_in": "apply_fill() type guard, calculate_nav() type guard, Pydantic models with Decimal fields",
+      "on_violation": "raise TypeError(f'Expected Decimal, got {type(v)}') — fail loud, not silent"
+    }
+  },
+
+  "migration_guard_rules": {
+    "block_if_alter_append_only": {
+      "description": "Block any migration that adds UPDATE or DELETE capability to append-only tables",
+      "tables": ["nav_snapshots", "reconcile_log", "audit_log", "fills"],
+      "check": "grep -E '(UPDATE|DELETE)' migration_file AND table IN append_only_tables",
+      "action": "CI fails with explicit message listing the violated table and INV-06"
+    },
+    "block_if_patch_forbidden_column": {
+      "description": "Block any migration or data script that directly writes to derived/computed columns",
+      "columns": ["positions.market_value", "positions.unrealized_pnl", "nav_snapshots.total_nav", "orders.filled_quantity", "orders.avg_fill_price"],
+      "check": "grep -E 'SET (market_value|unrealized_pnl|total_nav|filled_quantity|avg_fill_price)' migration_or_script_file",
+      "action": "CI fails with message: 'Derived column patch forbidden — use owning function instead'"
+    }
+  }
+}

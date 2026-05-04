@@ -106,6 +106,11 @@
             "type": "command",
             "command": "${PYTHON} ${CLAUDE_HOME}/scripts/verify_gate.py",
             "source": "booster@${BOOSTER_VERSION}"
+          },
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/financial_dml_guard.py",
+            "source": "booster@${BOOSTER_VERSION}"
           }
         ]
       },

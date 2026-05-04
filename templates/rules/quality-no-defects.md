@@ -58,6 +58,41 @@ def get_nav_snapshot(account_id: str) -> NAVSnapshot:
 ```
 Schema-validation перед `return`, контрактные пост-условия, явный `raise` вместо silent corrupted return.
 
+### Fix the producer, not the data (Layer 2 / Не маскируй брак)
+
+Если данные в БД неверны — чини **функцию, которая их создала**, а не строку в таблице. Прямой `UPDATE` на derived-readonly колонке (колонке из `data_patches_forbidden` в dep_manifest.json) — это нарушение Three Nos: ты маскируешь баг в функции-производителе, а она на следующем вызове опять создаст неверные данные.
+
+**Правило:** `UPDATE`/`DELETE` на protected table без починки producer-функции = передача брака вниз.
+
+```python
+# ЗАПРЕЩЕНО — маскирует баг в snapshot_nav():
+# UPDATE nav_snapshots SET total_nav = 125000.00 WHERE snapshot_date = '2026-05-04'
+
+# ПРАВИЛЬНО — чиним функцию-производитель:
+def snapshot_nav(account_id: str) -> NAVSnapshot:
+    result = calculate_nav(account_id)
+    # Починили calculate_nav() → snapshot_nav() теперь пишет корректное значение
+    ...
+```
+
+```python
+# ЗАПРЕЩЕНО — маскирует баг в apply_fill() VWAP логике:
+# UPDATE orders SET filled_quantity = 500, avg_fill_price = 142.50 WHERE id = 'ord_123'
+
+# ПРАВИЛЬНО — чиним VWAP агрегацию в apply_fill():
+def apply_fill(fill: Fill) -> None:
+    prior_fills = get_fills_for_order(fill.order_id)  # все partial fills
+    total_qty = sum(f.quantity for f in prior_fills) + fill.quantity
+    vwap = sum(f.quantity * f.price for f in prior_fills + [fill]) / total_qty
+    ...
+```
+
+**Единственное исключение:** one-time data cleanup **ПОСЛЕ** починки producer-функции, с маркером `[dml-authorized]` в транскрипте и объяснением какая функция была починена.
+
+**Anti-pattern:** «быстро поправим данные сейчас, код починим потом» — «потом» не наступает, а producer на следующем запуске создаёт те же кривые записи.
+
+**Enforcement:** `financial_dml_guard.py` (PreToolUse hook) блокирует DML на protected tables. Bypass: `CLAUDE_BOOSTER_DML_ALLOWED=1` или `[dml-authorized]` в транскрипте.
+
 ### Что это значит на практике для каждого `Edit`/`Write`
 
 Когда Claude пишет/правит функцию из §Scope, он обязан **физически добавить** в код:
