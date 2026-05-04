@@ -18,6 +18,8 @@ ls -t "$HOME/.claude/projects/$(git rev-parse --show-toplevel 2>/dev/null | sed 
 ```
 Format as: `Session UUID: <uuid>  JSONL: <full-path>`. Add a one-line note that this JSONL can be grepped during RECON to understand what was tried and what failed in this session.
 
+**`## Outstanding Debts`** — run `/debt review` (or manually scan the session for incomplete items). Include the formatted table in the handover. If no debts exist, write "No outstanding debts — session clean." This section goes between `## Problems / Solutions` and `## Required reading` in the report.
+
 Update roadmap. Git add + commit + push.
 
 **[CRITICAL] Verify-gate JSON block — required before `git add`/`git commit` of the handover file.**
