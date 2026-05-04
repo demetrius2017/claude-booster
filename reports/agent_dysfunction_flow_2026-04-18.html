@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Agent Dysfunction Flow — horizon 39-day loop</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --bg-card: #161c24;
+    --bg-elev: #1d242e;
+    --line: #2a3441;
+    --ink: #e8ecf1;
+    --ink-mute: #9aa5b4;
+    --ink-dim: #6b7685;
+    --red: #e84545;
+    --red-soft: rgba(232, 69, 69, 0.14);
+    --red-line: rgba(232, 69, 69, 0.45);
+    --amber: #d99333;
+    --amber-soft: rgba(217, 147, 51, 0.13);
+    --amber-line: rgba(217, 147, 51, 0.4);
+    --green: #4fb286;
+    --green-soft: rgba(79, 178, 134, 0.12);
+    --green-line: rgba(79, 178, 134, 0.38);
+    --accent: #c89b5a;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", "Book Antiqua", Georgia, serif;
+    --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 15px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  .page {
+    max-width: 1120px;
+    margin: 0 auto;
+    padding: 56px 40px 96px;
+  }
+
+  /* --- typography --- */
+  h1, h2, h3 { font-family: var(--serif); font-weight: 600; letter-spacing: -0.01em; }
+  h1 { font-size: 42px; line-height: 1.15; margin: 0 0 8px; }
+  h2 { font-size: 26px; line-height: 1.25; margin: 64px 0 20px; border-bottom: 1px solid var(--line); padding-bottom: 12px; }
+  h3 { font-size: 18px; line-height: 1.35; margin: 32px 0 12px; color: var(--ink); }
+
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--accent);
+    margin-bottom: 14px;
+  }
+  .sub { color: var(--ink-mute); font-size: 15px; line-height: 1.6; }
+  code, .mono { font-family: var(--mono); font-size: 13px; color: #e0c088; background: rgba(200, 155, 90, 0.08); padding: 1px 6px; border-radius: 3px; }
+
+  /* --- hero --- */
+  .hero {
+    border-left: 3px solid var(--red);
+    padding-left: 28px;
+    margin-bottom: 48px;
+  }
+  .hero .title-row {
+    display: flex;
+    align-items: baseline;
+    gap: 16px;
+    margin-bottom: 6px;
+  }
+  .hero .meta {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    letter-spacing: 0.08em;
+  }
+  .hero .lede {
+    font-family: var(--serif);
+    font-size: 20px;
+    line-height: 1.5;
+    color: var(--ink);
+    max-width: 780px;
+    margin: 16px 0 28px;
+  }
+  .hero .lede em { color: var(--red); font-style: normal; font-weight: 600; }
+
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    margin-top: 24px;
+  }
+  .metric { background: var(--bg-card); padding: 20px 22px; }
+  .metric .n {
+    font-family: var(--serif);
+    font-size: 36px;
+    line-height: 1;
+    color: var(--red);
+    font-weight: 600;
+    letter-spacing: -0.02em;
+  }
+  .metric .n.green { color: var(--green); }
+  .metric .l { font-size: 12px; color: var(--ink-mute); margin-top: 8px; line-height: 1.4; }
+
+  /* --- legend --- */
+  .legend-row {
+    display: flex;
+    gap: 20px;
+    margin: 20px 0 0;
+    flex-wrap: wrap;
+    font-size: 13px;
+  }
+  .chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--ink-mute);
+  }
+  .dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+  .dot.green { background: var(--green); box-shadow: 0 0 0 3px var(--green-soft); }
+  .dot.amber { background: var(--amber); box-shadow: 0 0 0 3px var(--amber-soft); }
+  .dot.red { background: var(--red); box-shadow: 0 0 0 3px var(--red-soft); }
+
+  /* --- session flow --- */
+  .flow {
+    display: grid;
+    grid-template-columns: repeat(6, 1fr);
+    gap: 0;
+    margin-top: 28px;
+    position: relative;
+  }
+  .step {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    padding: 18px 16px 16px;
+    position: relative;
+    min-height: 220px;
+    display: flex;
+    flex-direction: column;
+  }
+  .step + .step { border-left: none; }
+  .step.red { border-top: 3px solid var(--red); background: linear-gradient(180deg, var(--red-soft) 0%, var(--bg-card) 55%); }
+  .step.amber { border-top: 3px solid var(--amber); background: linear-gradient(180deg, var(--amber-soft) 0%, var(--bg-card) 55%); }
+  .step.green { border-top: 3px solid var(--green); background: linear-gradient(180deg, var(--green-soft) 0%, var(--bg-card) 55%); }
+
+  .step .num {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    letter-spacing: 0.1em;
+  }
+  .step .name {
+    font-family: var(--serif);
+    font-size: 18px;
+    font-weight: 600;
+    margin: 4px 0 10px;
+    color: var(--ink);
+    letter-spacing: -0.01em;
+  }
+  .step .status {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 12px;
+  }
+  .step.red .status { color: var(--red); }
+  .step.amber .status { color: var(--amber); }
+  .step.green .status { color: var(--green); }
+  .step .note {
+    font-size: 12.5px;
+    color: var(--ink-mute);
+    line-height: 1.5;
+    margin-top: auto;
+  }
+  .step .evidence {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--ink-dim);
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--line);
+    line-height: 1.5;
+  }
+
+  .flow-arrow {
+    text-align: center;
+    font-family: var(--mono);
+    color: var(--ink-dim);
+    font-size: 18px;
+    padding: 8px 0 0;
+  }
+
+  /* Loop indicator */
+  .loop-indicator {
+    margin-top: 16px;
+    padding: 18px 20px;
+    background: var(--red-soft);
+    border: 1px dashed var(--red-line);
+    color: var(--ink);
+    font-family: var(--mono);
+    font-size: 13px;
+    line-height: 1.6;
+  }
+  .loop-indicator strong { color: var(--red); font-weight: 600; }
+
+  /* --- three-part failure --- */
+  .triple {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 20px;
+    margin-top: 24px;
+  }
+  .pillar {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-top: 3px solid var(--red);
+    padding: 24px;
+    position: relative;
+  }
+  .pillar .ordinal {
+    font-family: var(--serif);
+    font-size: 48px;
+    color: var(--red);
+    opacity: 0.35;
+    position: absolute;
+    top: 10px;
+    right: 18px;
+    line-height: 1;
+    font-weight: 600;
+  }
+  .pillar h4 {
+    font-family: var(--serif);
+    font-size: 18px;
+    margin: 0 0 10px;
+    padding-right: 44px;
+    color: var(--ink);
+    line-height: 1.3;
+  }
+  .pillar .desc {
+    font-size: 13.5px;
+    color: var(--ink-mute);
+    line-height: 1.55;
+  }
+  .pillar .desc strong { color: var(--ink); font-weight: 500; }
+  .pillar .proof {
+    margin-top: 14px;
+    padding-top: 14px;
+    border-top: 1px dashed var(--line);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    line-height: 1.55;
+  }
+
+  /* --- timeline --- */
+  .timeline-wrap {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    padding: 32px 28px;
+    margin-top: 24px;
+  }
+  .timeline-svg { width: 100%; height: auto; display: block; }
+
+  /* --- fix tranches --- */
+  .tranches {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 16px;
+    margin-top: 24px;
+  }
+  .tranche {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    padding: 20px;
+    display: flex;
+    flex-direction: column;
+  }
+  .tranche .tag {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    padding: 3px 8px;
+    border-radius: 2px;
+    display: inline-block;
+    width: fit-content;
+    margin-bottom: 10px;
+  }
+  .tranche.t1 .tag { background: var(--red-soft); color: var(--red); }
+  .tranche.t2 .tag { background: var(--amber-soft); color: var(--amber); }
+  .tranche.t3 .tag { background: rgba(200, 155, 90, 0.12); color: var(--accent); }
+  .tranche.t4 .tag { background: var(--green-soft); color: var(--green); }
+  .tranche h4 {
+    font-family: var(--serif);
+    font-size: 17px;
+    margin: 0 0 8px;
+    color: var(--ink);
+  }
+  .tranche .eta {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-dim);
+    margin-bottom: 12px;
+  }
+  .tranche ul {
+    margin: 0;
+    padding-left: 18px;
+    font-size: 13px;
+    color: var(--ink-mute);
+    line-height: 1.6;
+  }
+  .tranche ul li { margin-bottom: 4px; }
+  .tranche .effort {
+    margin-top: auto;
+    padding-top: 14px;
+    border-top: 1px dashed var(--line);
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink);
+  }
+  .tranche .effort .h { color: var(--accent); }
+
+  /* --- glossary --- */
+  .glossary { margin-top: 24px; }
+  .gl-item {
+    background: var(--bg-card);
+    border: 1px solid var(--line);
+    border-left: 3px solid var(--red);
+    padding: 18px 22px;
+    margin-bottom: 10px;
+    display: grid;
+    grid-template-columns: 220px 1fr;
+    gap: 24px;
+    align-items: start;
+  }
+  .gl-item.amber { border-left-color: var(--amber); }
+  .gl-item.green { border-left-color: var(--green); }
+  .gl-item .k {
+    font-family: var(--serif);
+    font-size: 15px;
+    color: var(--ink);
+    font-weight: 600;
+  }
+  .gl-item .k .zone {
+    display: block;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 400;
+    color: var(--ink-dim);
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    margin-top: 4px;
+  }
+  .gl-item .v {
+    font-size: 13.5px;
+    color: var(--ink-mute);
+    line-height: 1.6;
+  }
+  .gl-item .v .src {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    display: block;
+    margin-top: 8px;
+  }
+
+  /* --- irony callout --- */
+  .irony {
+    background: var(--amber-soft);
+    border-left: 3px solid var(--amber);
+    padding: 20px 24px;
+    margin: 24px 0;
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.55;
+    color: var(--ink);
+  }
+  .irony strong { color: var(--amber); font-weight: 600; }
+  .irony .quote {
+    font-family: var(--mono);
+    font-size: 12px;
+    color: var(--ink-mute);
+    display: block;
+    margin-top: 10px;
+    padding-top: 10px;
+    border-top: 1px dashed var(--amber-line);
+  }
+
+  /* footer */
+  footer {
+    margin-top: 72px;
+    padding-top: 24px;
+    border-top: 1px solid var(--line);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--ink-dim);
+    letter-spacing: 0.05em;
+    display: flex;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+  }
+
+  /* responsive */
+  @media (max-width: 980px) {
+    .flow { grid-template-columns: repeat(2, 1fr); }
+    .step + .step { border-left: 1px solid var(--line); }
+    .tranches { grid-template-columns: repeat(2, 1fr); }
+    .triple { grid-template-columns: 1fr; }
+    .metrics { grid-template-columns: repeat(2, 1fr); }
+    .gl-item { grid-template-columns: 1fr; gap: 8px; }
+  }
+
+  /* tooltip */
+  [data-tip] { position: relative; cursor: help; }
+  [data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 8px);
+    left: 0;
+    right: auto;
+    background: #000;
+    color: #fff;
+    padding: 10px 14px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.5;
+    border: 1px solid var(--red-line);
+    width: 280px;
+    z-index: 100;
+    white-space: normal;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.5);
+  }
+
+</style>
+</head>
+<body>
+<div class="page">
+
+  <!-- ============ HERO ============ -->
+  <div class="hero">
+    <div class="eyebrow">Meta-audit · Claude Booster · 2026-04-17</div>
+    <div class="title-row">
+      <h1>39-day loop на horizon</h1>
+    </div>
+    <div class="meta">Three-part continuity failure — mapped onto the typical Claude Code session</div>
+
+    <p class="lede">
+      Дмитрий работает над одной проблемой <em>39 дней</em>. Агент чинит симптомы, ставит PASS,
+      следующая сессия обнаруживает — не сработало. Этот документ показывает <em>где именно</em>
+      в типовом сессионном цикле дисфункция прорывается наружу — и почему существующие правила
+      её не останавливают.
+    </p>
+
+    <div class="metrics">
+      <div class="metric"><div class="n">10</div><div class="l">handover'ов по NAV/broker divergence с 2026-02-15</div></div>
+      <div class="metric"><div class="n">0</div><div class="l">curl / SQL / DevTools evidence в 10 handover'ах</div></div>
+      <div class="metric"><div class="n">5</div><div class="l">сессий переписывают NAV "source of truth"</div></div>
+      <div class="metric"><div class="n">30+</div><div class="l">дней <code>_record_rebalance_erp()</code> в Known Issues</div></div>
+    </div>
+
+    <div class="legend-row">
+      <span class="chip"><span class="dot green"></span>Здоровая зона — проблем не найдено</span>
+      <span class="chip"><span class="dot amber"></span>Зона риска — возможная, но не обязательная дисфункция</span>
+      <span class="chip"><span class="dot red"></span>Критическая зона — confirmed failure mode из аудита</span>
+    </div>
+  </div>
+
+  <!-- ============ TYPICAL SESSION FLOW ============ -->
+  <h2>Типовой flow сессии — где ломается continuity</h2>
+  <p class="sub">Каждый шаг — реальный узел сессии Claude Code. Цвет — risk-рейтинг из аудита 2026-04-17. Hover на красном шаге показывает evidence-цитату.</p>
+
+  <div class="flow">
+
+    <div class="step red" data-tip="F2: institutional.md §Financial/Trading содержит 7 March-25 rules как canon без supersession-меток. April audit 'structurally wrong' лежит рядом, но читается как альтернативное мнение, не как refutation.">
+      <div class="num">01</div>
+      <div class="name">/start</div>
+      <div class="status">● Red · poisoned canon</div>
+      <div class="note">
+        Загружаются rules + per-project memory + latest handover. Stale March-25 findings
+        читаются как "Permanent knowledge — never auto-prune". April-17 consilium лежит
+        в reports/ без back-link.
+      </div>
+      <div class="evidence">institutional.md:2<br>"never auto-prune"<br>Δ +23 days stale</div>
+    </div>
+
+    <div class="step amber" data-tip="В теории Plan Mode может поймать противоречие reports vs rules. На практике — не ловит, так как агент цитирует rules как authoritative baseline.">
+      <div class="num">02</div>
+      <div class="name">Plan mode</div>
+      <div class="status">◐ Amber · no supersession</div>
+      <div class="note">
+        План базируется на загруженной памяти. Противоречия reports↔rules разрешаются
+        в пользу rules (authority asymmetry). "Open Blockers" секции нет.
+      </div>
+      <div class="evidence">horizon/CLAUDE.md<br>phase-lock → blockers<br>буксуют</div>
+    </div>
+
+    <div class="step red" data-tip="F1/4: _record_rebalance_erp() был discovered root cause на 2026-03-25. Документирован в Known Issues 10 handover'ов подряд. Ни один не имплементировал — лечили симптомы вокруг.">
+      <div class="num">03</div>
+      <div class="name">Implement</div>
+      <div class="status">● Red · symptom-chase</div>
+      <div class="note">
+        Агент трактует сломанную архитектуру как ground truth. Incremental патч на
+        snapshot_cron вместо implement of deferred P1 — быстрее "зелёный".
+      </div>
+      <div class="evidence">void-and-rewrite<br>P1 deferred 30+ days<br>5 rewrites NAV truth</div>
+    </div>
+
+    <div class="step red" data-tip="F1/2: keyword count curl/test = 0 across all 10 handover'ов. pipeline.md:13-17 require 'curl API on prod after deploy' — правило load, но не enforced. Missing forcing function.">
+      <div class="num">04</div>
+      <div class="name">"Verify"</div>
+      <div class="status">● Red · false PASS</div>
+      <div class="note">
+        PASS на логическом ревью кода. Реальный curl/SQL/DevTools artifact отсутствует.
+        Статус зелёный, handover пишется как "fixed".
+      </div>
+      <div class="evidence">pipeline.md:13-17 loaded<br>0/10 handover'ов have<br>prod-evidence</div>
+    </div>
+
+    <div class="step red" data-tip="F1/4: Known Issues раздел фиксирует P1 deferred. Следующая сессия читает latest handover, не 5-последних — loop не виден в single-session view.">
+      <div class="num">05</div>
+      <div class="name">Handover</div>
+      <div class="status">● Red · defers P1</div>
+      <div class="note">
+        Handover documents P1 в Known Issues: "implement _record_rebalance_erp() tomorrow".
+        30+ дней "tomorrow" не наступает. Hypothesis contract отсутствует.
+      </div>
+      <div class="evidence">handover_2026-03-26:60-67<br>"not implemented. This is<br>the P1 architectural fix"</div>
+    </div>
+
+    <div class="step amber" data-tip="Задача формально выполнена (snapshot bug fixed), но real invariant — broker == DB — не восстановлен. DONE даётся по scope сессии, не по scope проблемы.">
+      <div class="num">06</div>
+      <div class="name">DONE → loop</div>
+      <div class="status">◐ Amber · scope illusion</div>
+      <div class="note">
+        Сессия закрывается как DONE по узкой задаче. Broker divergence возвращается при
+        следующем deploy. /start видит 1 latest handover, не loop.
+      </div>
+      <div class="evidence">MTTD divergence<br>≈ 1-7 days<br>target ≤24h</div>
+    </div>
+
+  </div>
+
+  <div class="loop-indicator">
+    <strong>→ Loop closure:</strong> следующая сессия начинается на шаге 01. Stale canon усиливается новым handover'ом
+    который подтверждает "fix applied". RECON не запускается (тема не детектится как recurring — нет helper'а). Гипотеза
+    прошлой сессии не carries forward. Через 39 дней — 10 handover'ов, 5 rewrites NAV truth, P1 по-прежнему deferred.
+  </div>
+
+  <!-- ============ THREE-PART FAILURE ============ -->
+  <h2>Три-частный continuity failure</h2>
+  <p class="sub">Consensus 7 агентов (5 Claude panel + 2 GPT). Любой один механизм недостаточен — ломается связка.</p>
+
+  <div class="triple">
+    <div class="pillar">
+      <div class="ordinal">1</div>
+      <h4>Authority без supersession</h4>
+      <div class="desc">
+        <strong>institutional.md</strong> и per-project memory хранят March findings как canonical
+        knowledge с формулировкой <code>"Permanent knowledge — never auto-prune"</code>.
+        April-17 аудит "structurally wrong" лежит в reports/ без link back в rules.
+      </div>
+      <div class="proof">
+        stale canon Δ +23 days<br>
+        no [SUPERSEDED by] metadata<br>
+        "bullying" effect — rules &gt; reports
+      </div>
+    </div>
+
+    <div class="pillar">
+      <div class="ordinal">2</div>
+      <h4>Rules as prose, not mechanics</h4>
+      <div class="desc">
+        <strong>pipeline.md</strong> требует "VERIFY → curl API on prod". <strong>commands.md</strong>
+        требует RECON before opinions. Оба правила загружены в контекст. Handover'ы их
+        не выполняют. Missing forcing function = hook который блокирует wrong action, а не
+        ещё одно правило описывающее right action.
+      </div>
+      <div class="proof">
+        pipeline.md:13-17 loaded<br>
+        0/10 handover'ов have curl<br>
+        VERIFY = prose, not PreToolUse hook
+      </div>
+    </div>
+
+    <div class="pillar">
+      <div class="ordinal">3</div>
+      <h4>Runtime reintroduces divergence</h4>
+      <div class="desc">
+        <strong>Система сама</strong> создаёт fresh divergence на каждом deploy быстрее чем
+        сессия её чинит. Async startup reconcile + dead broker-snapshot write path
+        (<code>total_value &lt;= 0</code> skip) + <code>is_reconciliation</code> NAV exclusion.
+        Агент лечит симптом, ставит PASS, deploy снова.
+      </div>
+      <div class="proof">
+        main.py:133-135 non-blocking<br>
+        snapshot_cron.py:181-187 P0<br>
+        broker snapshots never persist
+      </div>
+    </div>
+  </div>
+
+  <!-- ============ IRONY ============ -->
+  <div class="irony">
+    <strong>Ирония.</strong> Правила <code>pipeline.md</code> и <code>commands.md</code> уже содержат
+    всё необходимое: VERIFY с curl после deploy, RECON before opinions, "not say completed without evidence".
+    Они <em>загружены</em> в каждую сессию. Но они — проза, а не blocking mechanics. Агент читает, кивает, пропускает.
+    <span class="quote">pipeline.md:13 — "VERIFY · Real commands/curl/scripts. After deploy — curl API on prod. Collect EVIDENCE."</span>
+  </div>
+
+  <!-- ============ TIMELINE ============ -->
+  <h2>Timeline — 39 дней в одной теме</h2>
+  <p class="sub">Первое расхождение → термин "void-and-rewrite" появляется только на день 40 → "structurally wrong" на день 60.</p>
+
+  <div class="timeline-wrap">
+    <svg class="timeline-svg" viewBox="0 0 1040 340" preserveAspectRatio="xMidYMid meet" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <linearGradient id="timelineFade" x1="0" y1="0" x2="1" y2="0">
+          <stop offset="0%" stop-color="#d99333" stop-opacity="0.7"/>
+          <stop offset="50%" stop-color="#e84545" stop-opacity="0.9"/>
+          <stop offset="100%" stop-color="#e84545" stop-opacity="1"/>
+        </linearGradient>
+      </defs>
+
+      <!-- main axis -->
+      <line x1="60" y1="180" x2="980" y2="180" stroke="url(#timelineFade)" stroke-width="3"/>
+
+      <!-- day ticks (at bottom) -->
+      <g font-family="ui-monospace, SF Mono, Menlo, monospace" font-size="10.5" fill="#6b7685" text-anchor="middle">
+        <g>
+          <line x1="60" y1="175" x2="60" y2="195" stroke="#2a3441" stroke-width="1"/>
+          <text x="60" y="218">2026-02-15</text>
+          <text x="60" y="232" fill="#9aa5b4">day 0</text>
+        </g>
+        <g>
+          <line x1="290" y1="175" x2="290" y2="195" stroke="#2a3441" stroke-width="1"/>
+          <text x="290" y="218">2026-03-15</text>
+          <text x="290" y="232" fill="#9aa5b4">day 28</text>
+        </g>
+        <g>
+          <line x1="520" y1="175" x2="520" y2="195" stroke="#2a3441" stroke-width="1"/>
+          <text x="520" y="218">2026-03-26</text>
+          <text x="520" y="232" fill="#9aa5b4">day 40</text>
+        </g>
+        <g>
+          <line x1="750" y1="175" x2="750" y2="195" stroke="#2a3441" stroke-width="1"/>
+          <text x="750" y="218">2026-04-15</text>
+          <text x="750" y="232" fill="#9aa5b4">day 60</text>
+        </g>
+        <g>
+          <line x1="980" y1="175" x2="980" y2="195" stroke="#2a3441" stroke-width="1"/>
+          <text x="980" y="218">2026-04-17</text>
+          <text x="980" y="232" fill="#9aa5b4">day 62</text>
+        </g>
+      </g>
+
+      <!-- events ABOVE axis -->
+      <g font-family="Iowan Old Style, Palatino Linotype, Georgia, serif" font-size="12" fill="#e8ecf1">
+        <!-- NAV mismatch first -->
+        <g>
+          <line x1="60" y1="180" x2="60" y2="110" stroke="#d99333" stroke-width="1.5"/>
+          <circle cx="60" cy="110" r="5" fill="#d99333" stroke="#0f1419" stroke-width="2"/>
+          <text x="70" y="102" fill="#d99333" font-family="ui-monospace, Menlo, monospace" font-size="10" letter-spacing="0.08em">FIRST</text>
+          <text x="70" y="116" font-size="11.5">Portfolio NAV mismatch</text>
+          <text x="70" y="129" fill="#9aa5b4" font-size="10">broker vs DB — noted, not rooted</text>
+        </g>
+
+        <!-- consilium 03-25 -->
+        <g>
+          <line x1="430" y1="180" x2="430" y2="85" stroke="#e84545" stroke-width="1.5"/>
+          <circle cx="430" cy="85" r="5" fill="#e84545" stroke="#0f1419" stroke-width="2"/>
+          <text x="438" y="78" font-size="11.5" fill="#e8ecf1">audit_ibkr_execution</text>
+          <text x="438" y="91" fill="#9aa5b4" font-size="10">21 critical/high fixes "deployed"</text>
+          <text x="438" y="103" fill="#6b7685" font-size="10" font-style="italic">→ becomes stale canon</text>
+        </g>
+
+        <!-- void-and-rewrite named -->
+        <g>
+          <line x1="520" y1="180" x2="520" y2="45" stroke="#e84545" stroke-width="2"/>
+          <circle cx="520" cy="45" r="7" fill="#e84545" stroke="#0f1419" stroke-width="2"/>
+          <text x="530" y="38" font-family="ui-monospace, Menlo, monospace" font-size="10" fill="#e84545" letter-spacing="0.08em" font-weight="700">TERM NAMED · DAY 40</text>
+          <text x="530" y="52" font-size="12" fill="#e8ecf1" font-weight="600">"void-and-rewrite"</text>
+          <text x="530" y="65" fill="#9aa5b4" font-size="10">handover_2026-03-26_133700.md</text>
+        </g>
+      </g>
+
+      <!-- events BELOW axis: consilia & audits -->
+      <g font-family="Iowan Old Style, Palatino Linotype, Georgia, serif" font-size="11" fill="#e8ecf1">
+        <g>
+          <line x1="680" y1="180" x2="680" y2="265" stroke="#e84545" stroke-width="1.5"/>
+          <circle cx="680" cy="265" r="4" fill="#e84545" stroke="#0f1419" stroke-width="2"/>
+          <text x="680" y="283" text-anchor="middle" font-size="10.5">consilium_04-14</text>
+          <text x="680" y="296" text-anchor="middle" fill="#9aa5b4" font-size="9.5">portfolio cash race</text>
+        </g>
+        <g>
+          <line x1="750" y1="180" x2="750" y2="262" stroke="#e84545" stroke-width="2"/>
+          <circle cx="750" cy="262" r="6" fill="#e84545" stroke="#0f1419" stroke-width="2"/>
+          <text x="750" y="280" text-anchor="middle" font-size="11" font-weight="600">audit_04-15</text>
+          <text x="750" y="294" text-anchor="middle" fill="#e84545" font-size="10">"structurally wrong"</text>
+          <text x="750" y="307" text-anchor="middle" fill="#9aa5b4" font-size="9.5">writes diverge from broker</text>
+        </g>
+        <g>
+          <line x1="880" y1="180" x2="880" y2="262" stroke="#e84545" stroke-width="1.5"/>
+          <circle cx="880" cy="262" r="4" fill="#e84545" stroke="#0f1419" stroke-width="2"/>
+          <text x="880" y="280" text-anchor="middle" font-size="10.5">consilium_04-17</text>
+          <text x="880" y="293" text-anchor="middle" fill="#9aa5b4" font-size="9.5">broker parity + Mirror v2</text>
+        </g>
+        <g>
+          <line x1="980" y1="180" x2="980" y2="265" stroke="#e84545" stroke-width="2"/>
+          <circle cx="980" cy="265" r="6" fill="#c89b5a" stroke="#0f1419" stroke-width="2"/>
+          <text x="980" y="283" text-anchor="end" font-size="11" font-weight="600" fill="#c89b5a">THIS AUDIT</text>
+          <text x="980" y="296" text-anchor="end" fill="#9aa5b4" font-size="9.5">meta: agent dysfunction</text>
+        </g>
+      </g>
+
+      <!-- cluster of handovers band -->
+      <g>
+        <rect x="310" y="155" width="340" height="14" fill="rgba(232,69,69,0.08)" stroke="rgba(232,69,69,0.3)" stroke-width="1" stroke-dasharray="3 3"/>
+        <text x="480" y="165" text-anchor="middle" font-family="ui-monospace, Menlo, monospace" font-size="10" fill="#e84545" letter-spacing="0.05em">10 handover'ов · 0 curl evidence · 5 NAV rewrites</text>
+      </g>
+
+    </svg>
+  </div>
+
+  <!-- ============ FIX TRANCHES ============ -->
+  <h2>Fix tranches — от immediate к architectural</h2>
+  <p class="sub">Sequencing утверждён consensus'ом 5 Claude + 2 GPT. T4 gated на полном завершении T1 + T2 + T3.3.</p>
+
+  <div class="tranches">
+
+    <div class="tranche t1">
+      <span class="tag">T1 · Runtime</span>
+      <h4>Runtime correctness</h4>
+      <div class="eta">1 week · 3 revertable commits</div>
+      <ul>
+        <li>Blocking startup reconcile (45s timeout)</li>
+        <li>Broker-parity readiness probe</li>
+        <li><strong>P0:</strong> fix dead broker-snapshot write path</li>
+        <li>Pre-warm broker_snapshots serial</li>
+        <li>Post-deploy smoke endpoint + CI gate</li>
+        <li>Atomic sync + 429 retry (eToro)</li>
+      </ul>
+      <div class="effort">effort · <span class="h">~23h</span></div>
+    </div>
+
+    <div class="tranche t2">
+      <span class="tag">T2 · Protocol</span>
+      <h4>Evidence enforcement</h4>
+      <div class="eta">1-2 weeks · rules + hooks</div>
+      <ul>
+        <li><strong>VERIFY gate</strong> как PreToolUse hook</li>
+        <li>Hypothesis Contract в /start + /handover</li>
+        <li>Supersession metadata: [SUPERSEDED by audit_…]</li>
+        <li>Open Blockers секция в horizon MEMORY.md</li>
+        <li>Recurring-topic RECON gate</li>
+      </ul>
+      <div class="effort">effort · <span class="h">~11h</span></div>
+    </div>
+
+    <div class="tranche t3">
+      <span class="tag">T3 · Integrity</span>
+      <h4>Data invariants</h4>
+      <div class="eta">parallel to T2 · ~3 days</div>
+      <ul>
+        <li>Triggers I1+I2 на cash_ledger (shadow 48h → enforce)</li>
+        <li>Forensic endpoint /integrity-check + nightly cron</li>
+        <li>Writer inventory — документ + CI check</li>
+      </ul>
+      <div class="effort">effort · <span class="h">~3 days</span></div>
+    </div>
+
+    <div class="tranche t4">
+      <span class="tag">T4 · Destination</span>
+      <h4>Broker Mirror v2</h4>
+      <div class="eta">4-6 weeks · shadow → cut-over</div>
+      <ul>
+        <li>Gated на T1+T2+T3 completion</li>
+        <li>Shadow mode validation против old system</li>
+        <li>Event-sourcing-lite (не full)</li>
+        <li>Phase 4 historical recomputation</li>
+      </ul>
+      <div class="effort">effort · <span class="h">~200h</span></div>
+    </div>
+
+  </div>
+
+  <!-- ============ RED ZONES GLOSSARY ============ -->
+  <h2>Red zones — глоссарий</h2>
+  <p class="sub">Пять confirmed failure modes из session flow. Каждая зона имеет target fix из Tranche 1/2/3.</p>
+
+  <div class="glossary">
+
+    <div class="gl-item">
+      <div class="k">
+        Poisoned canon
+        <span class="zone">Step 01 · /start</span>
+      </div>
+      <div class="v">
+        Загружаемая память содержит stale findings с тегом "Permanent knowledge". Новые audit/consilium
+        reports лежат рядом, но без supersession-ссылок. Агент читает старое как закон.
+        <span class="src">→ fix: T2.3 supersession metadata · T2.4 Open Blockers</span>
+      </div>
+    </div>
+
+    <div class="gl-item">
+      <div class="k">
+        Symptom-chase
+        <span class="zone">Step 03 · Implement</span>
+      </div>
+      <div class="v">
+        Агент трактует сломанную архитектуру как ground truth и латает симптомы вокруг.
+        Deferred P1 остаётся deferred — incremental fix даёт "зелёный" быстрее.
+        <span class="src">→ fix: T1.3 root-cause runtime · T2.2 Hypothesis Contract</span>
+      </div>
+    </div>
+
+    <div class="gl-item">
+      <div class="k">
+        False PASS
+        <span class="zone">Step 04 · Verify</span>
+      </div>
+      <div class="v">
+        PASS ставится на логическом code-review без runtime evidence. Правило "curl API on prod after deploy"
+        <em>уже есть</em> в pipeline.md — но как проза, не как forcing function.
+        <span class="src">→ fix: T2.1 VERIFY gate как PreToolUse hook</span>
+      </div>
+    </div>
+
+    <div class="gl-item">
+      <div class="k">
+        Deferred P1
+        <span class="zone">Step 05 · Handover</span>
+      </div>
+      <div class="v">
+        Root cause documented в Known Issues 10 handover'ов подряд без implementation.
+        <code>_record_rebalance_erp()</code> — 30+ дней "tomorrow". Отсутствует auto-escalation
+        (но обе GPT назвали Stale-P1 auto-consilium lowest ROI — нужен explicit annotation).
+        <span class="src">→ fix: T2.4 Open Blockers · [deferred: reason until date] в handover</span>
+      </div>
+    </div>
+
+    <div class="gl-item">
+      <div class="k">
+        Scope illusion
+        <span class="zone">Step 06 · DONE → loop</span>
+      </div>
+      <div class="v">
+        Сессия закрывается DONE по узкой задаче, но real invariant broker==DB не восстановлен.
+        Loop невидим в single-session view — /start читает latest handover, не 5-последних.
+        <span class="src">→ fix: T2.5 recurring-topic RECON gate · T3.2 forensic endpoint для MTTD</span>
+      </div>
+    </div>
+
+    <div class="gl-item amber">
+      <div class="k">
+        No supersession
+        <span class="zone">Step 02 · Plan mode</span>
+      </div>
+      <div class="v">
+        Amber-зона — не confirmed failure, но механизм: Plan mode теоретически может поймать
+        противоречие reports↔rules, но authority asymmetry побеждает. Mitigation — visible
+        Open Blockers секция.
+        <span class="src">→ fix: T2.4 Open Blockers · T2.3 supersession tags</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- footer -->
+  <footer>
+    <span>audit_2026-04-17_agent_context_dysfunction.md · 14 recs · 3 tranches</span>
+    <span>Claude Booster · meta-audit · visualization 2026-04-18</span>
+  </footer>
+
+</div>
+</body>
+</html>
