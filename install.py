@@ -52,11 +52,49 @@ import shutil
 import signal
 import sqlite3
 import sys
+import subprocess
 import tarfile
 import tempfile
 from pathlib import Path
 
-BOOSTER_VERSION = "1.5.0"
+
+def _detect_version() -> str:
+    """Derive version from git tags, VERSION file, or fallback.
+
+    Priority:
+    1. git describe --tags --abbrev=0 (exact tag like v1.5.0 → "1.5.0")
+    2. VERSION file in repo root (for tarball installs without .git/)
+    3. "dev" fallback
+    """
+    repo_dir = Path(__file__).resolve().parent
+
+    # Try git tag
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True, text=True, cwd=repo_dir, timeout=5
+        )
+        if result.returncode == 0:
+            tag = result.stdout.strip().lstrip("v")
+            if tag:
+                return tag
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    # Try VERSION file (fallback for tarball installs)
+    version_file = repo_dir / "VERSION"
+    if version_file.exists():
+        try:
+            v = version_file.read_text().strip().lstrip("v")
+            if v:
+                return v
+        except OSError:
+            pass
+
+    return "dev"
+
+
+BOOSTER_VERSION = _detect_version()
 REPO_ROOT = Path(__file__).resolve().parent
 TEMPLATES = REPO_ROOT / "templates"
 CLAUDE_HOME = Path.home() / ".claude"
