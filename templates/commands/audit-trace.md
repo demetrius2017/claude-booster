@@ -322,16 +322,15 @@ After **all Explore agents return**, collect their trace tables.
 
 Merge all PATH rows into a single table. Remove duplicate rows (exact matches). For UNKNOWN entries, note them but do not drop — unknown paths are potential risk.
 
-**Step 2 — Pairwise comparison:**
+**Step 2 — Group by source, then compare across groups:**
 
-For every pair (PATH-A, PATH-B) that involves the same concept:
+Group all paths by their Layer 2 value (data source). Paths with identical Layer 2 belong to the same "source cluster."
 
-Check Layer 2 (data source):
-- Same table.column? → Layer 2: CONSISTENT
-- Different table or different column? → FINDING: type=source-divergence, severity=HIGH
-- One is cache, one is DB (without documented cache-as-of-write guarantee)? → FINDING: type=stale-cache-risk, severity=HIGH
+- If ALL paths land in one cluster → Layer 2: CONSISTENT for all. Proceed to Layer 3 check within the cluster.
+- If paths split across multiple clusters → FINDING for each cross-cluster pair: type=source-divergence, severity=HIGH.
+- If one cluster is cache and another is DB (without documented cache-as-of-write guarantee) → FINDING: type=stale-cache-risk, severity=HIGH.
 
-Check Layer 3 (computation):
+Within each source cluster, check Layer 3 (computation):
 - Same function name and file? → Layer 3: CONSISTENT
 - Different functions? → compare function bodies if possible (are they identical logic? different rounding? different formula?)
   - Identical logic in two different functions → FINDING: type=computation-duplication, severity=MED
