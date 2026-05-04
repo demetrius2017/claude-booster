@@ -56,7 +56,7 @@ import tarfile
 import tempfile
 from pathlib import Path
 
-BOOSTER_VERSION = "1.4.0"
+BOOSTER_VERSION = "1.5.0"
 REPO_ROOT = Path(__file__).resolve().parent
 TEMPLATES = REPO_ROOT / "templates"
 CLAUDE_HOME = Path.home() / ".claude"

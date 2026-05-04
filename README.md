@@ -62,6 +62,62 @@ A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explor
 
 ---
 
+## What's new in v1.5.0 — Systemic Thinking Enforcement
+
+**The problem this release solves.** Claude edits functions without understanding the dependency graph. It fixes function A but breaks B, C, D that depend on A. It patches data in the database directly instead of fixing the function that produced the bad data in the first place. Across sessions, it loses track of what connects to what — there's no "circuit board" showing the system topology. The session ends, open threads are forgotten, and the next session starts with no record of the half-finished work.
+
+**What v1.5.0 changes.** Three layers of systemic thinking enforcement — architecture as code, gate-level blocking, and workflow integration:
+
+### Layer 1 — Architecture as Code
+
+**`ARCHITECTURE.md`** — a codebase map generated (and auto-refreshed) from the real code, not from memory. Contains Mermaid C4 diagrams for each layer, dependency tables (what calls what, what writes to what), data flow diagrams, and explicit system invariants. Not a doc you write once and forget — a living artifact updated by the pipeline.
+
+**`dep_manifest.json`** — machine-readable companion to `ARCHITECTURE.md`, consumed by hooks in under 5ms. Lists critical files, their dependents, and dependency-review requirements. This is what the guards read to decide whether to block an edit.
+
+**`ADR-TEMPLATE.md`** — Architecture Decision Record template with a mandatory "What NOT to change" section. Enforces that every significant decision explicitly documents its blast radius.
+
+### Layer 2 — Three new enforcement gates
+
+**`financial_dml_guard.py`** — blocks `UPDATE`/`DELETE` on protected database tables. Derived-readonly columns (fields whose value must come from the producer function, not be patched directly) and append-only tables (audit logs, ledger entries) are declared in config; the guard refuses direct DML against them. The message is explicit: "fix the producer function, not the data."
+
+**`dep_guard.py`** — blocks `Edit`/`Write` on critical files unless the current session transcript shows evidence of dependency review. If you're about to touch a function listed in `dep_manifest.json` as high-dependency, the guard checks that you ran the review step first. No evidence = blocked.
+
+**`arch_freshness.py`** — warns (non-blocking, by design) when source files change but `ARCHITECTURE.md` hasn't been updated in the same session. Keeps the map from drifting silently.
+
+**`require_task.py` extension** — validates that `TaskCreate` descriptions contain structured impact fields: `affected:`, `dependencies:`, `impact:`, `dependents:`. A task that doesn't state its blast radius can't be opened.
+
+### Layer 3 — Two new slash commands
+
+**`/architecture`** — generates `ARCHITECTURE.md` and `dep_manifest.json` from live codebase analysis. Uses a Map-Reduce pattern: 4 parallel Haiku agents each MAP one layer (database schema, API layer, business logic, external integrations), then 1 Sonnet Architect REDUCES them into a connected system map with cross-layer dependency edges. Supports `--update` for incremental refresh when only part of the system changed.
+
+**`/debt`** — tracks session debts: work items that were identified but not completed before the session ended. `/debt list` shows the inventory, `/debt work` picks the highest-priority item and starts implementing it, `/debt review` formats the current debt list for inclusion in the handover report. Debts survive session resets; the next session picks up where this one left off.
+
+### Pipeline integration
+
+- **`/start`** now reads `ARCHITECTURE.md` and `dep_manifest.json` as mandatory context. If neither exists, it suggests running `/architecture` before any code edits.
+- **Paired verification** gains an `Affected downstream:` field in the Artifact Contract — Verifier tests must cover at least one downstream consumer of the changed interface.
+- **Post-VERIFY** spawns a background agent that auto-updates architecture docs when interfaces change (new endpoints, renamed functions, schema diffs).
+- **`/handover`** now includes a `## Outstanding Debts` section populated by `/debt review` — the next session sees the open threads before it sees the code.
+
+**Quick start:**
+```bash
+# Generate architecture docs for any project
+/architecture
+
+# See what work is left unfinished
+/debt list
+
+# Pick the highest-priority debt and work it
+/debt work
+
+# Include debts in the handover
+/debt review
+```
+
+**Consilium-driven design.** This release was designed by a 6-agent consilium: Systems Architect, Financial Engineer, Tooling Engineer, Process Consultant, GPT-5.5 external validation, and user input. The decision report is at `reports/consilium_2026-05-04_systemic_thinking.md`. Key rejected alternatives: auto-generated AST dependency graphs (too noisy, miss DB-mediated dependencies that don't appear in import graphs), Figma for architecture diagrams (rate-limited, not version-controlled, can't be read by hooks), full DML block on all tables (60–70% miss rate — too many legitimate admin paths hit it).
+
+---
+
 ## What's new in v1.4.0 — Session Context for Agents
 
 **The problem this release solves.** When a Worker agent fails and Lead re-spawns a new one, the retry agent starts blind — it doesn't know what the predecessor tried, what errors it hit, or what approaches were already ruled out. Lead's summary is lossy (Data Processing Inequality: each hop through an agent boundary is a lossy codec). The retry agent ends up repeating the same failed approach, burning tokens and time.
@@ -244,6 +300,9 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | **Same bug resurfaces every 3 sessions** | No causal memory — each session re-discovers and re-proposes the same fix | Temporal-causal 3D memory: stuck-loop detector hashes topics across handovers, forces reframe (Q1–Q4) when pattern detected |
 | **Every agent runs on Opus, session takes 10 min** | No model routing — all delegates inherit the Lead's expensive model | 4-tier routing: Haiku for lookups, Sonnet for coding, Opus only for architecture. 2-4x faster, 3-5x cheaper per delegation |
 | **Retry agent makes the same mistake** | No knowledge of what predecessor tried or why it failed | `session_context.py` lets retry agents read the failed Worker's raw session — stack traces, attempted edits, error messages — instead of Lead's lossy summary |
+| **Claude fixes A, breaks B, C, D** | No dependency map — edits happen without tracing the call graph | `dep_guard.py` blocks edits on critical files without dependency review evidence + `ARCHITECTURE.md` circuit board shows the full system topology |
+| **Claude patches DB data directly** | No gate on DML — broken data gets fixed in the DB instead of in the producer | `financial_dml_guard.py` blocks `UPDATE`/`DELETE` on derived columns and append-only tables, forces "fix the producer function, not the data" |
+| **Session ends, debts forgotten** | No tracking of unfinished work — next session starts blind | `/debt` tracks the inventory, `/debt work` resolves highest-priority items, `/handover` includes `## Outstanding Debts` so context survives the reset |
 
 ---
 
@@ -268,6 +327,9 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | Slow agents burn Opus budget | All delegates on Opus 4.7 | 4-tier model routing (Haiku/Sonnet/Opus) + `/fast` mode for coding agents |
 | Retry agent repeats same failed approach | No access to predecessor's session history | `session_context.py --agent "<failed Worker>"` — retry reads the raw JSONL of the failed agent, sees what was tried |
 | "What did the agents do?" | Subagent sessions buried in filesystem | `session_context.py --subagents` lists all agents (description, size, time); `--agent <keyword>` reads any one |
+| Edit A silently breaks B, C, D | No dependency map — changes land without tracing the call graph | `dep_guard.py` checks session transcript for dependency review evidence before allowing edits on high-dependency files; `ARCHITECTURE.md` + `dep_manifest.json` make the circuit board explicit |
+| Claude patches DB data instead of the producer | No DML gate — data inconsistency "fixed" at the storage layer | `financial_dml_guard.py` blocks direct `UPDATE`/`DELETE` on derived-readonly columns and append-only tables with a clear redirect message |
+| Session ends, open work lost | No debt tracking — next session starts from scratch | `/debt list` inventories unfinished items; `/debt work` picks and resolves; `/handover` injects `## Outstanding Debts` for the next session |
 
 ---
 
@@ -303,9 +365,9 @@ Under `~/.claude/`:
 | Path | Content |
 |------|---------|
 | `rules/*.md` | 12 rule files — anti-loop, tool strategy, pipeline phases, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection, communication-style ("professor" tone), quality/Three-Nos, paired-verification (with session context injection protocol) |
-| `scripts/*.py` | 20 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), session context extractor (`session_context.py` — readable JSONL extraction for agent delegation), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
+| `scripts/*.py` | 23 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), session context extractor (`session_context.py` — readable JSONL extraction for agent delegation), systemic thinking guards (`financial_dml_guard.py`, `dep_guard.py`, `arch_freshness.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
 | `scripts/supervisor/` | v1.2.0 Supervisor Agent — 8 modules (`supervisor.py` CLI + orchestration, `policy.py` Tier 0/1/2 engine, `quota.py` admission + circuit-breaker, `detector.py` adaptive-silence FSM, `stream_json_adapter.py` Path A runtime, `persistence.py` sqlite writers, `runtime.py` transport Protocol, `schema.sql`) + `prompts/supervisor_v1.md` Haiku escalation contract |
-| `commands/*.md` | 9 slash commands: `/start`, `/handover`, `/consilium`, `/lead`, `/update`, `/phase`, `/delegate`, `/verify-after-edit`, `/verify-flow` |
+| `commands/*.md` | 11 slash commands: `/start`, `/handover`, `/consilium`, `/lead`, `/update`, `/phase`, `/delegate`, `/verify-after-edit`, `/verify-flow`, `/architecture`, `/debt` |
 | `agents/*.md`, `*.json` | Agent team protocols — lifecycle, ownership schema, worktree safety, readiness gates, roadmap convention |
 | `settings.json` | Hooks wired to Claude Code, **merged** into any existing config |
 | `.booster-manifest.json` | Installer metadata — SHA-256 per file, version, for idempotency and selective rollback |
@@ -327,6 +389,8 @@ All commands are on-demand — their instructions load only when you invoke them
 | `/delegate` | Inspect the delegate-gate budget (Lead must delegate, not do inline work). |
 | `/verify-after-edit` | Post-edit UI verification via Chrome DevTools. |
 | `/verify-flow` | End-to-end UI flow verification. |
+| `/architecture` | Generates `ARCHITECTURE.md` + `dep_manifest.json` from codebase analysis. Map-Reduce: 4 Haiku explorers map each layer (DB, API, business logic, integrations), 1 Sonnet architect reduces into a connected system map. Supports `--update` for incremental refresh. |
+| `/debt` | Tracks session debts (unfinished work items). `/debt list` shows inventory, `/debt work` picks highest priority and starts implementing, `/debt review` formats for handover inclusion. |
 
 ### Speed & model routing
 
