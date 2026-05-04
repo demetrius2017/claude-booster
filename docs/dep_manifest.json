@@ -1,0 +1,362 @@
+{
+  "_comment": "Dependency manifest for Claude Booster. Machine-readable companion to ARCHITECTURE.md. Keep in sync — same commit rule applies. Format: version 0.1.0.",
+  "version": "0.1.0",
+  "project": "Claude Booster",
+  "updated": "2026-05-05",
+
+  "components": {
+    "installer_main": {
+      "file": "install.py::main",
+      "reads_from": ["domain:enumerate_template_files", "domain:load_manifest", "domain:classify_state", "domain:preflight", "domain:prompt_identity"],
+      "writes_to": ["domain:write_all", "domain:write_settings", "domain:write_manifest", "domain:make_backup"],
+      "called_by": ["cli:python install.py"],
+      "critical": true,
+      "notes": "Orchestrates entire install pipeline. Failure rolls back to backup via restore_backup()."
+    },
+    "installer_atomic_write": {
+      "file": "install.py::atomic_write",
+      "reads_from": [],
+      "writes_to": ["external:filesystem"],
+      "called_by": ["installer_main", "installer_write_settings", "installer_write_manifest"],
+      "critical": true,
+      "notes": "tmp+fsync+os.replace guarantees no partial writes. On Darwin uses F_FULLFSYNC."
+    },
+    "installer_write_settings": {
+      "file": "install.py::write_settings",
+      "reads_from": ["external:settings.json.template", "external:~/.claude/settings.json"],
+      "writes_to": ["external:~/.claude/settings.json"],
+      "called_by": ["installer_main"],
+      "critical": true,
+      "notes": "Merges _booster namespace into user's settings.json. User hooks/permissions/MCP survive untouched."
+    },
+    "installer_preflight": {
+      "file": "install.py::preflight",
+      "reads_from": ["external:sys.version_info", "external:platform.system", "external:/proc/mounts", "external:/proc/sys/kernel/osrelease"],
+      "writes_to": [],
+      "called_by": ["installer_main"],
+      "critical": true,
+      "notes": "Guards against Python<3.8, Windows/WSL1, Snap/Flatpak, network FS, missing FTS5."
+    },
+    "rolling_memory_memorize": {
+      "file": "templates/scripts/rolling_memory.py::memorize",
+      "reads_from": ["db:agent_memory"],
+      "writes_to": ["db:agent_memory", "db:agent_memory_fts"],
+      "called_by": ["memory_session_end", "index_reports", "rolling_memory_consolidate", "rolling_memory_memorize_with_merge", "cli:rolling_memory.py memorize"],
+      "critical": true,
+      "notes": "Core write path. Enforces content_hash dedup, idempotency_key upsert, status validation, rolling limits."
+    },
+    "rolling_memory_memorize_with_merge": {
+      "file": "templates/scripts/rolling_memory.py::memorize_with_merge",
+      "reads_from": ["db:agent_memory", "db:agent_memory_fts"],
+      "writes_to": ["db:agent_memory"],
+      "called_by": ["memory_session_end"],
+      "critical": true,
+      "notes": "Compounding: finds similar via FTS5+keyword overlap, merges if subset_score>0.7, else creates new."
+    },
+    "rolling_memory_recall": {
+      "file": "templates/scripts/rolling_memory.py::recall",
+      "reads_from": ["db:agent_memory"],
+      "writes_to": ["db:agent_memory"],
+      "called_by": ["rolling_memory_consolidate", "rolling_memory_build_context", "cli:rolling_memory.py list"],
+      "critical": true,
+      "notes": "Core read path. touch_access=True updates access_count+last_accessed_at (side-effectful read)."
+    },
+    "rolling_memory_search": {
+      "file": "templates/scripts/rolling_memory.py::search",
+      "reads_from": ["db:agent_memory_fts", "db:agent_memory"],
+      "writes_to": [],
+      "called_by": ["cli:rolling_memory.py search", "rolling_memory_build_start_context"],
+      "critical": false,
+      "notes": "FTS5 full-text search. Scope filter on joined agent_memory.scope (not FTS column) to avoid path-token leakage."
+    },
+    "rolling_memory_consolidate": {
+      "file": "templates/scripts/rolling_memory.py::consolidate",
+      "reads_from": ["db:agent_memory", "external:Anthropic API (Haiku)"],
+      "writes_to": ["db:agent_memory"],
+      "called_by": ["cli:rolling_memory.py consolidate"],
+      "critical": true,
+      "notes": "Clusters similar memories, synthesizes via Haiku, atomically inserts new + deactivates originals. scope='all' forbidden."
+    },
+    "rolling_memory_build_context": {
+      "file": "templates/scripts/rolling_memory.py::build_context",
+      "reads_from": ["db:agent_memory"],
+      "writes_to": [],
+      "called_by": ["memory_session_start"],
+      "critical": true,
+      "notes": "Formats markdown context within token_budget. Sections: directives, feedback, sessions, errors, decisions, project_context."
+    },
+    "rolling_memory_build_start_context": {
+      "file": "templates/scripts/rolling_memory.py::build_start_context",
+      "reads_from": ["db:agent_memory"],
+      "writes_to": [],
+      "called_by": ["memory_session_start", "cli:rolling_memory.py start-context"],
+      "critical": false,
+      "notes": "Formats consilium/audit rows for /start. Project-biased via _category_from_scope()."
+    },
+    "memory_session_start": {
+      "file": "templates/scripts/memory_session_start.py::main",
+      "reads_from": ["external:stdin (Claude Code JSON)", "domain:rolling_memory.build_context", "domain:rolling_memory.build_start_context"],
+      "writes_to": ["external:stdout (additionalContext JSON)"],
+      "called_by": ["hook:SessionStart"],
+      "critical": true,
+      "notes": "Entry point for session memory injection. Never crashes Claude — errors logged, empty context returned."
+    },
+    "memory_session_end": {
+      "file": "templates/scripts/memory_session_end.py::main",
+      "reads_from": ["external:stdin (Claude Code JSON)", "external:memory_batch_{sid}.jsonl", "external:transcript"],
+      "writes_to": ["db:agent_memory"],
+      "called_by": ["hook:Stop"],
+      "critical": true,
+      "notes": "Extracts error_lessons (classified by 11-slug taxonomy) and session_summary from batch file."
+    },
+    "memory_post_tool": {
+      "file": "templates/scripts/memory_post_tool.py::main",
+      "reads_from": ["external:stdin (PostToolUse JSON)"],
+      "writes_to": ["external:memory_batch_{sid}.jsonl"],
+      "called_by": ["hook:PostToolUse"],
+      "critical": false,
+      "notes": "<5ms hot path. Batches significant events. On report Write/Edit, forks index_reports.py fire-and-forget."
+    },
+    "verify_gate": {
+      "file": "templates/scripts/verify_gate.py::main",
+      "reads_from": ["external:stdin (PreToolUse JSON)", "external:transcript", "external:git diff"],
+      "writes_to": [],
+      "called_by": ["hook:PreToolUse/Bash"],
+      "critical": true,
+      "notes": "Blocks handover commits without verified JSON evidence block. Detects fake evidence (localhost, || true)."
+    },
+    "dep_guard": {
+      "file": "templates/scripts/dep_guard.py::main",
+      "reads_from": ["external:stdin (PreToolUse JSON)", "external:dep_manifest.json", "external:transcript"],
+      "writes_to": [],
+      "called_by": ["hook:PreToolUse/Edit|Write"],
+      "critical": true,
+      "notes": "Blocks edits on critical files without dependency review evidence. Scans last 30 assistant blocks."
+    },
+    "financial_dml_guard": {
+      "file": "templates/scripts/financial_dml_guard.py::main",
+      "reads_from": ["external:stdin (PreToolUse JSON)", "external:dep_manifest.json", "external:protected_tables.txt"],
+      "writes_to": [],
+      "called_by": ["hook:PreToolUse/Bash"],
+      "critical": true,
+      "notes": "Blocks UPDATE/DELETE on protected tables from dep_manifest.json. Enforces 'fix the producer, not the data'."
+    },
+    "delegate_gate": {
+      "file": "templates/scripts/delegate_gate.py::main",
+      "reads_from": ["external:stdin (PreToolUse JSON)", "external:.delegate_counter", "external:.delegate_mode"],
+      "writes_to": ["external:.delegate_counter", "external:logs/delegate_gate_decisions.jsonl"],
+      "called_by": ["hook:PreToolUse/Edit|Write|Bash|Agent|TaskCreate"],
+      "critical": false,
+      "notes": "Budget=1 action before delegation required. Auto-skips for sub-agents (agent_id non-empty)."
+    },
+    "supervisor_supervise": {
+      "file": "templates/scripts/supervisor/supervisor.py::Supervisor.supervise",
+      "reads_from": ["domain:WorkerRuntime.events", "domain:policy.evaluate", "domain:quota.admit"],
+      "writes_to": ["db:supervisor_decisions", "db:supervisor_quota"],
+      "called_by": ["cli:/supervise command"],
+      "critical": true,
+      "notes": "Main event loop: policy→quota→detector→persistence. One worker per supervisor per session."
+    },
+    "supervisor_policy_evaluate": {
+      "file": "templates/scripts/supervisor/policy.py::evaluate",
+      "reads_from": ["domain:PolicyContext", "domain:DENY_BASH_PATTERNS", "domain:DENY_PATH_SUBSTRINGS"],
+      "writes_to": [],
+      "called_by": ["supervisor_supervise"],
+      "critical": true,
+      "notes": "Deterministic Tier 0/1/2 pattern matching. No LLM in loop. Unknown tools → escalate (safe default)."
+    },
+    "supervisor_quota": {
+      "file": "templates/scripts/supervisor/quota.py::QuotaTracker",
+      "reads_from": [],
+      "writes_to": [],
+      "called_by": ["supervisor_supervise"],
+      "critical": true,
+      "notes": "Circuit breaker: closed→half_open(50%)→open(85%). Reserves 15% for supervisor traffic."
+    },
+    "supervisor_detector": {
+      "file": "templates/scripts/supervisor/detector.py::WorkerStateDetector",
+      "reads_from": ["domain:WorkerEvent stream"],
+      "writes_to": [],
+      "called_by": ["supervisor_supervise"],
+      "critical": false,
+      "notes": "Adaptive silence: clamp(3×median_gap, 20, 180)s. FSM with 9 states. Accelerator phrases lower threshold."
+    },
+    "supervisor_persistence": {
+      "file": "templates/scripts/supervisor/persistence.py::SupervisorPersistence",
+      "reads_from": ["db:supervisor_decisions", "db:supervisor_quota"],
+      "writes_to": ["db:supervisor_decisions", "db:supervisor_quota"],
+      "called_by": ["supervisor_supervise"],
+      "critical": true,
+      "notes": "Applies schema.sql idempotently. Validates decision/approved_by enums before insert."
+    },
+    "supervisor_stream_json": {
+      "file": "templates/scripts/supervisor/stream_json_adapter.py::StreamJsonRuntime",
+      "reads_from": ["external:claude CLI subprocess stdout"],
+      "writes_to": ["external:claude CLI subprocess stdin"],
+      "called_by": ["supervisor_supervise"],
+      "critical": true,
+      "notes": "Spawns headless claude CLI in stream-json mode. Signal ladder for cancel: SIGINT→SIGTERM→SIGKILL."
+    },
+    "index_reports": {
+      "file": "templates/scripts/index_reports.py::main",
+      "reads_from": ["external:~/Projects/*/reports/*.md"],
+      "writes_to": ["db:agent_memory"],
+      "called_by": ["memory_post_tool", "cli:python index_reports.py"],
+      "critical": false,
+      "notes": "Walks reports/, parses YAML frontmatter, upserts via idempotency_key='report:<abspath>'. Bodies truncated to 8000 chars."
+    },
+    "session_context": {
+      "file": "templates/scripts/session_context.py::main",
+      "reads_from": ["external:session JSONL files", "external:subagent JSONL+meta"],
+      "writes_to": ["external:stdout"],
+      "called_by": ["paired-verification briefs", "cli:python session_context.py"],
+      "critical": false,
+      "notes": "Extracts readable conversation from JSONL. Strips hook noise. Supports --agent, --subagents, --grep, --tail."
+    },
+    "check_booster_update": {
+      "file": "templates/scripts/check_booster_update.py::main",
+      "reads_from": ["external:.booster-manifest.json", "external:git fetch"],
+      "writes_to": ["external:stdout (additionalContext)"],
+      "called_by": ["hook:SessionStart"],
+      "critical": false,
+      "notes": "Compares installed git_sha with remote HEAD. Emits update notice if drift detected."
+    },
+    "gate_common": {
+      "file": "templates/scripts/_gate_common.py",
+      "reads_from": ["external:CLAUDE_HOME env"],
+      "writes_to": ["external:logs/*.jsonl"],
+      "called_by": ["delegate_gate", "ask_gate"],
+      "critical": false,
+      "notes": "Shared helpers: logs_dir(), iso_now(), append_jsonl(), walk_up_to(), project_root_from(), find_upward()."
+    },
+    "gate_stats": {
+      "file": "templates/scripts/gate_stats.py::main",
+      "reads_from": ["external:logs/delegate_gate_decisions.jsonl", "external:logs/ask_gate_decisions.jsonl"],
+      "writes_to": ["external:stdout"],
+      "called_by": ["cli:python gate_stats.py"],
+      "critical": false,
+      "notes": "Aggregates gate decisions over a time window. Reports block/allow/skip rates."
+    }
+  },
+
+  "data_patches_forbidden": [
+    "agent_memory.content_hash",
+    "agent_memory.access_count",
+    "agent_memory.last_accessed_at",
+    "supervisor_quota.circuit_state"
+  ],
+
+  "append_only_tables": [
+    "supervisor_decisions"
+  ],
+
+  "invariants": {
+    "INV-01": {
+      "description": "No duplicate memories: content_hash unique per memory_type",
+      "formula": "UNIQUE(memory_type, content_hash) WHERE content_hash IS NOT NULL",
+      "enforced_in": "templates/scripts/rolling_memory.py::memorize",
+      "on_violation": "sqlite3.IntegrityError → rollback, skip silently"
+    },
+    "INV-02": {
+      "description": "Idempotency key unique for upsert semantics",
+      "formula": "UNIQUE(idempotency_key) WHERE idempotency_key IS NOT NULL",
+      "enforced_in": "templates/scripts/rolling_memory.py::memorize",
+      "on_violation": "sqlite3.IntegrityError → rollback"
+    },
+    "INV-03": {
+      "description": "Priority bounded [0, 100]",
+      "formula": "priority BETWEEN 0 AND 100",
+      "enforced_in": "DB CHECK constraint on agent_memory",
+      "on_violation": "DB rejects INSERT/UPDATE"
+    },
+    "INV-04": {
+      "description": "Status must be active, under_review, or superseded",
+      "formula": "status IN ('active', 'under_review', 'superseded')",
+      "enforced_in": "templates/scripts/rolling_memory.py::memorize + DB CHECK",
+      "on_violation": "ValueError before DB write"
+    },
+    "INV-05": {
+      "description": "under_review requires resolve_by_date",
+      "formula": "status = 'under_review' → resolve_by_date IS NOT NULL AND IS ISO date",
+      "enforced_in": "templates/scripts/rolling_memory.py::memorize",
+      "on_violation": "ValueError: status='under_review' requires a resolve_by_date"
+    },
+    "INV-06": {
+      "description": "superseded_by_id only valid when status='superseded'",
+      "formula": "status ≠ 'superseded' → superseded_by_id IS NULL",
+      "enforced_in": "templates/scripts/rolling_memory.py::memorize",
+      "on_violation": "ValueError: superseded_by_id is only valid when status='superseded'"
+    },
+    "INV-07": {
+      "description": "Supervisor decision must be approve, escalate, or deny",
+      "formula": "decision IN ('approve', 'escalate', 'deny')",
+      "enforced_in": "templates/scripts/supervisor/persistence.py::record_decision + DB CHECK",
+      "on_violation": "ValueError + DB CHECK rejection"
+    },
+    "INV-08": {
+      "description": "Supervisor approved_by must be regex, haiku, or dmitry (or NULL)",
+      "formula": "approved_by IN ('regex', 'haiku', 'dmitry') OR approved_by IS NULL",
+      "enforced_in": "templates/scripts/supervisor/persistence.py::record_decision + DB CHECK",
+      "on_violation": "ValueError + DB CHECK rejection"
+    },
+    "INV-09": {
+      "description": "Circuit state must be closed, half_open, or open",
+      "formula": "circuit_state IN ('closed', 'half_open', 'open')",
+      "enforced_in": "templates/scripts/supervisor/quota.py::QuotaTracker.state + DB CHECK",
+      "on_violation": "DB CHECK rejection"
+    },
+    "INV-10": {
+      "description": "Consolidation is atomic: insert new before deactivating originals",
+      "formula": "BEGIN IMMEDIATE → INSERT → UPDATE active=0 → COMMIT (or full ROLLBACK)",
+      "enforced_in": "templates/scripts/rolling_memory.py::consolidate",
+      "on_violation": "Rollback — originals stay active, no data loss"
+    },
+    "INV-11": {
+      "description": "Cross-scope consolidation forbidden",
+      "formula": "consolidate(scope='all') → ValueError",
+      "enforced_in": "templates/scripts/rolling_memory.py::consolidate",
+      "on_violation": "ValueError: consolidate(scope='all') is unsafe"
+    },
+    "INV-12": {
+      "description": "Preserved rows immune to consolidation",
+      "formula": "preserve=1 → excluded from consolidate() cluster input",
+      "enforced_in": "templates/scripts/rolling_memory.py::consolidate",
+      "on_violation": "Row silently excluded (no error — by design)"
+    },
+    "INV-13": {
+      "description": "File writes are atomic via tmp+fsync+os.replace",
+      "formula": "write(tmp) → fsync(tmp) → os.replace(tmp, target)",
+      "enforced_in": "install.py::atomic_write",
+      "on_violation": "tmp file cleaned up, target unchanged"
+    },
+    "INV-14": {
+      "description": "Install fully succeeds or rolls back to backup",
+      "formula": "try { write_all + write_settings + write_manifest } catch → restore_backup()",
+      "enforced_in": "install.py::main",
+      "on_violation": "Backup restored, exit 30 or 40"
+    },
+    "INV-15": {
+      "description": "Gate hooks never crash Claude — fail-open on programming error",
+      "formula": "exit 0 (allow) or 2 (block) or 1 (fail-open); never unhandled exception",
+      "enforced_in": "All gate hook main() functions",
+      "on_violation": "Errors logged, exit 0 or 1"
+    },
+    "INV-16": {
+      "description": "Delegate gate budget: max 1 action before delegation required",
+      "formula": ".delegate_counter > BUDGET → exit 2 (block)",
+      "enforced_in": "templates/scripts/delegate_gate.py::main",
+      "on_violation": "exit 2: block with 'delegate first' message"
+    },
+    "INV-17": {
+      "description": "Quota tracker reserves 15% for supervisor control traffic",
+      "formula": "circuit opens at usage_pct >= 0.85; half-opens at >= 0.50",
+      "enforced_in": "templates/scripts/supervisor/quota.py::QuotaTracker",
+      "on_violation": "Circuit opens → worker cancelled"
+    }
+  },
+
+  "migration_guard_rules": {
+    "schema_version": "rolling_memory.py SCHEMA_VERSION must be bumped on any agent_memory schema change",
+    "supervisor_schema": "supervisor/schema.sql uses CREATE IF NOT EXISTS — safe to re-apply but does not migrate older shapes"
+  }
+}
