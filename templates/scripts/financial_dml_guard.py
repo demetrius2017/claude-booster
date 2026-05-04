@@ -19,7 +19,7 @@ Contract:
     exit   — 0 allow, 2 block, 1 fail-open (programming error)
 
     Protected tables are read from (first found wins):
-      1. <project>/.claude/dep_manifest.json
+      1. <project>/docs/dep_manifest.json
              .append_only_tables   — list of table names
              .data_patches_forbidden — list of "table.column" strings
       2. <project>/.claude/protected_tables.txt
@@ -54,7 +54,7 @@ Limitations:
 
 ENV/Files:
     - Reads  : stdin (hook JSON)
-               <project>/.claude/dep_manifest.json      (protected table config)
+               <project>/docs/dep_manifest.json      (protected table config)
                <project>/.claude/protected_tables.txt   (fallback table list)
                session transcript JSONL (bypass marker check)
     - Writes : ~/.claude/logs/financial_dml_guard_decisions.jsonl (append-only)
@@ -232,7 +232,7 @@ def _resolve_protected_tables(cwd: str) -> Tuple[FrozenSet[str], Dict[str, str]]
     Returns (frozenset of lower-cased table names, producer_hints dict).
     Empty frozenset if no config found (fail-open).
     """
-    manifest = find_upward(cwd, ".claude/dep_manifest.json")
+    manifest = find_upward(cwd, "docs/dep_manifest.json")
     if manifest is not None:
         tables, hints = _load_from_manifest(manifest)
         return frozenset(tables), hints

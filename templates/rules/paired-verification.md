@@ -23,7 +23,7 @@ Dmitry's request (2026-04-30): когда Lead делегирует содерж
 
 ## RECON — mandatory architecture reading
 
-Before writing any Artifact Contract, Lead **MUST** read `ARCHITECTURE.md` and `.claude/dep_manifest.json` (if they exist in the project):
+Before writing any Artifact Contract, Lead **MUST** read `ARCHITECTURE.md` and `docs/dep_manifest.json` (if they exist in the project):
 - Consult the dependency table to populate the `Affected downstream:` field
 - If the function being changed is listed as `critical: true` in dep_manifest.json, include its `feeds` array in the Artifact Contract
 - If the project has no architecture docs: note it in the handover as a gap; do not block work

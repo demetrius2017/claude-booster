@@ -16,7 +16,7 @@ Contract:
     exit   — 0 allow, 2 block, 1 fail-open (programming / unexpected error)
 
     Critical components are read from:
-        <project>/.claude/dep_manifest.json
+        <project>/docs/dep_manifest.json
         .components.<name>.critical == true AND .components.<name>.file matches
 
     A component's file is "matched" when the absolute path being edited ends
@@ -48,7 +48,7 @@ Limitations:
 
 ENV/Files:
     - Reads  : stdin (hook JSON)
-               <project>/.claude/dep_manifest.json
+               <project>/docs/dep_manifest.json
                session transcript JSONL (evidence scan)
     - Writes : ~/.claude/logs/dep_guard_decisions.jsonl (append-only)
     - ENV    : CLAUDE_BOOSTER_SKIP_DEP_GUARD=1  — bypass the gate entirely
@@ -418,7 +418,7 @@ def main() -> int:
         return 0
 
     # Locate dep_manifest.json — fail-open if not found.
-    manifest_path = find_upward(cwd, ".claude/dep_manifest.json")
+    manifest_path = find_upward(cwd, "docs/dep_manifest.json")
     if manifest_path is None:
         append_jsonl(DEP_GUARD_LOG_NAME, {
             **base_record,
