@@ -77,11 +77,11 @@ from typing import Any, Dict, List, Optional, Tuple
 # _gate_common import — same two-step try/except pattern as dep_guard.py
 # ---------------------------------------------------------------------------
 try:
-    from _gate_common import append_jsonl, find_upward, iso_now, logs_dir
+    from _gate_common import append_jsonl, find_upward, iso_now, logs_dir, project_root_from
 except ImportError:
     import pathlib as _pl
     sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
-    from _gate_common import append_jsonl, find_upward, iso_now, logs_dir  # type: ignore[no-redef]
+    from _gate_common import append_jsonl, find_upward, iso_now, logs_dir, project_root_from  # type: ignore[no-redef]
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -177,12 +177,15 @@ def manifest_churn_count(component_name: str, manifest_relpath: str, repo_root: 
 def manifest_total_commits(manifest_relpath: str, repo_root: Path) -> int:
     """Return total commit count for the manifest file (all time)."""
     rc, out, _ = _git(
-        ["log", "--format=%H", "--", manifest_relpath],
+        ["rev-list", "--count", "HEAD", "--", manifest_relpath],
         cwd=repo_root,
     )
-    if rc != 0 or not out:
+    if rc != 0 or not out.strip():
         return 0
-    return len([line for line in out.splitlines() if line.strip()])
+    try:
+        return int(out.strip())
+    except ValueError:
+        return 0
 
 
 def discover_consumers(basename: str, repo_root: Path) -> List[str]:
@@ -231,6 +234,11 @@ def classify_component(
     Returns a dict with keys: name, file, source_days, manifest_commits,
     manifest_churn_rate, stability, stability_basis, signals_used.
     """
+    if not name or not isinstance(name, str):
+        raise ValueError(f"classify_component: name must be non-empty str, got {name!r}")
+    if not file_field or not isinstance(file_field, str):
+        raise ValueError(f"classify_component: file_field must be non-empty str, got {file_field!r}")
+
     source_file = strip_function_suffix(file_field)
 
     days = file_last_change_days(source_file, repo_root)
@@ -415,16 +423,16 @@ def compute_stability(
         for item in names_and_files:
             results.append(_score_one(item))
 
-    # Restore manifest order
     order = {name: idx for idx, (name, _) in enumerate(names_and_files)}
     results.sort(key=lambda r: order.get(r["name"], 9999))
 
     # --- Body invariant: each component classified exactly once ---
     classified_names = [r["name"] for r in results]
     if len(classified_names) != len(set(classified_names)):
-        dupes = [n for n in classified_names if classified_names.count(n) > 1]
+        from collections import Counter
+        dupes = [n for n, c in Counter(classified_names).items() if c > 1]
         raise RuntimeError(
-            f"Invariant violation: components classified more than once: {set(dupes)}"
+            f"Invariant violation: components classified more than once: {dupes}"
         )
     for r in results:
         allowed = {STABLE, CODE_DRIFT, INTERFACE_FLUX, DEV, UNMAPPED}
@@ -635,34 +643,14 @@ def main() -> None:
             f"ERROR: --stable-days must be a positive integer, got {args.stable_days}",
             file=sys.stderr,
         )
-        sys.exit(0)  # Exit 0: informational tool, never blocks
+        sys.exit(1)
 
     # Find project root
-    cwd = str(Path.cwd())
-    project_root = None
-    try:
-        # Walk up looking for .git
-        from _gate_common import project_root_from
-    except ImportError:
-        pass
-
-    try:
-        from _gate_common import project_root_from as _prf
-        project_root = _prf(cwd)
-    except Exception:
-        pass
-
-    if project_root is None:
-        # Fallback: walk up manually looking for .git
-        p = Path.cwd()
-        for candidate in [p, *p.parents]:
-            if (candidate / ".git").exists():
-                project_root = candidate
-                break
+    project_root = project_root_from(str(Path.cwd()))
 
     if project_root is None:
         print("ERROR: Not inside a git repository.", file=sys.stderr)
-        sys.exit(0)
+        sys.exit(1)
 
     # Determine cache path
     if args.cache_dir:
@@ -686,10 +674,10 @@ def main() -> None:
             )
         except (FileNotFoundError, ValueError) as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
-            sys.exit(0)
+            sys.exit(1)
         except Exception as exc:  # pragma: no cover
             print(f"UNEXPECTED ERROR: {exc}", file=sys.stderr)
-            sys.exit(0)
+            sys.exit(1)
 
         _save_cache(cache_path, result)
 
@@ -702,7 +690,7 @@ def main() -> None:
             json.loads(output_str)
         except json.JSONDecodeError as exc:
             print(f"ERROR: JSON output validation failed: {exc}", file=sys.stderr)
-            sys.exit(0)
+            sys.exit(1)
         print(output_str)
     else:
         print(format_table(result))
