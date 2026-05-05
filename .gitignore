@@ -77,3 +77,4 @@ id_ecdsa*
 # excludes reports/ — the fresh-init push strategy keeps personal content
 # out of the public history.
 
+.cache/

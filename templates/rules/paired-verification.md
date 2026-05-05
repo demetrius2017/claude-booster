@@ -27,6 +27,10 @@ Before writing any Artifact Contract, Lead **MUST** read `ARCHITECTURE.md` and `
 - Consult the dependency table to populate the `Affected downstream:` field
 - If the function being changed is listed as `critical: true` in dep_manifest.json, include its `feeds` array in the Artifact Contract
 - If the project has no architecture docs: note it in the handover as a gap; do not block work
+- Populate `Architecture constraints:` in the Artifact Contract from `feeds` arrays of touched components (components whose `file` matches the planned edit target)
+- Populate `Downstream consumers:` from `called_by` arrays of the same components — these are the functions/endpoints the Verifier MUST test
+- If `critical: true` OR `feeds` array has ≥3 entries for any touched component → mark for conditional Architecture Auditor (see §Architecture-aware verification below)
+- **[CRITICAL] Code-over-docs**: dep_manifest.json reflects state at last update, not necessarily NOW. Before populating `Architecture constraints:` and `Downstream consumers:`, Lead MUST cross-check manifest entries against actual code (grep for function, check if it's still called, verify writer is still active). When manifest says "X writes to Y" but code shows X is disabled → manifest is stale, not code is wrong. Update manifest first, then populate Artifact Contract from corrected manifest. Finding type for divergence: `architecture-docs-stale`.
 
 ## Pattern A — параллельная пара (по умолчанию)
 
@@ -36,6 +40,8 @@ Before writing any Artifact Contract, Lead **MUST** read `ARCHITECTURE.md` and `
 2. **Verifier agent** получает: тот же goal + ту же Verified Facts Brief + тот же scope + тот же Artifact Contract. **Не видит prompt'а Worker'а.** Производит ОДИН executable acceptance test.
 
 Оба бегут конкурентно. Lead дожидается обоих, потом запускает тест.
+
+For critical components (see §Architecture-aware verification): Lead MAY spawn a third parallel agent — the **Architecture Auditor** — in the same message. All three run concurrently. Lead runs both acceptance tests after all agents return.
 
 ## Pattern B — последовательная пара
 
@@ -57,6 +63,8 @@ Environment constraints: <зависимости, версии, доступны
 Acceptance emphasis: <что обязательно проверить; что не предполагать>
 Affected downstream: <functions/APIs/screens that consume this artifact's output — consult dep_manifest.json>
 Architecture map consulted: <yes/no — was ARCHITECTURE.md or dep_manifest.json read before writing this contract?>
+Architecture constraints: <interfaces Worker MUST NOT break — populated from dep_manifest.json `feeds` arrays of touched components; "(no dep_manifest.json)" if manifest absent>
+Downstream consumers: <specific functions/endpoints Verifier MUST include in acceptance test — from dep_manifest.json `called_by` arrays; "(none)" if manifest absent or called_by empty>
 Session context: <OPTIONAL — see §Session context injection below>
 ```
 
@@ -82,6 +90,8 @@ Session context: <OPTIONAL — see §Session context injection below>
 ## Verifier mandate (точная формулировка для prompt'а)
 
 > «Произведи один executable acceptance test, который вернёт exit 0 если артефакт удовлетворяет Artifact Contract, иначе non-zero. Тестируй **наблюдаемое поведение**, не приватные детали реализации. Не реализуй задачу. Не предполагай, как Worker её решит. Если acceptance criteria неоднозначны — **fail closed**: верни отчёт об неоднозначности вместо того чтобы изобретать продуктовые решения. Тест должен печатать осмысленный stdout/stderr при failure.»
+
+When the Artifact Contract contains a non-empty `Downstream consumers:` field, the Verifier's test MUST include at least one assertion against a listed downstream consumer — verifying that the consumer still receives correct input or produces correct output after the Worker's change. This is the architecture protection layer: dep_guard.py auto-skips for Worker subagents by design (the hook targets Lead only), so downstream integrity is enforced through the Verifier's test, not through the hook.
 
 ## Test Legitimacy Standard
 
@@ -136,6 +146,51 @@ After PASS (exit 0) and before commit, Lead checks: did this change modify any i
 - **If NO:** skip (most bug fixes don't change interfaces; skip is logged in handover)
 
 - This is NOT a Worker+Verifier pair — it's a mechanical doc update (skip per §"When you can skip the pair": zero behavior impact, deterministic content)
+
+## Architecture-aware verification — distributed protection design
+
+Architecture protection is **distributed across the pair**, not concentrated in a separate agent or hook:
+
+| Phase | Actor | Architecture role |
+|---|---|---|
+| **RECON** | Lead | Reads dep_manifest.json → populates `Architecture constraints:` and `Downstream consumers:` in Artifact Contract |
+| **During edit** | Worker | Sees `Architecture constraints:` → knows which interfaces to preserve |
+| **During edit** | Verifier | Sees `Downstream consumers:` → MUST test at least one downstream consumer |
+| **Post-VERIFY** | Background Haiku | Updates ARCHITECTURE.md + dep_manifest.json to reflect what changed |
+
+### Code = ground truth (code-over-docs principle)
+
+dep_manifest.json and ARCHITECTURE.md are **navigation aids**, not specifications. They describe what existed when last updated — functions may have been disabled, new paths added, writers refactored to read-only, without updating the manifest. Real example: `auto_fix_discrepancies_j2t` listed as active writer in manifest, but actually disabled in dispatch; new `j2t_post_apply_reconcile` function exists in code but not in manifest.
+
+**Rules:**
+- When audit/verification finds divergence between dep_manifest.json and code → finding type = **"architecture-docs-stale"**, NOT "code-is-wrong"
+- Worker and Auditor must NEVER "fix" code to match stale docs — the opposite direction: update docs to match code
+- Lead's RECON cross-checks manifest entries against actual code before populating `Architecture constraints:` (see §RECON above)
+- Architecture Auditor traces code paths, using dep_manifest as starting hints — if manifest says "A feeds B" but code shows A is dead, Auditor skips that edge and flags the manifest entry as stale
+
+**Anti-pattern (запрещён):** audit reads stale manifest → proposes "fix" that re-enables a disabled writer → rolls back a real improvement. This is the imbalance loop: architecture docs lag behind code, and trusting docs over code creates regressive changes.
+
+### dep_guard auto-skip for Workers (by design)
+
+`dep_guard.py` auto-skips for subagent context (`is_subagent_context()` → allow). This is intentional: the Worker operates within an Artifact Contract that already carries architecture constraints. Blocking the Worker via dep_guard would prevent it from doing its job. The protection flows through:
+1. Lead's RECON (reads dep_manifest.json, populates constraints)
+2. Worker's brief (sees what not to break)
+3. Verifier's test (tests downstream consumers)
+4. Post-verify update (updates docs to reflect new reality)
+
+### Conditional Architecture Auditor (critical components)
+
+When dep_manifest.json shows `critical: true` **OR** `feeds` array has **≥3 entries** for any component touched by the planned edit:
+
+1. Lead spawns a **third parallel agent** alongside Worker+Verifier: the **Architecture Auditor**
+2. Architecture Auditor receives: Artifact Contract + full dep_manifest.json + ARCHITECTURE.md (if exists)
+3. Architecture Auditor produces: an executable test that verifies downstream consumers listed in `feeds`/`called_by` still work correctly
+4. Lead runs **both** Verifier's test AND Auditor's test; both must exit 0
+5. Failure classification applies independently to each test (W/V/A/E)
+
+For non-critical components (the 80–90% case): the enriched pair is sufficient. The conditional Auditor is a safety net for high-connectivity nodes in the dependency graph.
+
+The Architecture Auditor is NOT a Verifier — it does not test the Worker's artifact against the Artifact Contract. It tests that the **surrounding system** still works after the change. The Verifier tests the artifact; the Auditor tests the environment.
 
 ## Failure classification — обязательно перед реакцией на FAIL
 
