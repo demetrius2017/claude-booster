@@ -11,13 +11,20 @@ Contract:
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
+
+_DELEGATE_BUDGET = os.environ.get("CLAUDE_BOOSTER_DELEGATE_BUDGET", "1")
 
 HINT = {
     "RECON":     "read-only; no Edit/Write. Use Read/Grep/Glob/WebSearch.",
     "PLAN":      "design + TaskCreate + consilium if uncertainty; no code edits.",
-    "IMPLEMENT": "code edits allowed; run tests after.",
+    "IMPLEMENT": (
+        f"code edits via delegated agents; run tests after."
+        f" Lead: delegate coding via Agent (paired Worker+Verifier),"
+        f" budget={_DELEGATE_BUDGET} direct action per delegation window."
+    ),
     "AUDIT":     "review + PAL second opinion; no new code.",
     "VERIFY":    "real curl/pytest/DevTools — collect evidence.",
     "MERGE":     "git push after user acceptance; post-merge verification required.",
