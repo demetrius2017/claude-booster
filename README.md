@@ -62,6 +62,20 @@ A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explor
 
 ---
 
+## What's new in v1.5.1 — Memory Bridge + Delegate Gate Hardening
+
+**Three problems this release solves:**
+
+1. **"Запомни" writes to markdown files but not to rolling_memory.db.** Claude Code's native memory system writes `.md` files. Claude Booster's cross-session engine uses `rolling_memory.db`. The two systems were disconnected — a "запомни" command would save to one but not the other. Fix: a PostToolUse hook now auto-mirrors every memory file write to `rolling_memory.db` via a fire-and-forget subprocess. Type mapping (user→feedback, project→project_context, reference→directive), `content_hash` dedup, MEMORY.md exclusion.
+
+2. **`.delegate_mode=off` persists forever — no session scope, no TTL.** A one-time bypass written for a legitimate exception stays active indefinitely. The Horizon project had enforcement silently disabled for 2 weeks from a forgotten `off` file. Fix: bare `off` is now treated as expired. New format `off:<session_id>` scopes the bypass to a single session. When the session ends, the bypass dies.
+
+3. **Counter file race condition (TOCTOU).** Two parallel tool calls could both read `counter=0`, both pass budget check, both write `counter=1` — doubling the effective budget. Fix: `fcntl.flock()` around the read-increment-write cycle. `_atomic_increment` and `_atomic_reset` replace the non-atomic `_read_counter`/`_write_counter` pair.
+
+**Tests:** 24 new assertions across 3 test scripts — memory mirror (10), delegate gate TTL (8), TOCTOU race (6 with 5-iteration concurrency stress).
+
+---
+
 ## What's new in v1.5.0 — Systemic Thinking Enforcement
 
 **The problem this release solves.** Claude edits functions without understanding the dependency graph. It fixes function A but breaks B, C, D that depend on A. It patches data in the database directly instead of fixing the function that produced the bad data in the first place. Across sessions, it loses track of what connects to what — there's no "circuit board" showing the system topology. The session ends, open threads are forgotten, and the next session starts with no record of the half-finished work.
