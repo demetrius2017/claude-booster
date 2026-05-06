@@ -398,6 +398,36 @@ def _cadence(files: list[pathlib.Path], today: _dt.date, window_days: int) -> di
     return {"handovers_in_window": count, "window_days": window_days, "note": note, "ok": ok}
 
 
+def _delegate_bypass_file(project: pathlib.Path) -> dict:
+    """Check whether the delegate_gate bypass file (.delegate_mode) exists and is active.
+
+    The bypass file can be placed silently before the gate is installed,
+    resulting in zero log entries in gate_bypass_attempts.jsonl while
+    enforcement is completely disabled.  This signal surfaces the file
+    directly so it cannot hide from telemetry.
+
+    Returns:
+        exists (bool)  : whether .claude/.delegate_mode exists under project.
+        value  (str)   : stripped content of the file, or "" if absent.
+        ok     (bool)  : False when the file exists AND its content is "off"
+                         (case-insensitive). True in all other cases.
+    """
+    bypass_file = project / ".claude" / ".delegate_mode"
+    if not bypass_file.is_file():
+        return {"exists": False, "value": "", "ok": True}
+    try:
+        raw = bypass_file.read_text(encoding="utf-8")
+    except OSError as exc:
+        # Can't read → treat conservatively as "possibly active bypass".
+        return {"exists": True, "value": "", "ok": False, "note": f"unreadable: {exc}"}
+    value = raw.strip()
+    if not value:
+        # Empty file is not a valid "off" signal — treat as ok.
+        return {"exists": True, "value": value, "ok": True}
+    ok = value.lower() != "off"
+    return {"exists": True, "value": value, "ok": ok}
+
+
 def _gate_bypass_attempts(limit: int = BYPASS_RECENT_N) -> dict:
     """Inspect the tail of ``gate_bypass_attempts.jsonl`` and report counts.
 
@@ -514,6 +544,20 @@ def render_prose(project: str, signals: dict, inspected: int, window: int, budge
             )
         lines.append(_prose_line("Gate bypass attempts", bypass_text, by["ok"]))
 
+    dbf = signals.get("delegate_bypass_file")
+    if dbf is not None:
+        if not dbf["exists"]:
+            dbf_text = "not present"
+        elif dbf.get("note"):
+            dbf_text = f"present ({dbf['note']})"
+        elif dbf["ok"]:
+            dbf_text = f"present (value={dbf['value']!r}, not 'off')"
+        else:
+            dbf_text = f"ACTIVE — contains 'off' (enforcement disabled)"
+        lines.append(
+            _prose_line("Delegate gate bypass file (.delegate_mode)", dbf_text, dbf["ok"])
+        )
+
     return "\n".join(lines)
 
 
@@ -541,6 +585,7 @@ def main() -> int:
         "stale_citations": _stale_citations(recent_files),
         "cadence": _cadence(all_files, today, args.window),
         "gate_bypass": _gate_bypass_attempts(),
+        "delegate_bypass_file": _delegate_bypass_file(project),
     }
     budget = _token_budget(project)
     files = recent_files

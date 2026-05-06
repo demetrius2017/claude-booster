@@ -96,7 +96,7 @@
     "memory_session_start": {
       "file": "templates/scripts/memory_session_start.py::main",
       "reads_from": ["external:stdin (Claude Code JSON)", "domain:rolling_memory.build_context", "domain:rolling_memory.build_start_context"],
-      "writes_to": ["external:stdout (additionalContext JSON)"],
+      "writes_to": ["external:stdout (additionalContext JSON)", "external:<project_root>/.claude/.delegate_counter"],
       "called_by": ["hook:SessionStart"],
       "critical": true,
       "notes": "Entry point for session memory injection. Never crashes Claude — errors logged, empty context returned."

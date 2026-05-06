@@ -27,6 +27,12 @@ _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
 if _SCRIPTS_DIR not in sys.path:
     sys.path.insert(0, _SCRIPTS_DIR)
 
+try:
+    from _gate_common import project_root_from
+except ImportError:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from _gate_common import project_root_from  # type: ignore[no-redef]
+
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
@@ -45,6 +51,29 @@ if not logger.handlers:
         logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s", datefmt="%Y-%m-%dT%H:%M:%S")
     )
     logger.addHandler(handler)
+
+
+def _reset_delegate_counter(cwd: str) -> None:
+    """Reset the delegate_gate counter to 0 at session start.
+
+    Finds the project root by walking up from *cwd*, then overwrites
+    <project_root>/.claude/.delegate_counter with "0\\n".  Does nothing if
+    the counter file does not exist (delegate_gate creates it on first use).
+    Never raises — any error is logged at WARNING level.
+    """
+    try:
+        root = project_root_from(cwd)
+        if root is None:
+            logger.debug("reset_delegate_counter: no project root found from cwd=%s — skipping", cwd)
+            return
+        counter_file = root / ".claude" / ".delegate_counter"
+        if not counter_file.is_file():
+            logger.debug("reset_delegate_counter: counter file absent at %s — skipping", counter_file)
+            return
+        counter_file.write_text("0\n", encoding="utf-8")
+        logger.info("reset_delegate_counter: reset %s to 0", counter_file)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("reset_delegate_counter failed (non-fatal): %s", exc)
 
 
 def _output(context: str) -> None:
@@ -67,6 +96,10 @@ def main() -> None:
 
     session_id = data.get("session_id", "")
     cwd = data.get("cwd", os.getcwd())
+
+    # Reset delegate counter first — before any DB work — so each new session
+    # starts the delegation budget from zero regardless of previous sessions.
+    _reset_delegate_counter(cwd)
 
     try:
         import rolling_memory
