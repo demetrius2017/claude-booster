@@ -44,9 +44,12 @@ State:
 
 Bypass (LEAD ONLY — sub-agents cannot self-disable):
   env CLAUDE_BOOSTER_SKIP_DELEGATE_GATE=1
-  file <project_root>/.claude/.delegate_mode=off (honoured only in Lead
-       context; if a sub-agent writes this file to self-bypass, the gate
-       refuses and logs the attempt to
+  file <project_root>/.claude/.delegate_mode containing 'off:<session_id>'
+       (session-scoped: only honoured when the session_id in the file matches
+       the current session's session_id, so the bypass expires automatically
+       at session end; bare 'off' without a session_id is treated as expired
+       and ignored — this prevents permanent bypass from stale forgotten files;
+       sub-agent self-bypass is refused and logged to
        ~/.claude/logs/gate_bypass_attempts.jsonl)
   path allowlist match (reports/ audits/ *.md .claude/ etc.)
 
@@ -69,6 +72,7 @@ Limitations:
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -141,6 +145,7 @@ def _project_root(cwd_hint: str) -> Path:
 
 
 def _read_counter(root: Path) -> int:
+    """Read counter value (for telemetry only — not for decisions)."""
     path = root / STATE_FILE_REL
     if not path.exists():
         return 0
@@ -150,23 +155,73 @@ def _read_counter(root: Path) -> int:
         return 0
 
 
-def _write_counter(root: Path, value: int) -> None:
+def _atomic_increment(root: Path) -> int:
+    """Atomically read, increment, and write counter. Returns the NEW value.
+
+    Uses fcntl.flock for mutual exclusion — two parallel calls on the same
+    project will serialize, not race.
+    """
     path = root / STATE_FILE_REL
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        path.write_text(f"{value}\n")
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            data = os.read(fd, 64).decode("utf-8", errors="replace").strip()
+            current = max(0, int(data)) if data else 0
+            new_val = current + 1
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{new_val}\n".encode())
+            os.fsync(fd)
+            return new_val
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+    except (OSError, ValueError):
+        return 1  # fail-closed: assume budget consumed
+
+
+def _atomic_reset(root: Path) -> None:
+    """Atomically reset counter to 0. Used on delegation signals."""
+    path = root / STATE_FILE_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            os.ftruncate(fd, 0)
+            os.write(fd, b"0\n")
+            os.fsync(fd)
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
     except OSError:
         pass
 
 
-def _mode_disabled(root: Path) -> bool:
+def _mode_disabled(root: Path, session_id: str) -> bool:
+    """Check if delegate gate is disabled for this session.
+
+    Format: 'off:<session_id>' — bypass is scoped to one session.
+    Legacy bare 'off' (no session_id) is treated as EXPIRED and ignored,
+    preventing permanent bypass from stale files.
+    """
     path = root / MODE_FILE_REL
     if not path.exists():
         return False
     try:
-        return path.read_text().strip().lower() == "off"
+        content = path.read_text().strip().lower()
     except OSError:
         return False
+    if content == "off":
+        # Legacy bare 'off' without session scope — treat as expired.
+        # This prevents permanent bypass from forgotten files.
+        return False
+    if content.startswith("off:"):
+        file_session = content[4:].strip()
+        return file_session == session_id
+    return False
 
 
 def _path_allowlisted(tool_input: dict) -> bool:
@@ -242,6 +297,7 @@ def main() -> int:
     tool = data.get("tool_name") or ""
     tool_input = data.get("tool_input") or {}
     cwd = data.get("cwd") or ""
+    session_id = data.get("session_id") or ""
     is_subagent = is_subagent_context(data)
 
     root = _project_root(cwd)
@@ -252,7 +308,7 @@ def main() -> int:
     # But if the sub-agent ALSO wrote .delegate_mode=off to self-bypass,
     # log the refused attempt for surveillance before returning.
     if is_subagent:
-        attempted_bypass = _mode_disabled(root)
+        attempted_bypass = _mode_disabled(root, session_id)
         if attempted_bypass:
             append_jsonl(BYPASS_LOG_NAME, {
                 **base,
@@ -278,7 +334,7 @@ def main() -> int:
         })
         return 0
 
-    if _mode_disabled(root):
+    if _mode_disabled(root, session_id):
         append_jsonl(BYPASS_LOG_NAME, {
             **base,
             "decision": DECISION_BYPASS_HONOURED,
@@ -294,7 +350,7 @@ def main() -> int:
         return 0
 
     if tool in DELEGATION_TOOLS:
-        _write_counter(root, 0)
+        _atomic_reset(root)
         append_jsonl(DELEGATE_LOG_NAME, {
             **base,
             "decision": DECISION_ALLOW,
@@ -304,7 +360,7 @@ def main() -> int:
     if tool == "Bash":
         cmd = tool_input.get("command") or ""
         if _bash_is_supervisor_spawn(cmd):
-            _write_counter(root, 0)
+            _atomic_reset(root)
             append_jsonl(DELEGATE_LOG_NAME, {
                 **base,
                 "decision": DECISION_ALLOW,
@@ -328,8 +384,7 @@ def main() -> int:
         })
         return 0
 
-    counter = _read_counter(root)
-    new_counter = counter + 1
+    new_counter = _atomic_increment(root)
     if new_counter > BUDGET:
         sys.stderr.write(_feedback(root, tool, new_counter) + "\n")
         append_jsonl(DELEGATE_LOG_NAME, {
@@ -340,7 +395,6 @@ def main() -> int:
         })
         return 2
 
-    _write_counter(root, new_counter)
     append_jsonl(DELEGATE_LOG_NAME, {
         **base,
         "decision": DECISION_ALLOW,

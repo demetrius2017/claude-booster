@@ -11,6 +11,11 @@
     оставался свежим для следующего ``/start``. Subprocess async → <5ms контракт
     хука сохраняется. Rationale: reports/audit_2026-04-13_indexing_strategy.md.
 
+    Дополнительно: при Write в ``*/memory/*.md`` (кроме MEMORY.md) форкает
+    fire-and-forget subprocess ``memory_mirror.py`` чтобы запись автоматически
+    появлялась в rolling_memory.db и была доступна в кросс-сессионной памяти.
+    Паттерн идентичен _maybe_trigger_index — async Popen, <5ms контракт сохраняется.
+
 Контракт:
     Вход: JSON на stdin {tool_name, tool_input, tool_response, session_id, cwd}
     Выход: нет (exit 0 всегда)
@@ -28,11 +33,14 @@
         * сам Write tool занимает на порядок больше времени
     - `_maybe_trigger_index` форкает subprocess и сразу возвращается —
       индексация происходит в отдельном процессе, hook не ждёт.
+    - `_maybe_mirror_memory` форкает `memory_mirror.py` при Write в memory/*.md
+      (кроме MEMORY.md) и сразу возвращается — зеркалирование async.
 
 ENV/Файлы:
     ~/.claude/memory_batch_{session_id}.jsonl — батч-файл (append)
     ~/.claude/logs/memory_hooks.log — логи (только при ошибках)
     ~/.claude/scripts/index_reports.py — дочерний процесс (fire-and-forget)
+    ~/.claude/scripts/memory_mirror.py — дочерний процесс (fire-and-forget)
 """
 
 import json
@@ -45,6 +53,28 @@ import sys
 # canonical lowercase.
 _REPORT_WRITE_PATTERN = re.compile(r"/reports/(?:consilium|audit)_[^/]*\.md$")
 _INDEXER_SCRIPT = os.path.expanduser("~/.claude/scripts/index_reports.py")
+
+# Matches */memory/*.md but NOT */memory/MEMORY.md — the index file is excluded.
+_MEMORY_WRITE_PATTERN = re.compile(r"/memory/(?!MEMORY\.md)[^/]+\.md$")
+_MIRROR_SCRIPT = os.path.expanduser("~/.claude/scripts/memory_mirror.py")
+
+_WRITE_TOOLS = ("Write", "Edit")
+
+
+def _spawn(script, *extra_args):
+    """Fire-and-forget a script via Popen. Silent on all errors."""
+    try:
+        import subprocess
+        subprocess.Popen(
+            ["python3", script, *extra_args],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+            close_fds=True,
+        )
+    except Exception:
+        pass
 
 
 def _maybe_trigger_index(tool_name: str, tool_input: object) -> None:
@@ -59,26 +89,35 @@ def _maybe_trigger_index(tool_name: str, tool_input: object) -> None:
     ``~/.claude/rules/commands.md`` `/start` step 2 is the backup mechanism
     when this trigger misses (external edits, subprocess crash).
     """
-    if tool_name not in ("Write", "Edit"):
+    if tool_name not in _WRITE_TOOLS:
         return
     if not isinstance(tool_input, dict):
         return
     path = tool_input.get("file_path", "")
     if not isinstance(path, str) or not _REPORT_WRITE_PATTERN.search(path):
         return
-    try:
-        import subprocess
-        subprocess.Popen(
-            ["python3", _INDEXER_SCRIPT],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-            stdin=subprocess.DEVNULL,
-            start_new_session=True,
-            close_fds=True,
-        )
-    except Exception:
-        # Silent — must not block Claude. Self-heal in /start covers the miss.
-        pass
+    _spawn(_INDEXER_SCRIPT)
+
+
+def _maybe_mirror_memory(tool_name: str, tool_input: object) -> None:
+    """Fire-and-forget ``memory_mirror.py`` when a memory .md file is written.
+
+    Called from ``main`` right after ``_maybe_trigger_index``. Returns in well
+    under 1 ms when the tool or path doesn't match. When it does match, spawns
+    a detached subprocess via ``Popen`` and returns immediately — the hook never
+    waits on the mirror script.
+
+    Skips MEMORY.md (the index file) via the compiled regex pattern.
+    Silent on every error path.
+    """
+    if tool_name not in _WRITE_TOOLS:
+        return
+    if not isinstance(tool_input, dict):
+        return
+    path = tool_input.get("file_path", "")
+    if not isinstance(path, str) or not _MEMORY_WRITE_PATTERN.search(path):
+        return
+    _spawn(_MIRROR_SCRIPT, path)
 
 
 def main() -> None:
@@ -102,6 +141,10 @@ def main() -> None:
     # write still triggers indexing (and the error branch still fires). See
     # reports/audit_2026-04-13_indexing_strategy.md for the scoring rationale.
     _maybe_trigger_index(tool_name, tool_input)
+
+    # Fire-and-forget: mirror memory .md writes into rolling_memory.db so
+    # "запомни" entries are immediately available in cross-session context.
+    _maybe_mirror_memory(tool_name, tool_input)
 
     event = None
 
