@@ -145,7 +145,7 @@ def _project_root(cwd_hint: str) -> Path:
 
 
 def _read_counter(root: Path) -> int:
-    """Read counter value (for telemetry only — not for decisions)."""
+    """Read counter value without locking — for telemetry snapshots only, not decisions."""
     path = root / STATE_FILE_REL
     if not path.exists():
         return 0
@@ -173,7 +173,6 @@ def _atomic_increment(root: Path) -> int:
             os.lseek(fd, 0, os.SEEK_SET)
             os.ftruncate(fd, 0)
             os.write(fd, f"{new_val}\n".encode())
-            os.fsync(fd)
             return new_val
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
@@ -192,7 +191,6 @@ def _atomic_reset(root: Path) -> None:
             fcntl.flock(fd, fcntl.LOCK_EX)
             os.ftruncate(fd, 0)
             os.write(fd, b"0\n")
-            os.fsync(fd)
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
@@ -220,7 +218,7 @@ def _mode_disabled(root: Path, session_id: str) -> bool:
         return False
     if content.startswith("off:"):
         file_session = content[4:].strip()
-        return file_session == session_id
+        return file_session == session_id.lower()
     return False
 
 
