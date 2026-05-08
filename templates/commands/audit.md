@@ -60,9 +60,11 @@ Audit lenses selected: correctness, security, data-integrity
 
 ---
 
-## Phase 2 — PARALLEL AUDIT (spawn ALL agents in ONE message)
+## Phase 2 — PARALLEL AUDIT (spawn all **selected** lens agents in ONE message)
 
 **[CRITICAL] Spawn all selected lens agents AND the PAL external review IN A SINGLE MESSAGE as parallel tool calls.** Do not wait for one to finish before starting another. PAL runs in parallel with the auditors — not after.
+
+Spawn only the lenses selected in Phase 1. Do not spawn auditors for unselected lenses.
 
 Each auditor agent is `subagent_type: "general-purpose"`, `model: "sonnet"`.
 PAL runs as a tool call in the same batch.
@@ -83,7 +85,71 @@ Expected observable behavior: structured verdict with LENS, VERDICT, FINDINGS (s
 Out of scope: do not implement fixes; do not modify files; do not re-audit other lenses
 Environment constraints: read-only grep and file inspection only; use Bash grep/find/read — do NOT skip if first search returns nothing, try alternative patterns
 Acceptance emphasis: every FINDING must cite file:line and show the actual code snippet as evidence; "I believe" / "likely" without code evidence is NOT a finding
-Architecture map consulted: yes (Lead pre-read it and included in Verified Facts Brief)
+Affected downstream: Lead collects all lens verdicts for Phase 3 synthesis
+Architecture map consulted: <yes/no — from Verified Facts Brief>
+```
+
+---
+
+### Shared Verdict Format (all auditors)
+
+Every auditor returns output in EXACTLY this format. No prose before or after.
+
+```
+LENS: <lens-id>
+VERDICT: PASS | FAIL | CONCERN
+
+SUMMARY: <1-2 sentences on what you found overall>
+
+FINDINGS:
+[If PASS: write "No findings."]
+
+FINDING-<PREFIX><N>:
+  severity: HIGH | MED | LOW
+  title: <short title>
+  file: <file_path>:<line_number>
+  evidence: |
+    <paste the actual code snippet — minimum 3 lines of context>
+  explanation: <why this is wrong and what can go wrong in production>
+  <extra_field_if_any>
+
+FINDING-<PREFIX><N+1>:
+  ...
+
+RECOMMENDATIONS:
+[If PASS: write "No recommendations."]
+- <specific fix recommendation with file:line reference>
+- ...
+```
+
+VERDICT rules:
+- PASS: no findings at any severity
+- CONCERN: only LOW or MED findings (no HIGH)
+- FAIL: at least one HIGH finding
+
+Finding prefix and extra field per lens:
+
+| Lens | Prefix | Extra field |
+|------|--------|-------------|
+| correctness | C | _(none)_ |
+| security | S | `cwe: <CWE-XXX or N/A>` |
+| performance | P | `estimated_impact: <"200ms per request" or "O(n²) — will fail at n>1000" or similar>` |
+| architecture | A | `blast_radius: <list of files/functions that depend on this — from grep or dep_manifest>` |
+| data-integrity | D | `recovery_path: <how to detect and fix corrupted data, or "no recovery path">` |
+| operational | O | `oncall_impact: <"no alert fires" \| "alert fires but diagnosis requires X" \| "silent data loss">` |
+
+---
+
+### Shared mandate header (prepended to every auditor's mandate below)
+
+Every auditor mandate is prepended with this header block. Remove it from the individual auditors only if you copy-paste the mandate — it belongs at the top of each agent's prompt.
+
+```
+Audit topic: <topic>
+Scope: <scope path or "full repo">
+
+Verified Facts Brief:
+<insert brief from Phase 0>
 ```
 
 ---
@@ -101,11 +167,7 @@ You do NOT assume code is correct because it was written by a smart person. You 
 **Your mandate:**
 
 ```
-Audit topic: <topic>
-Scope: <scope path or "full repo">
-
-Verified Facts Brief:
-<insert brief from Phase 0>
+<prepend shared mandate header>
 
 ## What you look for
 
@@ -141,42 +203,10 @@ grep -rn "/ " <scope> --include="*.py" | grep -v "#\|//\|/="
 ```
 
 Read the files most relevant to the topic. Trace call chains at least 2 levels deep.
-
-## Output format — STRUCTURED VERDICT
-
-Return EXACTLY this format. No prose before or after.
-
-```
-LENS: correctness
-VERDICT: PASS | FAIL | CONCERN
-
-SUMMARY: <1-2 sentences on what you found overall>
-
-FINDINGS:
-[If PASS: write "No findings."]
-
-FINDING-C1:
-  severity: HIGH | MED | LOW
-  title: <short title>
-  file: <file_path>:<line_number>
-  evidence: |
-    <paste the actual code snippet — minimum 3 lines of context>
-  explanation: <why this is wrong and what can go wrong in production>
-
-FINDING-C2:
-  ...
-
-RECOMMENDATIONS:
-[If PASS: write "No recommendations."]
-- <specific fix recommendation with file:line reference>
-- ...
 ```
 
-VERDICT rules:
-- PASS: no findings at any severity
-- CONCERN: only LOW or MED findings (no HIGH)
-- FAIL: at least one HIGH finding
-```
+## Output format
+Use the Shared Verdict Format above. Finding prefix: C. No extra field.
 
 ---
 
@@ -193,11 +223,7 @@ You do NOT trust code that "looks secure." You READ it and trace the data flow f
 **Your mandate:**
 
 ```
-Audit topic: <topic>
-Scope: <scope path or "full repo">
-
-Verified Facts Brief:
-<insert brief from Phase 0>
+<prepend shared mandate header>
 
 ## What you look for
 
@@ -238,38 +264,10 @@ grep -rn "decode\|verify=False\|algorithms=\[\]" <scope> --include="*.py" | grep
 ```
 
 Read the files most relevant to the topic. Trace at least one auth flow end-to-end.
-
-## Output format — STRUCTURED VERDICT
-
-Return EXACTLY this format. No prose before or after.
-
-```
-LENS: security
-VERDICT: PASS | FAIL | CONCERN
-
-SUMMARY: <1-2 sentences on what you found overall>
-
-FINDINGS:
-
-FINDING-S1:
-  severity: HIGH | MED | LOW
-  title: <short title>
-  file: <file_path>:<line_number>
-  evidence: |
-    <paste the actual code snippet — minimum 3 lines of context>
-  explanation: <specific attack scenario or data exposure risk>
-  cwe: <CWE-XXX if applicable, else N/A>
-
-FINDING-S2:
-  ...
-
-RECOMMENDATIONS:
-- <specific fix with file:line reference>
-- ...
 ```
 
-VERDICT rules: PASS = no findings | CONCERN = only LOW/MED | FAIL = any HIGH
-```
+## Output format
+Use the Shared Verdict Format above. Finding prefix: S. Extra field: `cwe: <CWE-XXX if applicable, else N/A>`
 
 ---
 
@@ -286,11 +284,7 @@ You measure performance by reading code, not by running benchmarks. Evidence = c
 **Your mandate:**
 
 ```
-Audit topic: <topic>
-Scope: <scope path or "full repo">
-
-Verified Facts Brief:
-<insert brief from Phase 0>
+<prepend shared mandate header>
 
 ## What you look for
 
@@ -326,38 +320,10 @@ grep -rn "time\.sleep\|requests\.get\|requests\.post" <scope> --include="*.py"
 # Find unbounded accumulation
 grep -rn "\.append\|results\s*=\s*\[\]" <scope> --include="*.py" | head -30
 ```
-
-## Output format — STRUCTURED VERDICT
-
-Return EXACTLY this format. No prose before or after.
-
-```
-LENS: performance
-VERDICT: PASS | FAIL | CONCERN
-
-SUMMARY: <1-2 sentences on overall performance risk>
-
-FINDINGS:
-
-FINDING-P1:
-  severity: HIGH | MED | LOW
-  title: <short title>
-  file: <file_path>:<line_number>
-  evidence: |
-    <paste actual code — show the loop + query or the blocking call>
-  explanation: <why this is slow and at what scale it breaks>
-  estimated_impact: <"200ms per request" or "O(n²) — will fail at n>1000" or similar>
-
-FINDING-P2:
-  ...
-
-RECOMMENDATIONS:
-- <specific fix with file:line reference>
-- ...
 ```
 
-VERDICT rules: PASS = no findings | CONCERN = only LOW/MED | FAIL = any HIGH
-```
+## Output format
+Use the Shared Verdict Format above. Finding prefix: P. Extra field: `estimated_impact: <"200ms per request" or "O(n²) — will fail at n>1000" or similar>`
 
 ---
 
@@ -374,11 +340,7 @@ You judge architecture by reading what the code imports, what it exposes, and wh
 **Your mandate:**
 
 ```
-Audit topic: <topic>
-Scope: <scope path or "full repo">
-
-Verified Facts Brief:
-<insert brief from Phase 0>
+<prepend shared mandate header>
 
 ## What you look for
 
@@ -419,38 +381,10 @@ grep -rn "def .*(.*, .*, .*, .*, " <scope> --include="*.py"
 ```
 
 Read `ARCHITECTURE.md` and `docs/dep_manifest.json` (included in Verified Facts Brief) to understand intended boundaries before evaluating violations.
-
-## Output format — STRUCTURED VERDICT
-
-Return EXACTLY this format. No prose before or after.
-
-```
-LENS: architecture
-VERDICT: PASS | FAIL | CONCERN
-
-SUMMARY: <1-2 sentences on architectural health>
-
-FINDINGS:
-
-FINDING-A1:
-  severity: HIGH | MED | LOW
-  title: <short title>
-  file: <file_path>:<line_number>
-  evidence: |
-    <paste import statement or function signature showing the violation>
-  explanation: <why this is an architectural problem and what future pain it causes>
-  blast_radius: <list of files/functions that depend on this — from grep or dep_manifest>
-
-FINDING-A2:
-  ...
-
-RECOMMENDATIONS:
-- <specific refactor suggestion with file:line reference>
-- ...
 ```
 
-VERDICT rules: PASS = no findings | CONCERN = only LOW/MED | FAIL = any HIGH
-```
+## Output format
+Use the Shared Verdict Format above. Finding prefix: A. Extra field: `blast_radius: <list of files/functions that depend on this — from grep or dep_manifest>`
 
 ---
 
@@ -467,11 +401,7 @@ You assume production is adversarial: two requests arrive simultaneously, the se
 **Your mandate:**
 
 ```
-Audit topic: <topic>
-Scope: <scope path or "full repo">
-
-Verified Facts Brief:
-<insert brief from Phase 0>
+<prepend shared mandate header>
 
 ## What you look for
 
@@ -509,38 +439,10 @@ grep -rn "INSERT INTO\|\.create\(" <scope> | grep -v "ON CONFLICT\|get_or_create
 # Find cache reads followed by decisions
 grep -rn "cache\.get\|redis\.get\|\.get(" <scope> --include="*.py" -A 5 | grep -B 3 "if\|==\|>=\|<="
 ```
-
-## Output format — STRUCTURED VERDICT
-
-Return EXACTLY this format. No prose before or after.
-
-```
-LENS: data-integrity
-VERDICT: PASS | FAIL | CONCERN
-
-SUMMARY: <1-2 sentences on data integrity risk>
-
-FINDINGS:
-
-FINDING-D1:
-  severity: HIGH | MED | LOW
-  title: <short title>
-  file: <file_path>:<line_number>
-  evidence: |
-    <paste the actual code — show the write without transaction, or the TOCTOU pattern>
-  explanation: <specific data corruption scenario — what state can you end up in if this goes wrong>
-  recovery_path: <how would you detect and fix corrupted data, or "no recovery path">
-
-FINDING-D2:
-  ...
-
-RECOMMENDATIONS:
-- <specific fix: add transaction wrapper, add ON CONFLICT, replace float with Decimal — with file:line>
-- ...
 ```
 
-VERDICT rules: PASS = no findings | CONCERN = only LOW/MED | FAIL = any HIGH
-```
+## Output format
+Use the Shared Verdict Format above. Finding prefix: D. Extra field: `recovery_path: <how to detect and fix corrupted data, or "no recovery path">`
 
 ---
 
@@ -557,11 +459,7 @@ You ask: "If this goes wrong in production, will I know? Will I be able to diagn
 **Your mandate:**
 
 ```
-Audit topic: <topic>
-Scope: <scope path or "full repo">
-
-Verified Facts Brief:
-<insert brief from Phase 0>
+<prepend shared mandate header>
 
 ## What you look for
 
@@ -600,38 +498,10 @@ grep -rn "requests\.\|httpx\.\|aiohttp\." <scope> --include="*.py" | grep -v "re
 # Find open file handles without context manager
 grep -rn "open(" <scope> --include="*.py" | grep -v "with open\|context\|#"
 ```
-
-## Output format — STRUCTURED VERDICT
-
-Return EXACTLY this format. No prose before or after.
-
-```
-LENS: operational
-VERDICT: PASS | FAIL | CONCERN
-
-SUMMARY: <1-2 sentences on operational readiness>
-
-FINDINGS:
-
-FINDING-O1:
-  severity: HIGH | MED | LOW
-  title: <short title>
-  file: <file_path>:<line_number>
-  evidence: |
-    <paste actual code — the swallowed exception, the bare print, the hardcoded URL>
-  explanation: <what breaks silently in production and why it's hard to diagnose>
-  oncall_impact: <"no alert fires" | "alert fires but diagnosis requires X" | "silent data loss">
-
-FINDING-O2:
-  ...
-
-RECOMMENDATIONS:
-- <specific fix with file:line reference>
-- ...
 ```
 
-VERDICT rules: PASS = no findings | CONCERN = only LOW/MED | FAIL = any HIGH
-```
+## Output format
+Use the Shared Verdict Format above. Finding prefix: O. Extra field: `oncall_impact: <"no alert fires" | "alert fires but diagnosis requires X" | "silent data loss">`
 
 ---
 
@@ -693,7 +563,7 @@ Write the report to: `reports/audit_<YYYY-MM-DD>_<topic_slug>.md`
 
 Where `<topic_slug>` = topic lowercased, spaces replaced with `_`, special characters removed, max 40 chars.
 
-Use this exact report template:
+Use this exact report template. The per-auditor section below shows the structure for ONE lens — repeat it for each lens that was run, pasting the auditor's structured verdict output verbatim.
 
 ```markdown
 ---
@@ -736,16 +606,18 @@ scope: <scope path or "full repo">
 
 ## Per-Auditor Findings
 
-### Correctness Auditor
+<!-- Repeat this section for each lens that was run. Paste the auditor's structured verdict output verbatim. -->
+
+### <Lens Name> Auditor
 
 **Verdict:** PASS | CONCERN | FAIL
 **Summary:** <auditor's summary sentence>
 
 #### Findings
 
-<!-- Copy structured findings from auditor output verbatim. If PASS: "No findings." -->
+<!-- Paste FINDING-XX blocks verbatim from auditor output. If PASS: "No findings." -->
 
-FINDING-C1: <title>
+FINDING-<PREFIX>1: <title>
 - **Severity:** HIGH | MED | LOW
 - **File:** <file_path>:<line>
 - **Evidence:**
@@ -753,61 +625,7 @@ FINDING-C1: <title>
   <code snippet>
   ```
 - **Explanation:** <explanation>
-
----
-
-### Security Auditor
-
-**Verdict:** PASS | CONCERN | FAIL
-**Summary:** <auditor's summary sentence>
-
-#### Findings
-
-<!-- FINDING-S1, S2, ... -->
-
----
-
-### Performance Auditor
-
-**Verdict:** PASS | CONCERN | FAIL
-**Summary:** <auditor's summary sentence>
-
-#### Findings
-
-<!-- FINDING-P1, P2, ... -->
-
----
-
-### Architecture Auditor
-
-**Verdict:** PASS | CONCERN | FAIL
-**Summary:** <auditor's summary sentence>
-
-#### Findings
-
-<!-- FINDING-A1, A2, ... -->
-
----
-
-### Data Integrity Auditor
-
-**Verdict:** PASS | CONCERN | FAIL
-**Summary:** <auditor's summary sentence>
-
-#### Findings
-
-<!-- FINDING-D1, D2, ... -->
-
----
-
-### Operational Auditor
-
-**Verdict:** PASS | CONCERN | FAIL
-**Summary:** <auditor's summary sentence>
-
-#### Findings
-
-<!-- FINDING-O1, O2, ... -->
+- **<Extra field if applicable>:** <value>
 
 ---
 
@@ -890,7 +708,7 @@ After writing the report, print to terminal:
     3. [MED]  <title> — <file:line>
     (+ <N> more — see report)
 
-EXIT: 0 (PASS — no HIGH findings) | EXIT: 1 (FAIL or CONCERN — HIGH findings require action)
+EXIT: 0 (PASS or CONCERN — no HIGH findings) | EXIT: 1 (FAIL — at least one HIGH finding)
 ```
 
 ---
@@ -926,6 +744,7 @@ If two auditors have opposite verdicts for the same file:line (one says PASS, on
 ## Integration notes
 
 - **`/audit` vs `/audit-trace`:** `/audit-trace` is a specialized command for tracing ONE data concept through ALL computation paths to find divergence. Use `/audit-trace` when the question is "does X get computed consistently everywhere?" Use `/audit` when the question is "is this code correct, secure, performant, well-designed?"
+- **`/audit` and the pipeline AUDIT phase:** `/audit` covers step 3 of `pipeline.md`'s AUDIT phase (PAL external review + multi-lens). Steps 1 (`/simplify`) and 2 (`/security-review`) are separate — run them before `/audit` on the post-simplify state.
 - **Reports location:** `reports/audit_YYYY-MM-DD_<slug>.md` — same folder as consilium and audit-trace reports. The `type: audit` frontmatter distinguishes them.
 - **After fix:** re-run `/audit --focus <fixed-lens>` to confirm the HIGH findings are resolved before closing the task.
 - **PAL model selection:** if `mcp__pal__listmodels` is available, call it first to pick the strongest available model for the external review. Otherwise use the default PAL model.
