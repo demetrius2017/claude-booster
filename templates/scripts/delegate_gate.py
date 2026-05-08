@@ -28,7 +28,12 @@ State:
   since the last delegation signal. Plain-text, single line.
 
 "Actions" (counted, budget = 1):
-  Bash, Edit, Write, NotebookEdit
+  Bash (non-recon), Edit, Write, NotebookEdit
+
+"Recon Bash" (NOT counted — free, like Reads):
+  Read-only / diagnostic Bash: git status/diff/log, ls/find/grep,
+  curl/wget, ssh, docker ps/logs, gh pr/issue, .claude/scripts/*,
+  pip/npm list-family.  Matched by RECON_BASH_PATTERNS.
 
 "Reads" (NOT counted — free, unlimited):
   Read, Grep, Glob, WebSearch, WebFetch, ToolSearch, and any other tool
@@ -124,6 +129,19 @@ DELEGATION_TOOLS = {"Agent", "TaskCreate"}
 SUPERVISOR_BASH_PATTERNS = [
     re.compile(r"python3?\s+[^\s]*\.claude/scripts/supervisor/supervisor\.py\b"),
     re.compile(r"python3?\s+-m\s+supervisor\.supervisor\b"),
+]
+
+# Recon Bash — read-only / diagnostic, exempt from budget like Read/Grep.
+# Gate enforces workflow discipline, not safety (that's permissions.deny).
+RECON_BASH_PATTERNS = [
+    re.compile(r"python3?\s+\S+\.claude/scripts/(?!supervisor/)"),
+    re.compile(r"\bgit\s+(-\w+\s+\S*\s+)*(status|diff|log|show|branch|tag|rev-parse|describe|ls-files|ls-tree|blame|shortlog|remote|fetch|stash\s+list|config)\b"),
+    re.compile(r"\bssh\b"),
+    re.compile(r"^(ls|find|grep|egrep|fgrep|rg|ag|cat|head|tail|wc|file|stat|du|df|diff|md5sum|shasum|sha256sum|which|type|command|echo|printf|date|whoami|hostname|uname|id|pwd|realpath|dirname|basename|env|printenv)\b"),
+    re.compile(r"\b(curl|wget)\b"),
+    re.compile(r"\bdocker\s+(ps|logs|inspect|images|stats|top|compose\s+(ps|logs))\b"),
+    re.compile(r"\bgh\s+(pr|issue|api|auth|repo|run)\s"),
+    re.compile(r"\b(pip3?|npm|yarn|bun|cargo|go)\s+(list|show|info|outdated|audit|why|ls)\b"),
 ]
 
 ALLOWLIST_PATHS = [
@@ -236,6 +254,10 @@ def _path_allowlisted(tool_input: dict) -> bool:
 
 def _bash_is_supervisor_spawn(cmd: str) -> bool:
     return any(p.search(cmd) for p in SUPERVISOR_BASH_PATTERNS)
+
+
+def _bash_is_recon(cmd: str) -> bool:
+    return any(p.search(cmd) for p in RECON_BASH_PATTERNS)
 
 
 def _feedback(root: Path, tool: str, counter: int) -> str:
@@ -363,6 +385,13 @@ def main() -> int:
                 **base,
                 "decision": DECISION_ALLOW,
                 "reason": "supervisor spawn resets counter",
+            })
+            return 0
+        if _bash_is_recon(cmd):
+            append_jsonl(DELEGATE_LOG_NAME, {
+                **base,
+                "decision": DECISION_ALLOW,
+                "reason": "recon bash (read-only pattern match)",
             })
             return 0
 
