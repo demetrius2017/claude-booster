@@ -1,6 +1,6 @@
 ---
-description: "Run consilium (multi-agent debate) or audit. RECON first, spawn 3-5 bio-specific agents + GPT via PAL MCP, synthesize, save report."
-argument-hint: <topic for consilium/audit>
+description: "Run consilium (multi-agent debate). RECON first, spawn 3-5 bio-specific agents + GPT via PAL MCP, synthesize, save report."
+argument-hint: <topic for consilium>
 ---
 
 1. **[CRITICAL] RECON before opinions — verify current state against code, not memory:**
@@ -20,6 +20,5 @@ argument-hint: <topic for consilium/audit>
 5. Lead: synthesis + table "agent / position / key insight / KPI" (including GPT agent)
 6. **[CRITICAL] Save results to file:**
    - Consilium → `reports/consilium_YYYY-MM-DD_<topic>.md`
-   - Audit → `reports/audit_YYYY-MM-DD_<topic>.md`
    - Format: title, task context, agent positions (table), decision made, rejected alternatives with reasons, risks, implementation recommendations.
    - Git add + commit. These reports are the project's knowledge base, read during `start`.
