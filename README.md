@@ -13,7 +13,7 @@ Claude Code out of the box has no memory across sessions, no institutional learn
 Claude Booster turns those sessions into a compounding asset. One `python install.py` on any Mac or Linux box and your Claude Code starts **remembering, learning, and auditing itself**.
 
 
-**Kill date если нет положительного результата:** 2026-05-22.
+**Kill date if no positive results:** 2026-05-22.
 
 ---
 
@@ -62,11 +62,61 @@ A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explor
 
 ---
 
+## What's new in v1.6.0 — Multi-Agent Audit + Smart Delegate Gate
+
+**Two things that looked fine on the surface but weren't.**
+
+### /audit — From single-reviewer to six-lens parallel tribunal
+
+Here's the problem: when you type `/audit`, Claude reads the diff once. One model. One perspective. The same model that wrote the code (or reviewed it moments ago) now judges it. This is exactly like asking the author to proofread their own manuscript — you'll catch the obvious, miss the subtle.
+
+Before v1.6.0, `/audit` was a footnote inside `/consilium` — "or audit" in the description, same single-agent flow. The word "audit" triggered a single-reviewer mental model because that's what was actually happening.
+
+**What v1.6.0 changes.** `/audit` is now a standalone 751-line command that spawns a parallel tribunal of six specialized agents, each with a unique background and mandatory grep patterns for independent RECON:
+
+| Lens | Focus |
+|------|-------|
+| **Correctness** | Logic bugs, edge cases, off-by-ones, exception paths |
+| **Security** | Auth bypasses, injection vectors, secrets in code, CORS, privilege escalation |
+| **Performance** | N+1 queries, unbounded loops, missing indexes, memory leaks |
+| **Architecture** | Interface violations, coupling, dependency direction, contracts broken |
+| **Data Integrity** | Silent corruption paths, missing transactions, race conditions, validation gaps |
+| **Operational** | Logging gaps, missing health checks, unhandled errors that surface at 3am |
+
+Every auditor also hits the PAL MCP (GPT external review) — independent second opinion from a different model entirely. All seven reviewers (6 agents + GPT) spawn in **one parallel message**. Results: structured `PASS / FAIL / CONCERN` verdicts with `file:line` evidence, a verdict matrix, cross-lens findings where two reviewers flag the same area independently, and a prioritized action plan.
+
+Use `--scope path/to/feature` to limit the blast radius. Use `--focus security,performance` to select specific lenses when you know where the risk is.
+
+`/consilium` is also cleaned up: it no longer references audit at all. Two distinct tools, two distinct jobs.
+
+### Delegate Gate — RECON_BASH_PATTERNS exemption
+
+The delegate gate enforces that Lead doesn't do inline work — it delegates. One write-intent action per window, then it must spawn an agent.
+
+The problem: the gate was counting `git status` the same as `git push`. `ssh user@host 'cat /proc/version'` the same as `rm -rf`. Every read-only diagnostic command consumed the same budget slot as a destructive write. The practical consequence: `/start` couldn't run its own health checks. Lead had to spawn a Haiku agent just to run `git diff`. A `curl` to verify a deployment was blocked as if it were a config mutation.
+
+**What v1.6.0 changes.** `RECON_BASH_PATTERNS` — 8 regex patterns that classify Bash commands as read-only recon, exempt from the budget. These patterns cover:
+
+- `.claude/scripts/*` diagnostic scripts (health checks, telemetry, canary)
+- `git status`, `git diff`, `git log` (including `git -C /path diff`)
+- `ssh` commands that read remote state
+- `ls`, `find`, `grep`, `diff`
+- `curl`, `wget` (verification, not mutation)
+- `docker ps`, `docker logs`
+- `gh pr list`, `gh issue view`
+- `pip list`, `npm list`
+
+Read-only Bash is now free, like `Read` or `Grep`. Only write-intent Bash — edits, deploys, installs, mutations — counts against the 1-action budget.
+
+The `/simplify` review on this change caught 6 findings that were fixed before shipping: stale docstring, anchor mismatches in pattern logic, and a backtrack-prevention gap that would have let a write command disguise itself as recon via a crafted prefix.
+
+---
+
 ## What's new in v1.5.1 — Memory Bridge + Delegate Gate Hardening
 
 **Three problems this release solves:**
 
-1. **"Запомни" writes to markdown files but not to rolling_memory.db.** Claude Code's native memory system writes `.md` files. Claude Booster's cross-session engine uses `rolling_memory.db`. The two systems were disconnected — a "запомни" command would save to one but not the other. Fix: a PostToolUse hook now auto-mirrors every memory file write to `rolling_memory.db` via a fire-and-forget subprocess. Type mapping (user→feedback, project→project_context, reference→directive), `content_hash` dedup, MEMORY.md exclusion.
+1. **"Remember this" writes to markdown files but not to rolling_memory.db.** Claude Code's native memory system writes `.md` files. Claude Booster's cross-session engine uses `rolling_memory.db`. The two systems were disconnected — a "remember" command would save to one but not the other. Fix: a PostToolUse hook now auto-mirrors every memory file write to `rolling_memory.db` via a fire-and-forget subprocess. Type mapping (user→feedback, project→project_context, reference→directive), `content_hash` dedup, MEMORY.md exclusion.
 
 2. **`.delegate_mode=off` persists forever — no session scope, no TTL.** A one-time bypass written for a legitimate exception stays active indefinitely. The Horizon project had enforcement silently disabled for 2 weeks from a forgotten `off` file. Fix: bare `off` is now treated as expired. New format `off:<session_id>` scopes the bypass to a single session. When the session ends, the bypass dies.
 
@@ -317,6 +367,8 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | **Claude fixes A, breaks B, C, D** | No dependency map — edits happen without tracing the call graph | `dep_guard.py` blocks edits on critical files without dependency review evidence + `ARCHITECTURE.md` circuit board shows the full system topology |
 | **Claude patches DB data directly** | No gate on DML — broken data gets fixed in the DB instead of in the producer | `financial_dml_guard.py` blocks `UPDATE`/`DELETE` on derived columns and append-only tables, forces "fix the producer function, not the data" |
 | **Session ends, debts forgotten** | No tracking of unfinished work — next session starts blind | `/debt` tracks the inventory, `/debt work` resolves highest-priority items, `/handover` includes `## Outstanding Debts` so context survives the reset |
+| **"Code review" = Claude reads the diff once** | Single-agent self-review — same model that wrote the code judges it | `/audit` spawns 6 specialized agents (security, performance, correctness, architecture, data integrity, ops) + GPT external review — each does independent RECON with mandatory grep patterns |
+| **`git status` blocked after first Bash call** | delegate_gate counts all Bash equally — diagnostic commands consume the same budget as destructive ones | `RECON_BASH_PATTERNS`: 8 read-only patterns (git, ssh, curl, ls, docker ps, .claude/scripts/*) exempt from budget — only write-intent Bash counts |
 
 ---
 
@@ -344,6 +396,8 @@ Escape hatches for legitimate exceptions: `CLAUDE_BOOSTER_SKIP_{TASK,PHASE,EVIDE
 | Edit A silently breaks B, C, D | No dependency map — changes land without tracing the call graph | `dep_guard.py` checks session transcript for dependency review evidence before allowing edits on high-dependency files; `ARCHITECTURE.md` + `dep_manifest.json` make the circuit board explicit |
 | Claude patches DB data instead of the producer | No DML gate — data inconsistency "fixed" at the storage layer | `financial_dml_guard.py` blocks direct `UPDATE`/`DELETE` on derived-readonly columns and append-only tables with a clear redirect message |
 | Session ends, open work lost | No debt tracking — next session starts from scratch | `/debt list` inventories unfinished items; `/debt work` picks and resolves; `/handover` injects `## Outstanding Debts` for the next session |
+| Code audit = one agent reading alone | "Audit" triggers single-reviewer mental model; no multi-perspective review | `/audit`: 6-lens parallel agents + PAL external, independent RECON per lens, structured verdicts with evidence |
+| `git status` / `ssh` / `curl` blocked by delegate gate | All Bash counted equally — read-only diagnostic commands consume same budget as writes | `RECON_BASH_PATTERNS`: 8 regex patterns exempt read-only Bash (git, ssh, curl, ls, docker ps, scripts) — free like Read/Grep |
 
 ---
 
@@ -381,7 +435,7 @@ Under `~/.claude/`:
 | `rules/*.md` | 12 rule files — anti-loop, tool strategy, pipeline phases, deploy procedures, frontend debug pipeline, institutional knowledge, error taxonomy, canary for rule-load detection, communication-style ("professor" tone), quality/Three-Nos, paired-verification (with session context injection protocol) |
 | `scripts/*.py` | 23 Python hook scripts — memory engine + session hooks (`rolling_memory.py`, `memory_session_start.py`/`_end.py`/`_post_tool.py`), evidence gates (`verify_gate.py`, `require_evidence.py`), phase machine (`phase.py`, `phase_gate.py`, `phase_prompt_inject.py`, `preserve_plan_context.py`), plan-first enforcer (`require_task.py`), approval-baseline counter (`approval_counter.py`), observability (`telemetry_agent_health.py`, `check_rules_loaded.py`, `check_review_ages.py`), session context extractor (`session_context.py` — readable JSONL extraction for agent delegation), systemic thinking guards (`financial_dml_guard.py`, `dep_guard.py`, `arch_freshness.py`), infra (`index_reports.py`, `backup_rolling_memory.py`, `add_frontmatter.py`, `instructions_loaded_log.py`) |
 | `scripts/supervisor/` | v1.2.0 Supervisor Agent — 8 modules (`supervisor.py` CLI + orchestration, `policy.py` Tier 0/1/2 engine, `quota.py` admission + circuit-breaker, `detector.py` adaptive-silence FSM, `stream_json_adapter.py` Path A runtime, `persistence.py` sqlite writers, `runtime.py` transport Protocol, `schema.sql`) + `prompts/supervisor_v1.md` Haiku escalation contract |
-| `commands/*.md` | 11 slash commands: `/start`, `/handover`, `/consilium`, `/lead`, `/update`, `/phase`, `/delegate`, `/verify-after-edit`, `/verify-flow`, `/architecture`, `/debt` |
+| `commands/*.md` | 12 slash commands: `/start`, `/handover`, `/consilium`, `/audit`, `/lead`, `/update`, `/phase`, `/delegate`, `/verify-after-edit`, `/verify-flow`, `/architecture`, `/debt` |
 | `agents/*.md`, `*.json` | Agent team protocols — lifecycle, ownership schema, worktree safety, readiness gates, roadmap convention |
 | `settings.json` | Hooks wired to Claude Code, **merged** into any existing config |
 | `.booster-manifest.json` | Installer metadata — SHA-256 per file, version, for idempotency and selective rollback |
@@ -396,7 +450,8 @@ All commands are on-demand — their instructions load only when you invoke them
 |---------|-------------|
 | `/start` | Initialize a session: read README, last handover, knowledge base (FTS5 cross-project search), telemetry, canary check, stuck-loop detection. Ends with `EnterPlanMode`. |
 | `/handover` | End-of-session report: auto-collects git log, saves structured report with Goal+KPI, Required reading, Session reference, verify-gate evidence block. |
-| `/consilium` | Multi-agent debate: RECON first (code, not reports), spawn 3–5 bio-specific agents + GPT via PAL MCP, synthesize positions, save to `reports/`. Also handles `/audit`. |
+| `/consilium` | Multi-agent debate: RECON first (code, not reports), spawn 3–5 bio-specific agents + GPT via PAL MCP, synthesize positions, save to `reports/`. |
+| `/audit` | Multi-agent code audit: 6 specialized lenses (correctness, security, performance, architecture, data integrity, operational) + PAL external review. Each auditor runs independent RECON. Structured PASS/FAIL/CONCERN verdicts with file:line evidence. |
 | `/lead` | Supervised worker: spawns a `claude -p` subprocess under policy gating (Tier 0/1/2 deny-list), quota circuit-breaker, adaptive silence detection. Replaces old `/supervise`. |
 | `/update` | Mid-session auto-update: `git pull --ff-only` + `install.py --yes`. Rules and commands hot-reload immediately. Dirty tree = abort. |
 | `/phase` | Show or set workflow phase (`RECON → PLAN → IMPLEMENT → AUDIT → VERIFY → MERGE`). |
