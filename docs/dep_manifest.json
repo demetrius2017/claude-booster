@@ -143,11 +143,11 @@
     },
     "delegate_gate": {
       "file": "templates/scripts/delegate_gate.py::main",
-      "reads_from": ["external:stdin (PreToolUse JSON)", "external:.delegate_counter", "external:.delegate_mode"],
+      "reads_from": ["external:stdin (PreToolUse JSON)", "external:.delegate_counter", "external:.delegate_mode", "external:.claude/.phase"],
       "writes_to": ["external:.delegate_counter", "external:logs/delegate_gate_decisions.jsonl"],
       "called_by": ["hook:PreToolUse/Edit|Write|Bash|Agent|TaskCreate"],
       "critical": false,
-      "notes": "Budget=1 action before delegation required. Auto-skips for sub-agents (agent_id non-empty)."
+      "notes": "Budget=1 action before delegation required. Phase-aware: RECON/PLAN phases exempt. Auto-skips for sub-agents (agent_id non-empty)."
     },
     "supervisor_supervise": {
       "file": "templates/scripts/supervisor/supervisor.py::Supervisor.supervise",

@@ -58,6 +58,13 @@ Bypass (LEAD ONLY — sub-agents cannot self-disable):
        ~/.claude/logs/gate_bypass_attempts.jsonl)
   path allowlist match (reports/ audits/ *.md .claude/ etc.)
 
+Phase-aware exemption:
+  When <project_root>/.claude/.phase contains RECON or PLAN, the gate
+  allows all tool calls without counting — these phases are inherently
+  read-only (phase_gate.py blocks Edit/Write separately), so delegation
+  enforcement is counterproductive.  If .phase is absent or contains any
+  other value, the gate enforces normally.
+
   The stderr block message deliberately does NOT mention the bypass file
   path — sub-agents read the same stderr and adopt it as a fix-recipe.
   README keeps the documentation for human Leads.
@@ -119,6 +126,10 @@ BUDGET = int(os.environ.get("CLAUDE_BOOSTER_DELEGATE_BUDGET", "1"))
 STATE_FILE_REL = ".claude/.delegate_counter"
 MODE_FILE_REL = ".claude/.delegate_mode"
 
+# Phases exempt from the delegation budget — read-only by design;
+# phase_gate.py separately blocks Edit/Write during RECON/PLAN.
+EXEMPT_PHASES = {"RECON", "PLAN"}
+
 # Tools that count against the budget when called directly by main Claude.
 ACTIONS = {"Bash", "Edit", "Write", "NotebookEdit"}
 
@@ -137,7 +148,7 @@ RECON_BASH_PATTERNS = [
     re.compile(r"python3?\s+\S+\.claude/scripts/(?!supervisor/)"),
     re.compile(r"\bgit\s+(-\w+\s+\S*\s+)*(status|diff|log|show|branch|tag|rev-parse|describe|ls-files|ls-tree|blame|shortlog|remote|fetch|stash\s+list|config)\b"),
     re.compile(r"\bssh\b"),
-    re.compile(r"^(ls|find|grep|egrep|fgrep|rg|ag|cat|head|tail|wc|file|stat|du|df|diff|md5sum|shasum|sha256sum|which|type|command|echo|printf|date|whoami|hostname|uname|id|pwd|realpath|dirname|basename|env|printenv)\b"),
+    re.compile(r"(?:^|&&\s*|;\s*)(ls|find|grep|egrep|fgrep|rg|ag|cat|head|tail|wc|file|stat|du|df|diff|md5sum|shasum|sha256sum|which|type|command|echo|printf|date|whoami|hostname|uname|id|pwd|realpath|dirname|basename|env|printenv)\b"),
     re.compile(r"\b(curl|wget)\b"),
     re.compile(r"\bdocker\s+(ps|logs|inspect|images|stats|top|compose\s+(ps|logs))\b"),
     re.compile(r"\bgh\s+(pr|issue|api|auth|repo|run)\s"),
@@ -160,6 +171,22 @@ def _project_root(cwd_hint: str) -> Path:
         return Path(cwd_hint) if cwd_hint else Path.cwd()
     except (FileNotFoundError, OSError):
         return Path.home()
+
+
+def _current_phase(root: Path) -> str | None:
+    """Read the current workflow phase from <project_root>/.claude/.phase.
+
+    Returns the phase name in UPPER CASE (e.g. "RECON", "PLAN"), or None if
+    the file does not exist or cannot be read.  Callers compare against
+    EXEMPT_PHASES to decide whether to skip budget enforcement.
+    """
+    phase_file = root / ".claude" / ".phase"
+    if not phase_file.exists():
+        return None
+    try:
+        return phase_file.read_text().strip().upper()
+    except OSError:
+        return None
 
 
 def _read_counter(root: Path) -> int:
@@ -366,6 +393,16 @@ def main() -> int:
             "decision": DECISION_BYPASS_HONOURED,
             "reason": ".delegate_mode=off (lead)",
             "attempted_bypass": True,
+        })
+        return 0
+
+    phase = _current_phase(root)
+    if phase in EXEMPT_PHASES:
+        _atomic_reset(root)
+        append_jsonl(DELEGATE_LOG_NAME, {
+            **base,
+            "decision": DECISION_ALLOW,
+            "reason": f"phase {phase!r} exempt from delegation budget",
         })
         return 0
 

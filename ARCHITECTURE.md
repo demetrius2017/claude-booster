@@ -105,7 +105,7 @@ C4Container
 | `verify_gate.py::main()` | stdin (PreToolUse JSON), transcript, git diff | exit code 0/2, stderr | Claude Code PreToolUse/Bash hook | Handover verification — broken = unverified commits pass |
 | `dep_guard.py::main()` | stdin (PreToolUse JSON), dep_manifest.json, transcript | exit code 0/2, stderr | Claude Code PreToolUse/Edit\|Write hook | Dependency review enforcement — broken = critical files edited without review |
 | `financial_dml_guard.py::main()` | stdin (PreToolUse JSON), dep_manifest.json | exit code 0/2, stderr | Claude Code PreToolUse/Bash hook | DML protection — broken = direct data patches on protected tables |
-| `delegate_gate.py::main()` | stdin (PreToolUse JSON), .delegate_counter, .delegate_mode | exit code 0/2, stderr, logs/delegate_gate_decisions.jsonl | Claude Code PreToolUse/Edit\|Write\|Bash\|Agent\|TaskCreate hook | Delegation enforcement — broken = Lead does work instead of delegating |
+| `delegate_gate.py::main()` | stdin (PreToolUse JSON), .delegate_counter, .delegate_mode, .phase | exit code 0/2, stderr, logs/delegate_gate_decisions.jsonl | Claude Code PreToolUse/Edit\|Write\|Bash\|Agent\|TaskCreate hook | Delegation enforcement — broken = Lead does work instead of delegating |
 | `supervisor.py::Supervisor.supervise()` | WorkerRuntime events, PolicyContext | db:supervisor_decisions, db:supervisor_quota | CLI /supervise command | Worker management — broken = uncontrolled subprocess execution |
 | `policy.py::evaluate()` | tool name, tool_input, PolicyContext | Decision (approve/escalate/deny) | supervisor.py::Supervisor | Tool approval policy — broken = wrong tier classification |
 | `quota.py::QuotaTracker` | token counts | circuit_state (closed/half_open/open) | supervisor.py::Supervisor | Token budgeting — broken = self-deadlock on shared quota |
@@ -294,3 +294,4 @@ flowchart TD
 | Date | Commit | Change description | Author |
 |---|---|---|---|
 | 2026-05-05 | generated | Initial architecture document from /architecture command | generated |
+| 2026-05-09 | pending | delegate_gate: added phase-aware exemption (RECON/PLAN phases bypass budget) + fixed ^ anchor in RECON_BASH_PATTERNS | session |
