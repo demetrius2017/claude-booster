@@ -18,14 +18,16 @@ is a session-level control that spawns its own `claude` subprocess.
 ## Invocations
 
 ```bash
+# Model routing: pass --model claude-sonnet-4-6 for coding tasks (default).
+# Use --model claude-opus-4-7 only for architecture / deep debugging.
 # Simplest: free-form prompt, no quotes needed, no explicit `run`:
-python3 ~/.claude/scripts/supervisor/supervisor.py fix the bug in foo.py
+python3 ~/.claude/scripts/supervisor/supervisor.py --model claude-sonnet-4-6 fix the bug in foo.py
 
 # Bare invocation — prints help + summary of all known sessions:
 python3 ~/.claude/scripts/supervisor/supervisor.py
 
 # Explicit subcommands (also valid):
-python3 ~/.claude/scripts/supervisor/supervisor.py run fix the bug
+python3 ~/.claude/scripts/supervisor/supervisor.py run --model claude-sonnet-4-6 fix the bug
 python3 ~/.claude/scripts/supervisor/supervisor.py run --cwd /other/repo do thing
 python3 ~/.claude/scripts/supervisor/supervisor.py status --session <id>
 python3 ~/.claude/scripts/supervisor/supervisor.py decisions --session <id> --limit 20

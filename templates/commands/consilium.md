@@ -1,15 +1,20 @@
 ---
 description: "Run consilium (multi-agent debate). RECON first, spawn 3-5 bio-specific agents + GPT via PAL MCP, synthesize, save report."
-argument-hint: <topic for consilium>
+argument-hint: <topic for consilium/audit>
 ---
 
 1. **[CRITICAL] RECON before opinions — verify current state against code, not memory:**
    - Spawn Explore agents to read actual code/configs relevant to the topic (Grep for key functions, Read configs, check deploy state)
    - Cross-reference findings with reports/memory — flag discrepancies ("report says X, code shows Y")
    - Build a **Verified Facts Brief**: what exists now, what works, what doesn't — with file paths and evidence
-   - Present brief to the user before proceeding. If facts contradict the premise — reframe the question
+   - Present brief to Dmitry before proceeding. If facts contradict the premise — reframe the question
    - **Never brief consilium agents from reports alone. Reports decay. Code is truth.**
 2. Spawn 3-5 agents with different Bios (architect, security, product, devops, data engineer — task-specific). **Each agent receives the Verified Facts Brief, not raw report excerpts.**
+   - **Model routing — explicit and mandatory:**
+     - Architect, security review, deep-reasoning agents → `model: "opus"` (architectural / cross-system trade-offs)
+     - DevOps, data engineer, product, domain-specialist agents → `model: "sonnet"` (focused domain analysis)
+     - Trivial fact-collection agents (if any) → `model: "haiku"`
+   - Default WITHOUT explicit `model:` inherits Lead's Opus — that is the burn pattern. Always set `model:` per agent.
 3. Each independently: analysis, KPIs, decision
 4. **[MANDATORY] GPT as external expert:** use PAL MCP for independent opinion:
    - `mcp__pal__ask` — request GPT analysis/opinion on a specific question

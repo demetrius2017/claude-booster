@@ -1,3 +1,17 @@
+---
+description: "Paired Worker+Verifier protocol for delegated code work. Loads when planning Agent spawns, code edits, or paired acceptance verification."
+paths:
+  - "**/*.py"
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/*.jsx"
+  - "**/*.go"
+  - "**/*.rs"
+  - "**/*.java"
+  - "**/*.sql"
+  - "**/Dockerfile"
+---
+
 # Paired Verification — Lead spawns Worker AND Verifier as a pair
 
 Dmitry's request (2026-04-30): когда Lead делегирует содержательную работу, второй агент создаёт приёмку **независимо** — параллельно или последовательно, но с собственным контекстом. Lead не оценивает результат своим суждением; он запускает тест, написанный Verifier'ом, и читает exit code.

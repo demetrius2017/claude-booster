@@ -18,6 +18,13 @@ The default Claude Code shell on macOS is zsh, which has `nomatch` enabled by de
 - Or list candidates explicitly: `ls roadmap.html roadmap.md 2>/dev/null; true` (no glob, exit code suppressed).
 - **Never group fragile probes with critical telemetry in one parallel block** (`/start` canary, `check_review_ages`, `telemetry_agent_health`). Run telemetry in a separate, no-glob block so a typo in an unrelated `ls` cannot kill it.
 
+# [CRITICAL] Long-session token discipline
+
+- **Context >120k:** mandatory `/compact` before starting any next non-trivial task (new feature, multi-file refactor, fresh debugging chain). Cached long context is still billed; staying above 150k for hours is the dominant token-burn pattern in heavy-usage weeks.
+- **`/clear` between unrelated tasks** in the same session — keeps the cache window small and the agent's attention focused on the current goal.
+- **`/compact` mid-task** when the conversation has accumulated long tool outputs (file dumps, large grep results, agent transcripts) that are no longer load-bearing for the current step.
+- This is a discipline, not a hook block. Lead must self-check context size periodically (every ~10 exchanges in a long session) and act, rather than waiting for the user to notice.
+
 # Work Principles
 - **[CRITICAL] 51% Rule — do not ask clarifying questions you can answer yourself.**
   If you estimate ≥51% confidence in the answer from available context (code, memory, prior session, reports, obvious defaults), **act on your best guess** and state the assumption in one line ("Assuming X because Y — correct if wrong"). Do NOT interrupt with "which option do you want?" / "should I proceed?" / "did you mean X or Y?" when the evidence already points to an answer.
@@ -39,7 +46,7 @@ The default Claude Code shell on macOS is zsh, which has `nomatch` enabled by de
   - You're unsure about the interaction between 2+ systems (e.g., frontend + API + DB + cache).
   - The change is irreversible (migration, data deletion, infra config) and there's no rollback plan.
 
-  **[CRITICAL] Auto-Consilium Trigger — launch WITHOUT asking the user when risk is HIGH:**
+  **[CRITICAL] Auto-Consilium Trigger — launch WITHOUT asking Dmitry when risk is HIGH:**
   Risk is HIGH when the change hits **2+ of these**:
   - Production data or DB schema (migrations, seeds, data transforms)
   - Auth/security layer (tokens, permissions, encryption, CORS, secrets)
@@ -48,11 +55,11 @@ The default Claude Code shell on macOS is zsh, which has `nomatch` enabled by de
   - Financial/billing logic (payments, subscriptions, broker API calls)
   - Irreversible external side effects (emails sent, orders placed, records deleted)
 
-  When triggered: run `consilium` (3-5 agents + GPT via PAL) focused on the specific change. Present synthesis to the user BEFORE editing. One-line changes that are obviously safe (typo fix, log message) are exempt.
+  When triggered: run `consilium` (3-5 agents + GPT via PAL) focused on the specific change. Present synthesis to Dmitry BEFORE editing. One-line changes that are obviously safe (typo fix, log message) are exempt.
 - **[CRITICAL] Recon before code:** BEFORE writing a new function/method/utility — Grep/Glob the codebase for existing implementations. Search by keywords, method names, patterns. Duplication = bug. Found an analogue → use/extend it, do NOT rewrite from scratch.
 - System logs ≠ user decisions.
 - File >500 lines — split into modules.
-- Do NOT generate reports unless the user explicitly requests — save tokens.
+- Do NOT generate reports unless Dmitry explicitly requests — save tokens.
 
 # Prohibited
 - Demo versions, simplified files, stubs instead of real implementations.

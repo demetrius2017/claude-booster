@@ -22,6 +22,8 @@ Format as: `Session UUID: <uuid>  JSONL: <full-path>`. Add a one-line note that 
 
 Update roadmap. Git add + commit + push.
 
+**Model routing for handover delegation:** when spawning the handover-write agent, pass `model: "sonnet"` explicitly (Sonnet 4.6 is sufficient for report synthesis). For separate git-log/diff collection spawns, use `model: "haiku"`. Do NOT default to Opus — Lead's expensive model is for orchestration, not report writing.
+
 **[CRITICAL] Verify-gate JSON block — required before `git add`/`git commit` of the handover file.**
 Before running `git add reports/handover_*.md` or `git commit … reports/handover_*.md`, emit one of these as an assistant text block (the PreToolUse hook `verify_gate.py` scans the last 200 transcript lines for it):
 

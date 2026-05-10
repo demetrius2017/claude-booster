@@ -1,3 +1,18 @@
+---
+description: "Three Nos (Jikotei Kanketsu): no accept/make/pass-on defects. Loads on code, schema, or migration edits."
+paths:
+  - "**/*.py"
+  - "**/*.ts"
+  - "**/*.tsx"
+  - "**/*.jsx"
+  - "**/*.go"
+  - "**/*.rs"
+  - "**/*.java"
+  - "**/*.sql"
+  - "**/migrations/**"
+  - "**/Dockerfile"
+---
+
 # Built-in Quality — Three Nos (Jikotei Kanketsu)
 
 Dmitry's request (2026-04-29): закрепить как директиву верхнего уровня. Корни — Toyota Production System, принцип **Jikotei Kanketsu** (自工程完結) / Дзидока. Каноническая формулировка:
