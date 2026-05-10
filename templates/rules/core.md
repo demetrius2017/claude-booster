@@ -23,7 +23,7 @@ The default Claude Code shell on macOS is zsh, which has `nomatch` enabled by de
 - **Context >120k:** mandatory `/compact` before starting any next non-trivial task (new feature, multi-file refactor, fresh debugging chain). Cached long context is still billed; staying above 150k for hours is the dominant token-burn pattern in heavy-usage weeks.
 - **`/clear` between unrelated tasks** in the same session — keeps the cache window small and the agent's attention focused on the current goal.
 - **`/compact` mid-task** when the conversation has accumulated long tool outputs (file dumps, large grep results, agent transcripts) that are no longer load-bearing for the current step.
-- This is a discipline, not a hook block. Lead must self-check context size periodically (every ~10 exchanges in a long session) and act, rather than waiting for the user to notice.
+- **Automated advisory:** `compact_advisor.py` (PostToolUse hook) measures transcript size after every tool call; when estimated tokens cross 120k, it writes a one-shot marker. The next `UserPromptSubmit` hook (`compact_advisor_inject.py`) injects a reminder into the prompt and clears the marker. So Lead doesn't need to self-check — the harness signals proactively. Bypass via `CLAUDE_BOOSTER_SKIP_COMPACT_ADVISOR=1`.
 
 # Work Principles
 - **[CRITICAL] 51% Rule — do not ask clarifying questions you can answer yourself.**

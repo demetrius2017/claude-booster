@@ -96,6 +96,15 @@
             "source": "booster@${BOOSTER_VERSION}"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/compact_advisor_inject.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -165,6 +174,15 @@
           {
             "type": "command",
             "command": "${PYTHON} ${CLAUDE_HOME}/scripts/memory_post_tool.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/compact_advisor.py",
             "source": "booster@${BOOSTER_VERSION}"
           }
         ]
