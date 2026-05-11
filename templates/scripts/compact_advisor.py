@@ -26,13 +26,19 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path
 
 
-_THRESHOLD = int(os.environ.get("CLAUDE_BOOSTER_COMPACT_THRESHOLD", "120000"))
+try:
+    _THRESHOLD = int(os.environ.get("CLAUDE_BOOSTER_COMPACT_THRESHOLD", "120000"))
+except ValueError:
+    _THRESHOLD = 120000  # malformed env var → fall back silently to default
 _SKIP = os.environ.get("CLAUDE_BOOSTER_SKIP_COMPACT_ADVISOR", "")
+
+_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def main() -> int:
@@ -55,6 +61,10 @@ def main() -> int:
     transcript_path = data.get("transcript_path", "")
 
     if not session_id or not transcript_path:
+        return 0
+
+    # Defense-in-depth: session_id must be a valid UUID to be used in a filesystem path
+    if not _SESSION_ID_RE.match(session_id):
         return 0
 
     marker = Path.home() / ".claude" / f".compact_recommended_{session_id}"

@@ -25,11 +25,14 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
 
 _SKIP = os.environ.get("CLAUDE_BOOSTER_SKIP_COMPACT_ADVISOR", "")
+
+_SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
 def main() -> int:
@@ -50,6 +53,10 @@ def main() -> int:
 
     session_id = data.get("session_id", "")
     if not session_id:
+        return 0
+
+    # Defense-in-depth: session_id must be a valid UUID to be used in a filesystem path
+    if not _SESSION_ID_RE.match(session_id):
         return 0
 
     marker = Path.home() / ".claude" / f".compact_recommended_{session_id}"
