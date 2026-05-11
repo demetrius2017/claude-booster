@@ -75,9 +75,9 @@ _ERROR_TAXONOMY_RULES: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("monitoring-sre",   ("prometheus", "grafana", "oncall", "sre bot",
                           "phantom ip", "alertmanager")),
     ("deploy-cicd",      ("vercel", "next build", " deploy", "ci/cd", "pipeline",
-                          ".env", "env var", "github actions",
+                          ".env", "env var", "github actions", "demetrius2017",
                           "edge cache")),
-    # infra-networking matches the CORS/gateway case BEFORE
+    # infra-networking matches the CORS/gateway/IBKR-Gateway case BEFORE
     # security-auth — institutional.md places that rule under
     # "Infrastructure / Networking" because the fix is proxy config.
     ("infra-networking", ("docker", "container", "healthcheck", "cap-drop",
@@ -283,6 +283,16 @@ def main() -> None:
             batch_path.unlink()
     except Exception:
         pass
+
+    # Cleanup compact_advisor's one-shot marker for this session (audit O2)
+    try:
+        from pathlib import Path as _Path
+        if session_id and session_id != "unknown":
+            _marker = _Path.home() / ".claude" / f".compact_recommended_{session_id}"
+            if _marker.exists():
+                _marker.unlink()
+    except Exception:
+        pass  # best-effort cleanup; never block session end
 
 
 if __name__ == "__main__":
