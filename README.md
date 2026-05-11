@@ -62,6 +62,45 @@ A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explor
 
 ---
 
+## What's new in v1.7.0 — Auto-/compact discipline + Token budget reduction
+
+**Two problems this release solves:**
+
+1. **Booster's always-on rule budget was 33,766 tokens.** Three big rules files (`paired-verification.md` 29kB, `quality-no-defects.md` 18kB) loaded on every prompt despite being needed only during code-edit / delegation work. On non-coding prompts (RECON, discussions, /handover), ~12k tokens of rules got cached-but-still-shipped for nothing.
+
+2. **`/compact` discipline relied on Lead's self-check.** Built-in autocompact fires at 80% (~800k of 1M context) — too late for cost discipline. The rule "Lead should self-check at 120k" is unreliable under context pressure — Lead under attention saturation forgets to count tokens.
+
+### Auto-/compact advisor — hook-based, parallel, one-shot
+
+`compact_advisor.py` runs as PostToolUse hook on every tool call. It estimates transcript size (bytes // 4 ≈ tokens) and when the threshold is crossed (default 120,000, configurable via `CLAUDE_BOOSTER_COMPACT_THRESHOLD`), writes a one-shot marker `~/.claude/.compact_recommended_<session_id>`.
+
+`compact_advisor_inject.py` runs as UserPromptSubmit hook on every user prompt. If a marker exists for the current session, it emits an advisory via `additionalContext` — Claude sees a one-line reminder in its next prompt context: *"⚠ Auto-advisory: context ≈ N tokens (>120k). Run /compact before the next non-trivial task."* — then deletes the marker. One-shot per crossing — won't spam.
+
+Bypass via `CLAUDE_BOOSTER_SKIP_COMPACT_ADVISOR=1`. Logs every invocation to `~/.claude/logs/compact_advisor.jsonl` so SRE can post-hoc answer "did it fire, when, at what estimate?".
+
+**This release was dogfooded.** Booster's own `/audit` command was run against these new hooks the same day they shipped. Three Sonnet lens agents (correctness, security, operational) independently flagged two HIGH-severity findings: path-traversal via unsanitized `session_id` in the marker path (could `unlink` arbitrary user-writable files), and a module-level `int()` on the env var that silently disabled the advisor for the entire session if the user mistyped the threshold. Both fixed in the same session via paired Worker+Verifier (Sonnet). Three additional MED findings (orphan marker cleanup, zero logging, broken one-shot guarantee on `unlink` race) also fixed. Audit report at `reports/audit_2026-05-11_compact_advisor.md`.
+
+### Token budget reduction — gate big rules
+
+`paired-verification.md` and `quality-no-defects.md` got frontmatter `description:` + `paths:` glob gating. They load only when the conversation touches code (`*.py`, `*.ts`, `*.tsx`, `*.sql`, etc.) or paired delegation comes into scope. On non-coding prompts the harness skips them.
+
+Expected effect: rules always-on bytes drop from 33,766 → ~21,000 (saves ~12k tokens per non-coding prompt). The `telemetry_agent_health.py` always-on estimate doesn't model frontmatter gating yet — that's deferred (the savings show up in Anthropic dashboard cost, not in the local estimate).
+
+### Model routing — selective, not aggressive
+
+`/handover` write-agent now routes to Sonnet by default (`model: "sonnet"`) — report synthesis is fine on Sonnet, Opus is overkill. Git-log/diff collector subagents → `model: "haiku"`.
+
+`/consilium` and `/lead` stay on **Opus by default** — these commands are deliberately invoked for hard reasoning (multi-perspective architectural debate, autonomous supervised workers), Opus quality is priced in. An earlier attempt to downgrade them to Sonnet was reverted in `faa62c7` after the user's pushback — saved as feedback memory: `/consilium and /lead — keep Opus`.
+
+### Built-in Quality applied
+
+This release demonstrates the Three Nos (Jikotei Kanketsu) at the agent layer:
+- **Do not accept defects:** UUID regex guard on `session_id` at input boundary
+- **Do not make defects:** `try/except ValueError` around module-level `int(env)`, atomic tempfile + `os.replace` for marker write
+- **Do not pass on defects:** JSONL logging on every code path for post-hoc diagnosability, Stop hook cleans up orphan markers from crashed sessions
+
+---
+
 ## What's new in v1.6.0 — Multi-Agent Audit + Smart Delegate Gate
 
 **Two things that looked fine on the surface but weren't.**
