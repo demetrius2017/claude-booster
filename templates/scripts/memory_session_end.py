@@ -284,13 +284,13 @@ def main() -> None:
     except Exception:
         pass
 
-    # Cleanup compact_advisor's one-shot marker for this session (audit O2)
+    # Cleanup compact_advisor one-shot marker — prevents stale markers
+    # from surfacing in resumed/crashed sessions.
     try:
-        from pathlib import Path as _Path
         if session_id and session_id != "unknown":
-            _marker = _Path.home() / ".claude" / f".compact_recommended_{session_id}"
-            if _marker.exists():
-                _marker.unlink()
+            marker = Path.home() / ".claude" / f".compact_recommended_{session_id}"
+            if marker.exists():
+                marker.unlink()
     except Exception:
         pass  # best-effort cleanup; never block session end
 

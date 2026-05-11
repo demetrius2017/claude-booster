@@ -29,29 +29,21 @@ import re
 import sys
 from pathlib import Path
 
+try:
+    from _gate_common import append_jsonl, iso_now
+except ImportError:
+    import pathlib as _pl
+    sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
+    from _gate_common import append_jsonl, iso_now  # type: ignore[no-redef]
 
 _SKIP = os.environ.get("CLAUDE_BOOSTER_SKIP_COMPACT_ADVISOR", "")
 
 _SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
-def _log_event(event: str, **fields: object) -> None:
-    """Append one JSONL record to ~/.claude/logs/compact_advisor.jsonl.
-    Best-effort: any failure swallowed silently — logging must not break the hook."""
-    try:
-        import datetime as _dt
-        log_dir = Path.home() / ".claude" / "logs"
-        log_dir.mkdir(parents=True, exist_ok=True)
-        record = {"ts": _dt.datetime.now(_dt.timezone.utc).isoformat(), "event": event, **fields}
-        with open(log_dir / "compact_advisor.jsonl", "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
-    except Exception:
-        pass
-
-
 def main() -> int:
     if _SKIP:
-        _log_event("env_skip")
+        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "env_skip"})
         return 0
 
     # Parse stdin — malformed JSON is a silent no-op
@@ -61,27 +53,27 @@ def main() -> int:
             return 0
         data = json.loads(raw)
     except Exception:
-        _log_event("invalid_input", reason="malformed_json")
+        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "invalid_input", "reason": "malformed_json"})
         return 0
 
     if not isinstance(data, dict):
-        _log_event("invalid_input", reason="malformed_json")
+        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "invalid_input", "reason": "malformed_json"})
         return 0
 
     session_id = data.get("session_id", "")
     if not session_id:
-        _log_event("invalid_input", reason="missing_field")
+        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "invalid_input", "reason": "missing_field"})
         return 0
 
     # Defense-in-depth: session_id must be a valid UUID to be used in a filesystem path
     if not _SESSION_ID_RE.match(session_id):
-        _log_event("invalid_input", reason="invalid_uuid")
+        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "invalid_input", "reason": "invalid_uuid"})
         return 0
 
     marker = Path.home() / ".claude" / f".compact_recommended_{session_id}"
 
     if not marker.exists():
-        _log_event("no_marker", session_id=session_id)
+        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "no_marker", "session_id": session_id})
         return 0
 
     # Read token estimate from marker
@@ -116,7 +108,7 @@ def main() -> int:
     }
 
     print(json.dumps(output))
-    _log_event("injected", session_id=session_id, token_count=token_count)
+    append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "injected", "session_id": session_id, "token_count": token_count})
     return 0
 
 
