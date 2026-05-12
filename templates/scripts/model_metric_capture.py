@@ -133,16 +133,19 @@ def _log_no_usage_sample(event: dict) -> None:
     Never raises -- all exceptions are swallowed.
     """
     try:
-        today = datetime.utcnow().strftime("%Y%m%d")
+        now = datetime.utcnow()
+        today = now.strftime("%Y%m%d")
         marker = os.path.join(LOGS_DIR, f".metric_capture_sample_{today}")
-        if os.path.exists(marker):
-            return
-        # Ensure log directory exists.
         os.makedirs(LOGS_DIR, exist_ok=True)
+        try:
+            fd = os.open(marker, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.close(fd)
+        except FileExistsError:
+            return
         tr = event.get("tool_response") or {}
         tur = event.get("toolUseResult") or {}
         sample = {
-            "ts": datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "ts": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "event": "no_usage_sample",
             "tool_name": event.get("tool_name", ""),
             "tool_input_keys": sorted((event.get("tool_input") or {}).keys()),
@@ -151,8 +154,6 @@ def _log_no_usage_sample(event: dict) -> None:
         }
         with open(SAMPLE_LOG, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(sample) + "\n")
-        # Touch the daily marker -- creates an empty file.
-        open(marker, "w").close()
     except Exception:
         pass
 
@@ -171,20 +172,11 @@ def _match_codex_command(command: str):
         codex --help, codex auth, codex exec without -m,
         codex exec -m <model-not-in-allowlist>.
     """
-    m = _RE_CODEX_WORKER.search(command)
-    if m:
-        model = m.group(1)
-        if model in _CODEX_ALLOWLIST:
-            return model
-        return None
-
-    m = _RE_CODEX_EXEC.search(command)
-    if m:
-        model = m.group(1)
-        if model in _CODEX_ALLOWLIST:
-            return model
-        return None
-
+    for pattern in (_RE_CODEX_WORKER, _RE_CODEX_EXEC):
+        m = pattern.search(command)
+        if m:
+            model = m.group(1)
+            return model if model in _CODEX_ALLOWLIST else None
     return None
 
 
@@ -212,12 +204,7 @@ def handle_event(event: dict) -> bool:
             _log_no_usage_sample(event)
             return False
 
-        duration_ms = usage.get("duration_ms")
-        # Defensive: _find_usage already guarantees duration_ms is not None,
-        # but guard here to satisfy the output-guard invariant explicitly.
-        if duration_ms is None:
-            _log_no_usage_sample(event)
-            return False
+        duration_ms = usage["duration_ms"]
 
         num_turns = usage.get("num_turns", 1) or 1
         tokens_in = usage.get("input_tokens")
@@ -254,9 +241,11 @@ def _insert_row(provider, model, task_category,
                 tokens_in, tokens_out, session_id, project_root):
     # isolation_level=None -> autocommit; PRAGMA synchronous=NORMAL trades
     # one fsync per commit for ~3-8ms savings per PostToolUse invocation.
-    conn = sqlite3.connect(DB_PATH, timeout=2.0, isolation_level=None)
+    conn = sqlite3.connect(
+        f"file:{DB_PATH}?synchronous=NORMAL",
+        timeout=2.0, isolation_level=None, uri=True,
+    )
     try:
-        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(INSERT_SQL, (
             provider, model, task_category,
             duration_ms, num_turns, per_turn_ms,

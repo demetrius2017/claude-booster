@@ -15,8 +15,6 @@ set -uo pipefail
 
 # ── paths (all $HOME-expanded, no ~ literals) ──────────────────────────────────
 SCRIPT="$HOME/.claude/scripts/model_metric_capture.py"
-TEMPLATE="$HOME/../Projects/Claude_Booster/templates/scripts/model_metric_capture.py"
-# Resolve absolute template path without relying on cwd
 TEMPLATE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/templates/scripts/model_metric_capture.py"
 DB="$HOME/.claude/rolling_memory.db"
 LOG_DIR="$HOME/.claude/logs"
@@ -27,6 +25,9 @@ TOTAL=17
 PASS=0
 FAIL=0
 FAILURES=()
+
+# Resolve actual schema column names once — avoids one sqlite3 process per call.
+_SCHEMA_COLS=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -58,57 +59,14 @@ total_rows() {
     sqlite3 "$DB" "SELECT COUNT(*) FROM model_metrics;" 2>/dev/null || echo "0"
 }
 
-# Detect which column name was used for the contract's "timestamp" field.
-# The Worker may have added it as "timestamp" or left it as "ts_utc".
-ts_col() {
-    local cols
-    cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
-    if echo "$cols" | grep -qx "timestamp"; then
-        echo "timestamp"
-    else
-        echo "ts_utc"
-    fi
-}
-
-# Detect input_tokens column name (contract: input_tokens; old: tokens_in).
-in_tok_col() {
-    local cols
-    cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
-    if echo "$cols" | grep -qx "input_tokens"; then
-        echo "input_tokens"
-    else
-        echo "tokens_in"
-    fi
-}
-
-# Detect output_tokens column name (contract: output_tokens; old: tokens_out).
-out_tok_col() {
-    local cols
-    cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
-    if echo "$cols" | grep -qx "output_tokens"; then
-        echo "output_tokens"
-    else
-        echo "tokens_out"
-    fi
-}
-
-# Detect category column name (contract: category; old: task_category).
-cat_col() {
-    local cols
-    cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
-    if echo "$cols" | grep -qx "category"; then
-        echo "category"
-    else
-        echo "task_category"
-    fi
-}
+_col() { echo "$_SCHEMA_COLS" | grep -qx "$1" && echo "$1" || echo "$2"; }
+ts_col()     { _col "timestamp" "ts_utc"; }
+in_tok_col() { _col "input_tokens" "tokens_in"; }
+out_tok_col(){ _col "output_tokens" "tokens_out"; }
+cat_col()    { _col "category" "task_category"; }
 
 # Detect tool_name column (contract: tool_name; may be absent in old schema).
-has_tool_name_col() {
-    local cols
-    cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
-    echo "$cols" | grep -qx "tool_name" && echo "yes" || echo "no"
-}
+has_tool_name_col() { echo "$_SCHEMA_COLS" | grep -qx "tool_name" && echo "yes" || echo "no"; }
 
 # Clean up: delete all rows with model values we injected during tests.
 # Uses unique model sentinel values per test to avoid hitting production rows.
