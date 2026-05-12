@@ -38,6 +38,11 @@ except ImportError:
 
 _SKIP = os.environ.get("CLAUDE_BOOSTER_SKIP_COMPACT_ADVISOR", "")
 
+try:
+    _THRESHOLD = int(os.environ.get("CLAUDE_BOOSTER_COMPACT_THRESHOLD", "120000"))
+except ValueError:
+    _THRESHOLD = 120000  # malformed env var → fall back silently to default
+
 _SESSION_ID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")
 
 
@@ -78,10 +83,10 @@ def main() -> int:
 
     # Read token estimate from marker
     try:
-        token_count_str = marker.read_text(encoding="utf-8").strip()
-        token_count = int(token_count_str)
+        marker_text = marker.read_text(encoding="utf-8").strip()
+        estimated_tokens = int(marker_text)
     except Exception:
-        token_count = 120000  # fallback if unreadable
+        estimated_tokens = _THRESHOLD  # fallback if unreadable
 
     # Delete marker — one-shot semantics rely on this succeeding.
     # Rare failure modes (read-only FS, race with concurrent inject): we still
@@ -95,7 +100,7 @@ def main() -> int:
         )
 
     advisory = (
-        f"⚠ Auto-advisory: context ≈ {token_count:,} tokens (>120k). "
+        f"⚠ Auto-advisory: context ≈ {estimated_tokens:,} tokens (>{_THRESHOLD // 1000}k). "
         "Run /compact before the next non-trivial task to keep cache costs down. "
         "(one-shot reminder; will not repeat)"
     )
@@ -108,7 +113,7 @@ def main() -> int:
     }
 
     print(json.dumps(output))
-    append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "injected", "session_id": session_id, "token_count": token_count})
+    append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "injected", "session_id": session_id, "estimated_tokens": estimated_tokens})
     return 0
 
 
