@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# test_model_balancer_all.sh — aggregate runner for all model_balancer Day-1 suites.
-# Exit 0 iff all 5 sub-suites exit 0; else 1.
+# test_model_balancer_all.sh — aggregate runner for all model_balancer suites.
+# Exit 0 iff all 7 sub-suites exit 0; else 1.
 set -u
 
 DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -11,9 +11,11 @@ SUITES=(
   "test_model_balancer.sh:32"
   "test_hooks_registration.sh:10"
   "test_session_start_balancer_summary.sh:20"
+  "test_session_start_limits_summary.sh:14"
+  "test_model_balancer_active.sh:24"
 )
 
-echo "=== model_balancer Day-1 — full smoke ==="
+echo "=== model_balancer — full smoke ==="
 echo ""
 
 SUITE_PASS=0
@@ -57,7 +59,8 @@ for entry in "${SUITES[@]}"; do
   fi
 
   # Label
-  LABEL=$(printf "%-50s" "[$i/5] $script")
+  SUITE_COUNT="${#SUITES[@]}"
+  LABEL=$(printf "%-50s" "[$i/$SUITE_COUNT] $script")
   if [[ $rc -eq 0 ]]; then
     echo "$LABEL PASS ($actual_pass/$actual_total)"
     SUITE_PASS=$((SUITE_PASS + 1))

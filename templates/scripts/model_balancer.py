@@ -5,18 +5,23 @@ model_balancer.py — Daily routing decision engine for model_balancer.
 Purpose:
     Maintains ~/.claude/model_balancer.json as the single source of routing
     truth for all Claude Booster projects. Day-1 scope: passive observation
-    + seed defaults. No metric analysis (day-N).
+    + seed defaults. Active path (day-N): reads model_metrics from
+    rolling_memory.db, computes p50 latency per (provider, model) per
+    task_category over last 14 days, and applies a Pareto objective function
+    to select the empirically-best candidate per category.
 
 Contract (inputs/outputs):
     Reads  : ~/.claude/model_balancer.json (schema_version=2)
+             ~/.claude/rolling_memory.db (model_metrics table, read-only)
+             ~/.claude/openai_models.json (intelligence_score lookup)
     Writes : ~/.claude/model_balancer.json (atomic via .tmp + os.replace)
     Backups: ~/.claude/model_balancer.json.bak.<YYYY-MM-DD> (max 7 kept)
 
 CLI:
-    model_balancer.py decide          Idempotent daily refresh.
-    model_balancer.py get <category>  Print routing dict for one category.
-    model_balancer.py show            Print full current decision JSON.
-    model_balancer.py status          One-line freshness summary.
+    model_balancer.py decide [--force]  Idempotent daily refresh.
+    model_balancer.py get <category>    Print routing dict for one category.
+    model_balancer.py show              Print full current decision JSON.
+    model_balancer.py status            One-line freshness summary.
 
 Library mode:
     from model_balancer import get_routing, current_decision
@@ -24,13 +29,17 @@ Library mode:
     decision = current_decision()     # → full dict
 
 Limitations:
-    - Day-1: no model_metrics reads; routing never changes from seed values.
+    - Active path requires MIN_SAMPLES per (provider, model, category) to
+      override routing; falls back to prior routing if threshold not met.
     - Backup filename uses prior file's decision_date; if that field is
       missing, falls back to today's date with a "-unknown" suffix.
     - Backup rotation deletes only files matching the expected .bak.* pattern.
 
 ENV:
-    CLAUDE_MODEL_BALANCER_PATH  Override default ~/.claude/model_balancer.json
+    CLAUDE_MODEL_BALANCER_PATH      Override default ~/.claude/model_balancer.json
+    CLAUDE_BALANCER_FORCE_ACTIVE    Re-evaluate even if decision_date == today
+    CLAUDE_BALANCER_DISABLE_ACTIVE  Skip active path; behave like day-1
+    CLAUDE_BALANCER_MIN_SAMPLES     Override MIN_SAMPLES threshold (default 5)
 
 Files:
     ~/.claude/model_balancer.json           live routing file
@@ -45,9 +54,12 @@ import argparse
 import json
 import os
 import shutil
+import sqlite3
+import statistics
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -57,7 +69,39 @@ _DEFAULT_PATH = Path.home() / ".claude" / "model_balancer.json"
 _BALANCER_PATH: Path = Path(
     os.environ.get("CLAUDE_MODEL_BALANCER_PATH", str(_DEFAULT_PATH))
 )
+_DB_PATH: Path = Path.home() / ".claude" / "rolling_memory.db"
+_OAI_MODELS_PATH: Path = Path.home() / ".claude" / "openai_models.json"
 _MAX_BACKUPS = 7
+
+# ---------------------------------------------------------------------------
+# Active-path constants
+# ---------------------------------------------------------------------------
+
+# Minimum samples per (provider, model) within a category to trust the data
+try:
+    MIN_SAMPLES: int = int(os.environ.get("CLAUDE_BALANCER_MIN_SAMPLES", "5"))
+except (TypeError, ValueError):
+    MIN_SAMPLES = 5
+
+# Look-back window in days for metric queries
+_LOOKBACK_DAYS: int = 14
+
+# Pareto objective weights — must sum to 1.0
+_WEIGHTS: dict[str, float] = {"q": 0.5, "l": 0.3, "b": 0.2}
+
+# Hardcoded intelligence scores for Anthropic models (not in openai_models.json)
+_QUALITY_SCORES_ANTHROPIC: dict[str, int] = {
+    "claude-opus-4-7": 20,
+    "claude-opus-4-6": 20,
+    "claude-sonnet-4-6": 17,
+    "claude-haiku-4-5": 13,
+}
+
+# Pinned categories — their routing is NEVER overwritten by active logic
+_PINNED_CATEGORIES: frozenset[str] = frozenset({"lead", "high_blast_radius"})
+
+# Transitions ring-buffer cap
+_MAX_TRANSITIONS: int = 50
 
 # ---------------------------------------------------------------------------
 # Hardcoded bootstrap defaults (used only when no prior JSON exists)
@@ -95,6 +139,7 @@ _KNOWN_CATEGORIES = set(DEFAULTS["routing"].keys())
 # ---------------------------------------------------------------------------
 
 _cached_decision: dict | None = None
+_cached_intelligence_scores: dict[str, int] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -104,6 +149,11 @@ _cached_decision: dict | None = None
 def _today_utc() -> str:
     """Return today's date in UTC as YYYY-MM-DD."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def _now_iso8601() -> str:
+    """Return current UTC time as ISO8601 with Z suffix."""
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def _valid_until_str() -> str:
@@ -172,6 +222,276 @@ def _build_bootstrap() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Active-path helpers
+# ---------------------------------------------------------------------------
+
+def _load_intelligence_scores() -> dict[str, int]:
+    """
+    Load intelligence_score for OpenAI/Codex models from openai_models.json.
+    Merges with hardcoded Anthropic scores. Result is cached at module level.
+    Returns dict: model_name_or_alias -> int score (0..20).
+    """
+    global _cached_intelligence_scores
+    if _cached_intelligence_scores is not None:
+        return _cached_intelligence_scores
+
+    scores: dict[str, int] = dict(_QUALITY_SCORES_ANTHROPIC)
+
+    try:
+        if _OAI_MODELS_PATH.exists():
+            raw = json.loads(_OAI_MODELS_PATH.read_text(encoding="utf-8"))
+            models_list: list[dict] = raw.get("models", [])
+            for entry in models_list:
+                score = entry.get("intelligence_score")
+                if score is None:
+                    continue
+                score = int(score)
+                # Index by model_name + all aliases
+                names: list[str] = [entry.get("model_name", "")] + entry.get("aliases", [])
+                for name in names:
+                    if name:
+                        scores[name] = score
+    except Exception:
+        # If JSON is malformed or unreadable, fall back to Anthropic-only scores
+        pass
+
+    _cached_intelligence_scores = scores
+    return scores
+
+
+def _get_intelligence_score(provider: str, model: str) -> int:
+    """
+    Return intelligence score (0..20) for a (provider, model) pair.
+    Falls back to 15 (neutral) if unknown.
+    """
+    scores = _load_intelligence_scores()
+    # Try exact model name first
+    if model in scores:
+        return scores[model]
+    # Fallback neutral
+    return 15
+
+
+def _query_metrics(category: str, db_path: Path) -> list[dict[str, Any]]:
+    """
+    Query model_metrics for a given task_category over last _LOOKBACK_DAYS.
+    Returns list of dicts with keys: provider, model, per_turn_ms, success.
+    Rows with NULL per_turn_ms are excluded by SQL WHERE clause.
+    Opens DB read-only; closes in finally.
+    """
+    rows: list[dict[str, Any]] = []
+    conn = None
+    try:
+        uri = f"file:{db_path}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT provider, model, per_turn_ms, success
+            FROM model_metrics
+            WHERE task_category = ?
+              AND ts_utc >= datetime('now', ?)
+              AND per_turn_ms IS NOT NULL
+            """,
+            (category, f"-{_LOOKBACK_DAYS} days"),
+        )
+        for row in cur.fetchall():
+            provider, model, per_turn_ms, success = row
+            # Defensive: skip on any unexpected type
+            try:
+                rows.append({
+                    "provider": str(provider),
+                    "model": str(model),
+                    "per_turn_ms": int(per_turn_ms),
+                    "success": int(success),
+                })
+            except (TypeError, ValueError):
+                continue
+    finally:
+        if conn is not None:
+            conn.close()
+    return rows
+
+
+def _score_candidate(
+    provider: str,
+    model: str,
+    p50: float,
+    max_p50: float,
+    weekly_max_pct: float,
+) -> float:
+    """
+    Compute Pareto score for a (provider, model) candidate.
+
+    score = 0.5 * quality - 0.3 * norm_lat * 20 - 0.2 * budget * 20
+
+    All three terms are scaled to [0..20] range before weighting.
+    """
+    quality = _get_intelligence_score(provider, model)          # 0..20
+    norm_lat = (p50 / max_p50) if max_p50 > 0.0 else 0.0       # 0..1
+    budget = weekly_max_pct if provider == "anthropic" else 0.0  # 0..1
+
+    score = (
+        _WEIGHTS["q"] * quality
+        - _WEIGHTS["l"] * norm_lat * 20.0
+        - _WEIGHTS["b"] * budget * 20.0
+    )
+    return score
+
+
+def _active_decide(prior: dict) -> dict:
+    """
+    Active routing logic: reads model_metrics, applies Pareto scoring,
+    updates routing per category when statistical confidence is met.
+
+    Returns a new decision dict (never raises — caller wraps in try/except).
+    """
+    today = _today_utc()
+
+    # Deep copy prior so we can modify safely
+    decision = json.loads(json.dumps(prior))
+    decision["decision_date"] = today
+    decision["valid_until"] = _valid_until_str()
+
+    prior_routing: dict[str, dict] = prior.get("routing", {})
+    new_routing: dict[str, dict] = json.loads(json.dumps(prior_routing))
+
+    # Apply hard pins first — these keys are never touched
+    # (We restore them from prior at the end regardless of loop output)
+    pinned: dict[str, dict] = {}
+    for cat in _PINNED_CATEGORIES:
+        if cat in prior_routing:
+            pinned[cat] = json.loads(json.dumps(prior_routing[cat]))
+
+    # Read weekly_max_pct from inputs_snapshot (Anthropic budget pressure proxy)
+    weekly_max_pct: float = 0.0
+    try:
+        weekly_max_pct = float(
+            prior.get("inputs_snapshot", {}).get("claude_max_weekly_used_pct", 0.0)
+        )
+    except (TypeError, ValueError):
+        weekly_max_pct = 0.0
+
+    # Ensure DB exists before attempting reads
+    db_path = _DB_PATH
+    if not db_path.exists():
+        # No DB at all — fall back to refreshed prior
+        refreshed = _build_refreshed(prior)
+        refreshed["rationale"] = "active — no samples in last 14d; preserved prior routing"
+        return refreshed
+
+    # Evaluate each non-pinned category
+    transitions: list[dict] = list(prior.get("decision", {}).get("transitions", []))
+    # Also check top-level transitions key (in case it was stored there)
+    if not transitions:
+        transitions = list(prior.get("transitions", []))
+
+    categories = [c for c in prior_routing if c not in _PINNED_CATEGORIES]
+    total_samples_seen = 0
+    categories_updated = 0
+    max_n_any_category = 0
+
+    for category in categories:
+        rows = _query_metrics(category, db_path)
+        if not rows:
+            continue
+
+        # Group by (provider, model)
+        groups: dict[tuple[str, str], list[dict]] = {}
+        for row in rows:
+            key = (row["provider"], row["model"])
+            groups.setdefault(key, []).append(row)
+
+        total_samples_seen += len(rows)
+
+        # Compute stats per group
+        candidates = []
+        for (prov, mdl), group_rows in groups.items():
+            n = len(group_rows)
+            if n > max_n_any_category:
+                max_n_any_category = n
+            if n < MIN_SAMPLES:
+                continue
+            p50 = statistics.median(r["per_turn_ms"] for r in group_rows)
+            success_rate = statistics.mean(r["success"] for r in group_rows)
+            candidates.append({
+                "provider": prov,
+                "model": mdl,
+                "n_samples": n,
+                "p50": p50,
+                "success_rate": success_rate,
+            })
+
+        if not candidates:
+            continue
+
+        # Normalize latency against max_p50 across all candidates in this category
+        max_p50 = max(c["p50"] for c in candidates)
+
+        # Score each candidate
+        for c in candidates:
+            c["score"] = _score_candidate(
+                c["provider"], c["model"], c["p50"], max_p50, weekly_max_pct
+            )
+
+        # Pick winner: max score; tie → lower p50; tie again → higher success_rate
+        winner = max(
+            candidates,
+            key=lambda c: (c["score"], -c["p50"], c["success_rate"]),
+        )
+
+        new_entry = {"provider": winner["provider"], "model": winner["model"]}
+
+        # Detect change (compare core fields only)
+        old_entry = prior_routing.get(category, {})
+        old_core = {"provider": old_entry.get("provider"), "model": old_entry.get("model")}
+        if new_entry != old_core:
+            # Record transition
+            transition = {
+                "category": category,
+                "old": old_core,
+                "new": new_entry,
+                "computed_at": _now_iso8601(),
+                "n_samples_winner": winner["n_samples"],
+                "p50_ms_winner": int(round(winner["p50"])),
+            }
+            transitions.append(transition)
+            categories_updated += 1
+
+        # Preserve any extra fields from old entry (e.g. applies_to)
+        merged = dict(old_entry)
+        merged.update(new_entry)
+        new_routing[category] = merged
+
+    # Restore pins unconditionally
+    for cat, pinned_val in pinned.items():
+        new_routing[cat] = pinned_val
+
+    # Cap transitions ring buffer
+    transitions = transitions[-_MAX_TRANSITIONS:]
+
+    # Build rationale
+    if categories_updated > 0:
+        rationale = (
+            f"active — {categories_updated}/{len(categories)} categories updated "
+            f"based on {total_samples_seen} total samples (last 14d)"
+        )
+    elif total_samples_seen > 0:
+        rationale = (
+            f"active — insufficient samples (max n={max_n_any_category}, "
+            f"threshold={MIN_SAMPLES}); preserved prior routing"
+        )
+    else:
+        rationale = "active — no samples in last 14d; preserved prior routing"
+
+    decision["routing"] = new_routing
+    decision["rationale"] = rationale
+    decision["transitions"] = transitions
+
+    return decision
+
+
+# ---------------------------------------------------------------------------
 # Core decide logic
 # ---------------------------------------------------------------------------
 
@@ -179,15 +499,28 @@ def decide(*, force: bool = False) -> dict:
     """
     Idempotent daily refresh.
 
-    - If today's decision exists → return it unchanged.
+    - If today's decision exists and force=False → return it unchanged.
     - If stale or missing → back up + regenerate + write atomically.
+
+    Active path (day-N): reads model_metrics, computes p50 latency,
+    selects empirically-best model per category when n >= MIN_SAMPLES.
+    Falls back to _build_refreshed on any exception (hook safety).
+
+    ENV overrides:
+      CLAUDE_BALANCER_FORCE_ACTIVE=1  — re-evaluate even if date == today
+      CLAUDE_BALANCER_DISABLE_ACTIVE=1 — skip active path entirely
+
     Returns the in-effect decision dict.
     """
     global _cached_decision
     today = _today_utc()
     prior = _load_file()
 
-    if prior is not None and prior.get("decision_date") == today and not force:
+    # Check env-level force/disable flags
+    force_active = os.environ.get("CLAUDE_BALANCER_FORCE_ACTIVE", "0") == "1" or force
+    disable_active = os.environ.get("CLAUDE_BALANCER_DISABLE_ACTIVE", "0") == "1"
+
+    if prior is not None and prior.get("decision_date") == today and not force_active:
         # Already fresh — no rewrite
         _cached_decision = prior
         return prior
@@ -196,10 +529,19 @@ def decide(*, force: bool = False) -> dict:
     prior_date = prior.get("decision_date") if prior else None
     _backup_current(prior_date)
 
-    if prior is not None:
-        new_decision = _build_refreshed(prior)
-    else:
+    if prior is None:
         new_decision = _build_bootstrap()
+    elif disable_active:
+        # Day-1 passive mode: only refresh date, mark rationale as passive bypass
+        new_decision = _build_refreshed(prior)
+        new_decision["rationale"] = "passive — CLAUDE_BALANCER_DISABLE_ACTIVE=1 bypass (day-1 refresh)"
+    else:
+        # Active path — wrapped in try/except so hook never crashes
+        try:
+            new_decision = _active_decide(prior)
+        except Exception:
+            # Fall back gracefully to simple date refresh
+            new_decision = _build_refreshed(prior)
 
     _write_atomic(new_decision)
     _cached_decision = new_decision
@@ -233,11 +575,19 @@ def get_routing(category: str) -> dict:
 # CLI handlers
 # ---------------------------------------------------------------------------
 
-def _cmd_decide(_args: argparse.Namespace) -> int:
-    decision = decide()
+def _cmd_decide(args: argparse.Namespace) -> int:
+    force_flag = getattr(args, "force", False)
+    decision = decide(force=force_flag)
     date = decision.get("decision_date", "?")
-    source = "bootstrap" if decision.get("rationale", "").startswith("bootstrap") else "seed"
+    rationale = decision.get("rationale", "")
+    if rationale.startswith("bootstrap"):
+        source = "bootstrap"
+    elif rationale.startswith("active"):
+        source = "active"
+    else:
+        source = "seed"
     print(f"decision_date={date}  source={source}  routing_keys={list(decision.get('routing', {}).keys())}")
+    print(f"rationale={rationale}")
     return 0
 
 
@@ -286,7 +636,12 @@ def _cmd_status(_args: argparse.Namespace) -> int:
         freshness = "stale"
 
     rationale = decision.get("rationale", "")
-    source = "bootstrap" if rationale.startswith("bootstrap") else "seed"
+    if rationale.startswith("bootstrap"):
+        source = "bootstrap"
+    elif rationale.startswith("active"):
+        source = "active"
+    else:
+        source = "seed"
     print(f"decision_date={date_str}, age={age_hours}h, source={source}, {freshness}")
     return 0
 
@@ -302,7 +657,13 @@ def main() -> int:
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    sub.add_parser("decide", help="Idempotent daily refresh of routing decision.")
+    decide_p = sub.add_parser("decide", help="Idempotent daily refresh of routing decision.")
+    decide_p.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Force re-evaluation even if decision_date == today.",
+    )
 
     get_p = sub.add_parser("get", help="Print routing for one category.")
     get_p.add_argument("category", help="Routing category name.")
