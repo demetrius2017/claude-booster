@@ -21,6 +21,7 @@ ENV/Файлы:
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 # Ensure the scripts directory is on sys.path for import
 _SCRIPTS_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -76,6 +77,50 @@ def _reset_delegate_counter(cwd: str) -> None:
         logger.warning("reset_delegate_counter failed (non-fatal): %s", exc)
 
 
+def _build_balancer_summary() -> str:
+    """Build a one-line MODEL BALANCER routing summary from model_balancer.json.
+
+    Returns a two-line string (header + asterisk line) in all cases — never raises.
+    """
+    header = "=== MODEL BALANCER ==="
+    balancer_path = Path.home() / ".claude" / "model_balancer.json"
+    try:
+        if not balancer_path.exists():
+            return f"{header}\n  * (no decision file — run `python3 ~/.claude/scripts/model_balancer.py decide`)"
+
+        try:
+            data = json.loads(balancer_path.read_text(encoding="utf-8"))
+        except Exception:
+            return f"{header}\n  * (decision file corrupt — using tool-strategy.md defaults)"
+
+        decision_date = data.get("decision_date", "?")
+        today_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        freshness = "fresh" if decision_date == today_str else "stale"
+
+        routing = data.get("routing", {})
+
+        def fmt(key: str) -> str:
+            entry = routing.get(key)
+            if not entry:
+                return "?"
+            provider = entry.get("provider", "?")
+            model = entry.get("model", "?")
+            return f"{provider}:{model}"
+
+        lead_val = fmt("lead")
+        coding_val = fmt("coding")
+        hard_val = fmt("hard")
+        audit_val = fmt("audit_external")
+
+        line = (
+            f"  * date={decision_date} ({freshness}) — "
+            f"lead={lead_val}, coding={coding_val}, hard={hard_val}, audit={audit_val}"
+        )
+        return f"{header}\n{line}"
+    except Exception as exc:  # noqa: BLE001
+        return f"{header}\n  * (error: {type(exc).__name__})"
+
+
 def _output(context: str) -> None:
     """Print the hook output JSON."""
     result = {
@@ -118,6 +163,12 @@ def main() -> None:
             full_context = f"{header}\n{context}"
         else:
             full_context = ""
+
+        balancer_summary = _build_balancer_summary()
+        if full_context:
+            full_context = f"{balancer_summary}\n\n{full_context}"
+        else:
+            full_context = balancer_summary
 
         _output(full_context)
         logger.info("session_start: session=%s scope=%s context_len=%d", session_id, scope, len(full_context))
