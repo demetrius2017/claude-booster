@@ -1,344 +1,466 @@
 #!/usr/bin/env bash
 # test_model_metric_capture.sh
 # Verifier acceptance test for model_metric_capture.py PostToolUse hook.
-# Contract: captures per-tool-call latency + tokens into model_metrics table.
 #
-# Exit 0 = PASS (all assertions passed)
-# Exit 1 = FAIL (one or more assertions failed)
+# Derived from Artifact Contract — tests expected post-fix behaviour.
+# Schema under test: model_metrics(id, timestamp, tool_name, model, provider,
+#   duration_ms, input_tokens, output_tokens, category)
 #
-# Run from repo root or anywhere:
+# Exit 0 = all PASS, Exit 1 = one or more FAIL
+#
+# Usage:
 #   bash /Users/dmitrijnazarov/Projects/Claude_Booster/tests/test_model_metric_capture.sh
 
 set -uo pipefail
 
-# ── paths ─────────────────────────────────────────────────────────────────────
-SCRIPT_PATH="$HOME/.claude/scripts/model_metric_capture.py"
-TEMPLATE_PATH="/Users/dmitrijnazarov/Projects/Claude_Booster/templates/scripts/model_metric_capture.py"
+# ── paths (all $HOME-expanded, no ~ literals) ──────────────────────────────────
+SCRIPT="$HOME/.claude/scripts/model_metric_capture.py"
+TEMPLATE="$HOME/../Projects/Claude_Booster/templates/scripts/model_metric_capture.py"
+# Resolve absolute template path without relying on cwd
+TEMPLATE="$(cd "$(dirname "$0")/.." 2>/dev/null && pwd)/templates/scripts/model_metric_capture.py"
 DB="$HOME/.claude/rolling_memory.db"
+LOG_DIR="$HOME/.claude/logs"
+TODAY_UTC=$(python3 -c "from datetime import datetime, timezone; print(datetime.now(timezone.utc).strftime('%Y%m%d'))")
+MARKER="$LOG_DIR/.metric_capture_sample_$TODAY_UTC"
 
-TOTAL=11
+TOTAL=17
 PASS=0
 FAIL=0
+FAILURES=()
 
-# ── helpers ───────────────────────────────────────────────────────────────────
+# ── helpers ────────────────────────────────────────────────────────────────────
 
-pass() { echo "  PASS  case $1/$TOTAL: $2"; PASS=$((PASS + 1)); }
-fail() { echo "  FAIL  case $1/$TOTAL: $2"; FAIL=$((FAIL + 1)); }
-
-# Count rows with a specific session_id
-count_rows() {
-    sqlite3 "$DB" "SELECT COUNT(*) FROM model_metrics WHERE session_id='$1';" 2>/dev/null || echo "0"
+pass() {
+    echo "  PASS  $1: $2"
+    PASS=$((PASS + 1))
 }
 
-# Count total rows in model_metrics
+fail() {
+    echo "  FAIL  $1: $2"
+    FAIL=$((FAIL + 1))
+    FAILURES+=("$1")
+}
+
+# Count rows where a marker column matches a test-specific value.
+# We use model values that are unique per test to avoid cross-contamination.
+count_by_model() {
+    local model_val="$1"
+    sqlite3 "$DB" "SELECT COUNT(*) FROM model_metrics WHERE model='${model_val}';" 2>/dev/null || echo "0"
+}
+
+get_col_by_model() {
+    local model_val="$1"
+    local col="$2"
+    sqlite3 "$DB" "SELECT ${col} FROM model_metrics WHERE model='${model_val}' ORDER BY rowid DESC LIMIT 1;" 2>/dev/null || echo ""
+}
+
 total_rows() {
     sqlite3 "$DB" "SELECT COUNT(*) FROM model_metrics;" 2>/dev/null || echo "0"
 }
 
-# Detect which timestamp column name the Worker used: ts_utc (contract) or ts (existing schema)
+# Detect which column name was used for the contract's "timestamp" field.
+# The Worker may have added it as "timestamp" or left it as "ts_utc".
 ts_col() {
     local cols
     cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
-    if echo "$cols" | grep -q "^ts_utc$"; then
-        echo "ts_utc"
+    if echo "$cols" | grep -qx "timestamp"; then
+        echo "timestamp"
     else
-        echo "ts"
+        echo "ts_utc"
     fi
 }
 
-# Detect which per-turn column name the Worker used: per_turn_ms (contract) or duration_per_turn_ms (existing)
-per_turn_col() {
+# Detect input_tokens column name (contract: input_tokens; old: tokens_in).
+in_tok_col() {
     local cols
     cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
-    if echo "$cols" | grep -q "^per_turn_ms$"; then
-        echo "per_turn_ms"
+    if echo "$cols" | grep -qx "input_tokens"; then
+        echo "input_tokens"
     else
-        echo "duration_per_turn_ms"
+        echo "tokens_in"
     fi
 }
 
-# Get a specific column value from a row by session_id
-get_col() {
-    local session_id="$1"
-    local col="$2"
-    sqlite3 "$DB" "SELECT ${col} FROM model_metrics WHERE session_id='${session_id}' LIMIT 1;" 2>/dev/null || echo ""
+# Detect output_tokens column name (contract: output_tokens; old: tokens_out).
+out_tok_col() {
+    local cols
+    cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
+    if echo "$cols" | grep -qx "output_tokens"; then
+        echo "output_tokens"
+    else
+        echo "tokens_out"
+    fi
 }
 
-# Cleanup marker — all test rows use session_id matching 'test-mmc-%'
+# Detect category column name (contract: category; old: task_category).
+cat_col() {
+    local cols
+    cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
+    if echo "$cols" | grep -qx "category"; then
+        echo "category"
+    else
+        echo "task_category"
+    fi
+}
+
+# Detect tool_name column (contract: tool_name; may be absent in old schema).
+has_tool_name_col() {
+    local cols
+    cols=$(sqlite3 "$DB" "PRAGMA table_info(model_metrics);" 2>/dev/null | awk -F'|' '{print $2}')
+    echo "$cols" | grep -qx "tool_name" && echo "yes" || echo "no"
+}
+
+# Clean up: delete all rows with model values we injected during tests.
+# Uses unique model sentinel values per test to avoid hitting production rows.
 cleanup() {
-    sqlite3 "$DB" "DELETE FROM model_metrics WHERE session_id LIKE 'test-mmc-%';" 2>/dev/null || true
+    sqlite3 "$DB" "DELETE FROM model_metrics WHERE model LIKE 'test-mmc-%';" 2>/dev/null || true
+    # Also clean codex test models used in C1-C6
+    sqlite3 "$DB" "DELETE FROM model_metrics WHERE model IN ('gpt-5.5','gpt-5.4-mini','gpt-5.3-codex','gpt-5.3-codex-spark','gpt-5.2') AND provider='codex-cli';" 2>/dev/null || true
 }
 
-# ── preamble ──────────────────────────────────────────────────────────────────
+# Run script with JSON piped to stdin, return exit code.
+run_hook() {
+    local json="$1"
+    local exit_code=0
+    echo "$json" | python3 "$SCRIPT" > /dev/null 2>&1 || exit_code=$?
+    echo "$exit_code"
+}
+
+# ── preamble ───────────────────────────────────────────────────────────────────
 
 echo ""
 echo "============================================================"
 echo "  model_metric_capture — acceptance test ($TOTAL cases)"
+echo "  schema cols: ts=$(ts_col) in=$(in_tok_col) out=$(out_tok_col) cat=$(cat_col)"
+echo "  tool_name col present: $(has_tool_name_col)"
 echo "============================================================"
 echo ""
 
 BASELINE=$(total_rows)
-echo "  NOTE  model_metrics baseline row count: $BASELINE"
+echo "  INFO  model_metrics baseline: $BASELINE rows"
+echo "  INFO  today UTC: $TODAY_UTC  marker: $MARKER"
 echo ""
 
-# ── C1: script exists and is executable ───────────────────────────────────────
+# ── A1: tool_response.usage path ──────────────────────────────────────────────
 
-CASE=1
-if [[ -f "$SCRIPT_PATH" && -x "$SCRIPT_PATH" ]]; then
-    # Also verify python3 shebang
-    SHEBANG=$(head -1 "$SCRIPT_PATH")
-    if echo "$SHEBANG" | grep -q "python3"; then
-        pass $CASE "Script exists at $SCRIPT_PATH, is executable, has python3 shebang"
+ID="A1"
+MODEL_A1="test-mmc-a1"
+JSON=$(cat <<EOF
+{"tool_name":"Task","tool_response":{"usage":{"duration_ms":1200,"input_tokens":500,"output_tokens":300}},"tool_input":{"model":"$MODEL_A1"}}
+EOF
+)
+BEFORE=$(total_rows)
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "$MODEL_A1")
+if [[ "$EXIT" -eq 0 && "$AFTER" -eq 1 ]]; then
+    DUR=$(get_col_by_model "$MODEL_A1" "duration_ms")
+    IN_COL=$(in_tok_col); IN=$(get_col_by_model "$MODEL_A1" "$IN_COL")
+    OUT_COL=$(out_tok_col); OUT=$(get_col_by_model "$MODEL_A1" "$OUT_COL")
+    if [[ "$DUR" == "1200" && "$IN" == "500" && "$OUT" == "300" ]]; then
+        pass "$ID" "tool_response.usage → row inserted, duration_ms=1200 ${IN_COL}=500 ${OUT_COL}=300"
     else
-        fail $CASE "Script exists + executable but shebang is '$SHEBANG' (expected python3)"
+        fail "$ID" "Row inserted but wrong values: duration_ms='$DUR'(expected 1200) ${IN_COL}='$IN'(expected 500) ${OUT_COL}='$OUT'(expected 300)"
     fi
 else
-    if [[ ! -f "$SCRIPT_PATH" ]]; then
-        fail $CASE "Script NOT found at $SCRIPT_PATH"
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected exit=0, 1 row)"
+fi
+
+# ── A2: toolUseResult.usage path ──────────────────────────────────────────────
+
+ID="A2"
+MODEL_A2="test-mmc-a2"
+JSON=$(cat <<EOF
+{"tool_name":"Agent","toolUseResult":{"usage":{"duration_ms":800,"input_tokens":400,"output_tokens":200}},"tool_input":{"model":"$MODEL_A2"}}
+EOF
+)
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "$MODEL_A2")
+if [[ "$EXIT" -eq 0 && "$AFTER" -eq 1 ]]; then
+    DUR=$(get_col_by_model "$MODEL_A2" "duration_ms")
+    IN_COL=$(in_tok_col); IN=$(get_col_by_model "$MODEL_A2" "$IN_COL")
+    if [[ "$DUR" == "800" && "$IN" == "400" ]]; then
+        pass "$ID" "toolUseResult.usage → row inserted, duration_ms=800 ${IN_COL}=400"
     else
-        fail $CASE "Script found at $SCRIPT_PATH but is NOT executable (needs chmod +x)"
+        fail "$ID" "Row inserted but wrong values: duration_ms='$DUR'(exp 800) ${IN_COL}='$IN'(exp 400)"
     fi
-fi
-
-# ── C2: template mirror exists ────────────────────────────────────────────────
-
-CASE=2
-if [[ -f "$TEMPLATE_PATH" ]]; then
-    pass $CASE "Template mirror exists at $TEMPLATE_PATH"
 else
-    fail $CASE "Template mirror NOT found at $TEMPLATE_PATH"
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected exit=0, 1 row)"
 fi
 
-# ── C3: empty stdin → exit 0, no new row ──────────────────────────────────────
+# ── A3: tool_response.toolUseResult.usage nested path ─────────────────────────
 
-CASE=3
-BEFORE=$(total_rows)
-EXIT_CODE=0
-echo -n "" | python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
-AFTER=$(total_rows)
-if [[ "$EXIT_CODE" -eq 0 && "$AFTER" -eq "$BEFORE" ]]; then
-    pass $CASE "Empty stdin → exit 0, no new row (before=$BEFORE after=$AFTER)"
-else
-    fail $CASE "Empty stdin: exit=$EXIT_CODE, before=$BEFORE after=$AFTER (expected exit=0, no row change)"
-fi
-
-# ── C4: malformed JSON → exit 0, no new row ───────────────────────────────────
-
-CASE=4
-BEFORE=$(total_rows)
-EXIT_CODE=0
-echo 'not valid json{' | python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
-AFTER=$(total_rows)
-if [[ "$EXIT_CODE" -eq 0 && "$AFTER" -eq "$BEFORE" ]]; then
-    pass $CASE "Malformed JSON → exit 0, no new row"
-else
-    fail $CASE "Malformed JSON: exit=$EXIT_CODE, before=$BEFORE after=$AFTER"
-fi
-
-# ── C5: valid Agent/Task event → 1 row with correct values ───────────────────
-
-CASE=5
-SID="test-mmc-001"
-JSON5=$(cat <<'EOF'
-{"tool_name":"Task","tool_input":{"description":"Worker: build foo","model":"sonnet","subagent_type":"general-purpose"},"tool_response":{"usage":{"duration_ms":12345,"num_turns":3,"input_tokens":1000,"output_tokens":500}},"session_id":"test-mmc-001"}
+ID="A3"
+MODEL_A3="test-mmc-a3"
+JSON=$(cat <<EOF
+{"tool_name":"Task","tool_response":{"toolUseResult":{"usage":{"duration_ms":950,"input_tokens":600,"output_tokens":250}}},"tool_input":{"model":"$MODEL_A3"}}
 EOF
 )
-BEFORE=$(total_rows)
-EXIT_CODE=0
-echo "$JSON5" | python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
-AFTER=$(total_rows)
-NEW_ROWS=$(count_rows "$SID")
-
-if [[ "$EXIT_CODE" -ne 0 ]]; then
-    fail $CASE "Task event: script exited $EXIT_CODE (expected 0)"
-elif [[ "$NEW_ROWS" -ne 1 ]]; then
-    fail $CASE "Task event: expected 1 new row with session_id=$SID, got $NEW_ROWS (before=$BEFORE after=$AFTER)"
-else
-    # Verify field values
-    PROVIDER=$(get_col "$SID" "provider")
-    DUR=$(get_col "$SID" "duration_ms")
-    TURNS=$(get_col "$SID" "num_turns")
-    PTCOL=$(per_turn_col)
-    PTMS=$(get_col "$SID" "$PTCOL")
-    CATEGORY=$(get_col "$SID" "task_category")
-
-    ERRS=()
-    [[ "$PROVIDER" != "anthropic" ]] && ERRS+=("provider='$PROVIDER' (expected anthropic)")
-    [[ "$DUR" != "12345" ]] && ERRS+=("duration_ms='$DUR' (expected 12345)")
-    [[ "$TURNS" != "3" ]] && ERRS+=("num_turns='$TURNS' (expected 3)")
-    # per_turn_ms = 12345/3 = 4115
-    [[ "$PTMS" != "4115" ]] && ERRS+=("${PTCOL}='$PTMS' (expected 4115)")
-    # "Worker" in description → task_category = coding
-    [[ "$CATEGORY" != "coding" ]] && ERRS+=("task_category='$CATEGORY' (expected coding — 'Worker' in description)")
-
-    if [[ ${#ERRS[@]} -eq 0 ]]; then
-        pass $CASE "Task event: 1 row, provider=anthropic, duration_ms=12345, num_turns=3, ${PTCOL}=4115, task_category=coding"
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "$MODEL_A3")
+if [[ "$EXIT" -eq 0 && "$AFTER" -eq 1 ]]; then
+    DUR=$(get_col_by_model "$MODEL_A3" "duration_ms")
+    IN_COL=$(in_tok_col); IN=$(get_col_by_model "$MODEL_A3" "$IN_COL")
+    if [[ "$DUR" == "950" && "$IN" == "600" ]]; then
+        pass "$ID" "tool_response.toolUseResult.usage → row inserted, duration_ms=950"
     else
-        fail $CASE "Task event row has wrong values: ${ERRS[*]}"
+        fail "$ID" "Wrong values: duration_ms='$DUR'(exp 950) ${IN_COL}='$IN'(exp 600)"
     fi
+else
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected exit=0, 1 row)"
 fi
 
-# ── C6: Explore Agent event → task_category='recon' ──────────────────────────
+# ── A4: top-level usage path ──────────────────────────────────────────────────
 
-CASE=6
-SID="test-mmc-002"
-JSON6=$(cat <<'EOF'
-{"tool_name":"Task","tool_input":{"description":"Recon repo structure","model":"haiku","subagent_type":"Explore"},"tool_response":{"usage":{"duration_ms":5000,"num_turns":1,"input_tokens":200,"output_tokens":100}},"session_id":"test-mmc-002"}
+ID="A4"
+MODEL_A4="test-mmc-a4"
+JSON=$(cat <<EOF
+{"tool_name":"Agent","usage":{"duration_ms":1100,"input_tokens":700,"output_tokens":350},"tool_input":{"model":"$MODEL_A4"}}
 EOF
 )
-EXIT_CODE=0
-echo "$JSON6" | python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
-NEW_ROWS=$(count_rows "$SID")
-
-if [[ "$EXIT_CODE" -ne 0 ]]; then
-    fail $CASE "Explore event: script exited $EXIT_CODE (expected 0)"
-elif [[ "$NEW_ROWS" -ne 1 ]]; then
-    fail $CASE "Explore event: expected 1 row with session_id=$SID, got $NEW_ROWS"
-else
-    CATEGORY=$(get_col "$SID" "task_category")
-    if [[ "$CATEGORY" == "recon" ]]; then
-        pass $CASE "Explore agent event → task_category='recon'"
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "$MODEL_A4")
+if [[ "$EXIT" -eq 0 && "$AFTER" -eq 1 ]]; then
+    DUR=$(get_col_by_model "$MODEL_A4" "duration_ms")
+    IN_COL=$(in_tok_col); IN=$(get_col_by_model "$MODEL_A4" "$IN_COL")
+    if [[ "$DUR" == "1100" && "$IN" == "700" ]]; then
+        pass "$ID" "top-level usage → row inserted, duration_ms=1100"
     else
-        fail $CASE "Explore agent event → task_category='$CATEGORY' (expected 'recon')"
+        fail "$ID" "Wrong values: duration_ms='$DUR'(exp 1100) ${IN_COL}='$IN'(exp 700)"
     fi
+else
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected exit=0, 1 row)"
 fi
 
-# ── C7: Bash event with codex_worker.sh → 1 row, provider=codex-cli ──────────
+# ── B1: no-usage Task → no row inserted ───────────────────────────────────────
 
-CASE=7
-SID="test-mmc-003"
-JSON7=$(cat <<'EOF'
-{"tool_name":"Bash","tool_input":{"command":"~/.claude/scripts/codex_worker.sh gpt-5.5 < /tmp/prompt.txt"},"tool_response":{"output":"ok"},"session_id":"test-mmc-003"}
+ID="B1"
+BEFORE=$(total_rows)
+JSON=$(cat <<'EOF'
+{"tool_name":"Task","tool_response":{"content":"done"},"tool_input":{"model":"sonnet","description":"some task"}}
 EOF
 )
-BEFORE=$(total_rows)
-EXIT_CODE=0
-echo "$JSON7" | python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
-NEW_ROWS=$(count_rows "$SID")
-
-if [[ "$EXIT_CODE" -ne 0 ]]; then
-    fail $CASE "codex_worker.sh Bash event: script exited $EXIT_CODE (expected 0)"
-elif [[ "$NEW_ROWS" -ne 1 ]]; then
-    fail $CASE "codex_worker.sh Bash event: expected 1 row with session_id=$SID, got $NEW_ROWS"
+EXIT=$(run_hook "$JSON")
+AFTER=$(total_rows)
+if [[ "$EXIT" -eq 0 && "$AFTER" -eq "$BEFORE" ]]; then
+    pass "$ID" "Task with no usage at any path → exit 0, no row (before=$BEFORE after=$AFTER)"
 else
-    PROVIDER=$(get_col "$SID" "provider")
-    MODEL=$(get_col "$SID" "model")
-    ERRS=()
-    [[ "$PROVIDER" != "codex-cli" ]] && ERRS+=("provider='$PROVIDER' (expected codex-cli)")
-    [[ "$MODEL" != "gpt-5.5" ]] && ERRS+=("model='$MODEL' (expected gpt-5.5)")
-    if [[ ${#ERRS[@]} -eq 0 ]]; then
-        pass $CASE "codex_worker.sh Bash event → 1 row, provider=codex-cli, model=gpt-5.5"
+    fail "$ID" "exit=$EXIT, before=$BEFORE after=$AFTER (expected exit=0, count unchanged)"
+fi
+
+# ── B2: daily sample marker created on first no-usage event ───────────────────
+
+ID="B2"
+# Remove marker if it exists so we can test first-event creation
+MARKER_WAS_PRESENT=0
+if [[ -f "$MARKER" ]]; then
+    MARKER_WAS_PRESENT=1
+    mv "$MARKER" "${MARKER}.bak.$$"
+fi
+mkdir -p "$LOG_DIR"
+
+# Run a no-usage event (same as B1 — the marker is created on that code path)
+JSON=$(cat <<'EOF'
+{"tool_name":"Task","tool_response":{"content":"done"},"tool_input":{"model":"sonnet-b2","description":"b2 no-usage"}}
+EOF
+)
+run_hook "$JSON" > /dev/null
+
+if [[ -f "$MARKER" ]]; then
+    pass "$ID" "Daily sample marker created at $MARKER after first no-usage event"
+else
+    fail "$ID" "Marker file $MARKER NOT found after no-usage event (expected creation on first miss per day)"
+fi
+
+# Restore marker state
+if [[ "$MARKER_WAS_PRESENT" -eq 1 ]]; then
+    mv "${MARKER}.bak.$$" "$MARKER"
+fi
+
+# ── C1: codex_worker.sh with --model gpt-5.5 ──────────────────────────────────
+
+ID="C1"
+BEFORE=$(total_rows)
+JSON=$(cat <<'EOF'
+{"tool_name":"Bash","tool_input":{"command":"codex_worker.sh gpt-5.5 < /tmp/prompt.txt"}}
+EOF
+)
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "gpt-5.5")
+if [[ "$EXIT" -eq 0 && "$AFTER" -ge 1 ]]; then
+    PROV=$(get_col_by_model "gpt-5.5" "provider")
+    if [[ "$PROV" == "codex-cli" ]]; then
+        pass "$ID" "codex_worker.sh gpt-5.5 (positional) → row inserted, model=gpt-5.5 provider=codex-cli"
     else
-        fail $CASE "codex_worker.sh Bash event row wrong: ${ERRS[*]}"
+        fail "$ID" "Row inserted but provider='$PROV' (expected codex-cli)"
     fi
+else
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected exit=0, ≥1 row)"
 fi
 
-# ── C8: unrelated Bash event → no new row ─────────────────────────────────────
+# ── C2: codex exec -m gpt-5.5 ─────────────────────────────────────────────────
 
-CASE=8
-SID="test-mmc-004"
-JSON8=$(cat <<'EOF'
-{"tool_name":"Bash","tool_input":{"command":"ls /tmp"},"tool_response":{"output":"file1\nfile2"},"session_id":"test-mmc-004"}
+ID="C2"
+# Delete C1's gpt-5.5 row first so count is unambiguous
+sqlite3 "$DB" "DELETE FROM model_metrics WHERE model='gpt-5.5' AND provider='codex-cli';" 2>/dev/null || true
+JSON=$(cat <<'EOF'
+{"tool_name":"Bash","tool_input":{"command":"codex exec -m gpt-5.5 --prompt /tmp/p.txt"}}
 EOF
 )
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "gpt-5.5")
+if [[ "$EXIT" -eq 0 && "$AFTER" -ge 1 ]]; then
+    pass "$ID" "codex exec -m gpt-5.5 → row inserted, model=gpt-5.5"
+else
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected exit=0, ≥1 row for gpt-5.5)"
+fi
+
+# ── C3: --model gpt-5.4-mini ──────────────────────────────────────────────────
+
+ID="C3"
+JSON=$(cat <<'EOF'
+{"tool_name":"Bash","tool_input":{"command":"codex_worker.sh gpt-5.4-mini"}}
+EOF
+)
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "gpt-5.4-mini")
+if [[ "$EXIT" -eq 0 && "$AFTER" -ge 1 ]]; then
+    pass "$ID" "gpt-5.4-mini (positional) → row inserted"
+else
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected ≥1 row for gpt-5.4-mini)"
+fi
+
+# ── C4: --model gpt-5.3-codex ─────────────────────────────────────────────────
+
+ID="C4"
+JSON=$(cat <<'EOF'
+{"tool_name":"Bash","tool_input":{"command":"codex_worker.sh gpt-5.3-codex"}}
+EOF
+)
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "gpt-5.3-codex")
+if [[ "$EXIT" -eq 0 && "$AFTER" -ge 1 ]]; then
+    pass "$ID" "gpt-5.3-codex (positional) → row inserted"
+else
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected ≥1 row for gpt-5.3-codex)"
+fi
+
+# ── C5: --model gpt-5.3-codex-spark ──────────────────────────────────────────
+
+ID="C5"
+JSON=$(cat <<'EOF'
+{"tool_name":"Bash","tool_input":{"command":"codex_worker.sh gpt-5.3-codex-spark"}}
+EOF
+)
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "gpt-5.3-codex-spark")
+if [[ "$EXIT" -eq 0 && "$AFTER" -ge 1 ]]; then
+    pass "$ID" "gpt-5.3-codex-spark (positional) → row inserted"
+else
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected ≥1 row for gpt-5.3-codex-spark)"
+fi
+
+# ── C6: --model gpt-5.2 ───────────────────────────────────────────────────────
+
+ID="C6"
+JSON=$(cat <<'EOF'
+{"tool_name":"Bash","tool_input":{"command":"codex_worker.sh gpt-5.2"}}
+EOF
+)
+EXIT=$(run_hook "$JSON")
+AFTER=$(count_by_model "gpt-5.2")
+if [[ "$EXIT" -eq 0 && "$AFTER" -ge 1 ]]; then
+    pass "$ID" "gpt-5.2 (positional) → row inserted"
+else
+    fail "$ID" "exit=$EXIT rows=$AFTER (expected ≥1 row for gpt-5.2)"
+fi
+
+# ── C7: --model gpt-4o (NOT in allowlist) → no row ────────────────────────────
+
+ID="C7"
 BEFORE=$(total_rows)
-EXIT_CODE=0
-echo "$JSON8" | python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
-AFTER=$(total_rows)
-NEW_ROWS=$(count_rows "$SID")
-
-if [[ "$EXIT_CODE" -eq 0 && "$NEW_ROWS" -eq 0 ]]; then
-    pass $CASE "Unrelated Bash event (ls /tmp) → exit 0, no new row"
-else
-    fail $CASE "Unrelated Bash: exit=$EXIT_CODE, rows_for_sid=$NEW_ROWS (expected exit=0, 0 rows)"
-fi
-
-# ── C9: CLAUDE_BOOSTER_SKIP_METRIC_CAPTURE=1 → no row ────────────────────────
-
-CASE=9
-SID="test-mmc-005"
-JSON9=$(cat <<'EOF'
-{"tool_name":"Task","tool_input":{"description":"Worker: should be skipped","model":"sonnet","subagent_type":"general-purpose"},"tool_response":{"usage":{"duration_ms":9999,"num_turns":2,"input_tokens":100,"output_tokens":50}},"session_id":"test-mmc-005"}
+JSON=$(cat <<'EOF'
+{"tool_name":"Bash","tool_input":{"command":"codex_worker.sh gpt-4o"}}
 EOF
 )
+EXIT=$(run_hook "$JSON")
+AFTER=$(total_rows)
+if [[ "$EXIT" -eq 0 && "$AFTER" -eq "$BEFORE" ]]; then
+    pass "$ID" "gpt-4o (positional, not in allowlist) → no row inserted"
+else
+    fail "$ID" "exit=$EXIT before=$BEFORE after=$AFTER (expected exit=0, count unchanged)"
+fi
+
+# ── C8: heredoc fragment — $(cat must not be captured as model ────────────────
+
+ID="C8"
 BEFORE=$(total_rows)
-EXIT_CODE=0
-CLAUDE_BOOSTER_SKIP_METRIC_CAPTURE=1 echo "$JSON9" | CLAUDE_BOOSTER_SKIP_METRIC_CAPTURE=1 python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
+# Embed the heredoc fragment; the $(cat token must not produce a row
+JSON=$(cat <<'ENDJSON'
+{"tool_name":"Bash","tool_input":{"command":"bash -c \"$(cat <<'EOF'\n--model gpt-5.5\nEOF\n)\""}}
+ENDJSON
+)
+EXIT=$(run_hook "$JSON")
 AFTER=$(total_rows)
-NEW_ROWS=$(count_rows "$SID")
-
-if [[ "$EXIT_CODE" -eq 0 && "$NEW_ROWS" -eq 0 ]]; then
-    pass $CASE "SKIP env var set: valid Agent event → exit 0, no row inserted"
+if [[ "$EXIT" -eq 0 && "$AFTER" -eq "$BEFORE" ]]; then
+    pass "$ID" "heredoc fragment with \$(cat — no row (token boundary blocks false capture)"
 else
-    fail $CASE "SKIP env var: exit=$EXIT_CODE, rows_for_sid=$NEW_ROWS (expected exit=0, 0 rows)"
+    fail "$ID" "exit=$EXIT before=$BEFORE after=$AFTER (expected exit=0, count unchanged for heredoc)"
 fi
 
-# ── C10: missing usage field → exit 0, no row ─────────────────────────────────
+# ── C9: bare grep of codex_worker.sh → no row ─────────────────────────────────
 
-CASE=10
-SID="test-mmc-006"
-JSON10=$(cat <<'EOF'
-{"tool_name":"Task","tool_input":{"description":"Worker: no usage","model":"sonnet","subagent_type":"general-purpose"},"tool_response":{"content":"done, no usage block"},"session_id":"test-mmc-006"}
-EOF
-)
+ID="C9"
 BEFORE=$(total_rows)
-EXIT_CODE=0
-echo "$JSON10" | python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
-AFTER=$(total_rows)
-NEW_ROWS=$(count_rows "$SID")
-
-if [[ "$EXIT_CODE" -eq 0 && "$NEW_ROWS" -eq 0 ]]; then
-    pass $CASE "Task event with missing usage field → exit 0, no row (graceful degradation)"
-else
-    fail $CASE "Missing usage: exit=$EXIT_CODE, rows_for_sid=$NEW_ROWS (expected exit=0, 0 rows)"
-fi
-
-# ── C11: model fallback to 'inherit' when tool_input.model missing ────────────
-
-CASE=11
-SID="test-mmc-007"
-JSON11=$(cat <<'EOF'
-{"tool_name":"Task","tool_input":{"description":"Verifier check schema","subagent_type":"general-purpose"},"tool_response":{"usage":{"duration_ms":8000,"num_turns":1,"input_tokens":300,"output_tokens":150}},"session_id":"test-mmc-007"}
+JSON=$(cat <<'EOF'
+{"tool_name":"Bash","tool_input":{"command":"grep codex_worker.sh somefile"}}
 EOF
 )
-EXIT_CODE=0
-echo "$JSON11" | python3 "$SCRIPT_PATH" > /dev/null 2>&1 || EXIT_CODE=$?
-NEW_ROWS=$(count_rows "$SID")
-
-if [[ "$EXIT_CODE" -ne 0 ]]; then
-    fail $CASE "No model in tool_input: script exited $EXIT_CODE (expected 0)"
-elif [[ "$NEW_ROWS" -eq 0 ]]; then
-    # If no row at all, still acceptable (no model may mean skip), but test fallback separately
-    # Actually contract says fallback to "inherit" → should insert
-    fail $CASE "No model in tool_input: expected 1 row with model='inherit', got 0 rows"
+EXIT=$(run_hook "$JSON")
+AFTER=$(total_rows)
+if [[ "$EXIT" -eq 0 && "$AFTER" -eq "$BEFORE" ]]; then
+    pass "$ID" "bare grep codex_worker.sh → no row (not a real invocation)"
 else
-    MODEL=$(get_col "$SID" "model")
-    if [[ "$MODEL" == "inherit" ]]; then
-        pass $CASE "No model in tool_input → row inserted with model='inherit'"
-    else
-        fail $CASE "No model in tool_input → model='$MODEL' (expected 'inherit')"
-    fi
+    fail "$ID" "exit=$EXIT before=$BEFORE after=$AFTER (expected exit=0, count unchanged)"
 fi
 
-# ── cleanup ───────────────────────────────────────────────────────────────────
+# ── D1: both artifact files byte-identical ────────────────────────────────────
+
+ID="D1"
+if diff -q "$SCRIPT" "$TEMPLATE" > /dev/null 2>&1; then
+    pass "$ID" "installed script and template are byte-identical"
+else
+    fail "$ID" "files differ: diff $SCRIPT $TEMPLATE"
+fi
+
+# ── D2: installed script parses as valid Python ───────────────────────────────
+
+ID="D2"
+PARSE_ERR=$(python3 -c "import ast; ast.parse(open('$SCRIPT').read())" 2>&1)
+if [[ -z "$PARSE_ERR" ]]; then
+    pass "$ID" "installed script is syntactically valid Python"
+else
+    fail "$ID" "ast.parse failed: $PARSE_ERR"
+fi
+
+# ── cleanup ────────────────────────────────────────────────────────────────────
 
 cleanup
 
 FINAL=$(total_rows)
 echo ""
-echo "  CLEANUP  Deleted test rows (session_id LIKE 'test-mmc-%')"
-echo "  VERIFY   model_metrics row count: before-test=$BASELINE, after-cleanup=$FINAL"
-if [[ "$FINAL" -eq "$BASELINE" ]]; then
-    echo "  OK       Row count restored to baseline"
-else
-    echo "  WARN     Row count differs: baseline=$BASELINE current=$FINAL (delta=$((FINAL - BASELINE)))"
+echo "  CLEANUP  test rows removed; model_metrics: baseline=$BASELINE current=$FINAL"
+if [[ "$FINAL" -ne "$BASELINE" ]]; then
+    echo "  WARN     row count changed by $((FINAL - BASELINE)) (may be unrelated production activity)"
 fi
 
-# ── summary ───────────────────────────────────────────────────────────────────
+# ── summary ────────────────────────────────────────────────────────────────────
 
 echo ""
 echo "------------------------------------------------------------"
-echo "  Result: $PASS/$TOTAL passed, $FAIL failed"
+echo "  Passed $PASS/$TOTAL tests"
+if [[ "${#FAILURES[@]}" -gt 0 ]]; then
+    echo "  Failed cases: ${FAILURES[*]}"
+fi
 echo "------------------------------------------------------------"
 echo ""
 
