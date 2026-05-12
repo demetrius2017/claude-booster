@@ -39,6 +39,18 @@ import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+# Provider name constants — must match templates/scripts/model_balancer.py.
+# Kept local to avoid importing model_balancer in the hot SessionStart path.
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_CODEX = "codex-cli"
+
+# Supervisor quota ceiling (matches supervisor/quota.py session_token_cap).
+# Display only — quota enforcement lives in the supervisor itself.
+_LEAD_QUOTA_TOKENS = 50_000
+
+_DB_PATH = Path.home() / ".claude" / "rolling_memory.db"
+_BALANCER_PATH = Path.home() / ".claude" / "model_balancer.json"
+
 LOG_DIR = Path.home() / ".claude" / "logs"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 LOG_PATH = LOG_DIR / "memory_hooks.log"
@@ -78,20 +90,30 @@ def _reset_delegate_counter(cwd: str) -> None:
         logger.warning("reset_delegate_counter failed (non-fatal): %s", exc)
 
 
-def _build_balancer_summary() -> str:
-    """Build a one-line MODEL BALANCER routing summary from model_balancer.json.
+def _load_balancer_data() -> dict | None:
+    """Read+parse model_balancer.json once per /start.
 
+    Returns None on missing or corrupt file. Callers must handle None.
+    """
+    try:
+        return json.loads(_BALANCER_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None
+    except Exception:
+        return None
+
+
+def _build_balancer_summary(data: dict | None) -> str:
+    """Build a one-line MODEL BALANCER routing summary.
+
+    *data* is the parsed model_balancer.json dict (or None on missing/corrupt).
     Returns a two-line string (header + asterisk line) in all cases — never raises.
     """
     header = "=== MODEL BALANCER ==="
-    balancer_path = Path.home() / ".claude" / "model_balancer.json"
     try:
-        if not balancer_path.exists():
-            return f"{header}\n  * (no decision file — run `python3 ~/.claude/scripts/model_balancer.py decide`)"
-
-        try:
-            data = json.loads(balancer_path.read_text(encoding="utf-8"))
-        except Exception:
+        if data is None:
+            if not _BALANCER_PATH.exists():
+                return f"{header}\n  * (no decision file — run `python3 ~/.claude/scripts/model_balancer.py decide`)"
             return f"{header}\n  * (decision file corrupt — using tool-strategy.md defaults)"
 
         decision_date = data.get("decision_date", "?")
@@ -122,27 +144,36 @@ def _build_balancer_summary() -> str:
         return f"{header}\n  * (error: {type(exc).__name__})"
 
 
-def _build_limits_summary() -> str:
+def _build_limits_summary(balancer_data: dict | None) -> str:
     """Build a LIMITS block showing 5h token usage, /lead quota, and weekly snapshot.
+
+    *balancer_data* is the parsed model_balancer.json dict (or None) — passed in
+    rather than re-read here to avoid two reads of the same file per /start.
 
     Returns a multi-line string (header + 4 asterisk lines) in all cases — never raises.
     Internal errors degrade to a single fallback line.
     """
     header = "=== LIMITS ==="
     try:
-        db_path = Path.home() / ".claude" / "rolling_memory.db"
-        balancer_path = Path.home() / ".claude" / "model_balancer.json"
         now_utc = datetime.now(timezone.utc)
         window_start = now_utc - timedelta(hours=5)
         window_start_str = window_start.isoformat()
 
-        # --- 5h window: anthropic + codex-cli ---
+        # Open one read-only conn for both queries (5h window + supervisor_quota).
+        # Each query has its own try/except so a failure in one doesn't blank the other.
         anthropic_tokens = 0
         anthropic_calls = 0
         codex_tokens = 0
         codex_calls = 0
+        lead_state = "inactive"
+        lead_session_tokens = None
+        lead_pct = None
+
+        conn = None
         try:
-            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0) as conn:
+            conn = sqlite3.connect(f"file:{_DB_PATH}?mode=ro", uri=True, timeout=2.0)
+
+            try:
                 cur = conn.execute(
                     """SELECT provider,
                               COUNT(*) AS calls,
@@ -152,30 +183,17 @@ def _build_limits_summary() -> str:
                        GROUP BY provider""",
                     (window_start_str,),
                 )
-                for row in cur.fetchall():
-                    prov, calls, tokens = row
-                    if prov == "anthropic":
+                for prov, calls, tokens in cur.fetchall():
+                    if prov == PROVIDER_ANTHROPIC:
                         anthropic_calls = calls
                         anthropic_tokens = tokens
-                    elif prov == "codex-cli":
+                    elif prov == PROVIDER_CODEX:
                         codex_calls = calls
                         codex_tokens = tokens
-        except Exception:
-            pass  # degrade to zeros
+            except Exception:
+                pass  # degrade to zeros
 
-        anthropic_k = round(anthropic_tokens / 1000)
-        codex_k = round(codex_tokens / 1000)
-        line_5h = (
-            f"  * 5h window: anthropic {anthropic_k}k tokens / {anthropic_calls} calls"
-            f" · codex-cli {codex_k}k tokens / {codex_calls} calls"
-        )
-
-        # --- /lead supervisor quota ---
-        lead_state = "inactive"
-        lead_session_tokens = None
-        lead_pct = None
-        try:
-            with sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=2.0) as conn:
+            try:
                 cur = conn.execute(
                     """SELECT circuit_state, supervisor_tokens, worker_tokens, window_end
                        FROM supervisor_quota
@@ -185,7 +203,6 @@ def _build_limits_summary() -> str:
                 row = cur.fetchone()
                 if row is not None:
                     circuit_state, sup_tok, wrk_tok, window_end_str = row
-                    # Parse window_end — it may have +00:00 suffix or Z
                     try:
                         window_end_str_norm = window_end_str.replace("Z", "+00:00")
                         window_end_dt = datetime.fromisoformat(window_end_str_norm)
@@ -198,23 +215,34 @@ def _build_limits_summary() -> str:
                         lead_state = circuit_state
                         total_tokens = (sup_tok or 0) + (wrk_tok or 0)
                         lead_session_tokens = total_tokens
-                        lead_pct = round(total_tokens / 50000 * 100)
+                        lead_pct = round(total_tokens / _LEAD_QUOTA_TOKENS * 100)
+            except Exception:
+                pass  # degrade to inactive
         except Exception:
-            pass  # degrade to inactive
+            pass  # DB open failed — all values stay at defaults
+        finally:
+            if conn is not None:
+                conn.close()
+
+        anthropic_k = round(anthropic_tokens / 1000)
+        codex_k = round(codex_tokens / 1000)
+        line_5h = (
+            f"  * 5h window: anthropic {anthropic_k}k tokens / {anthropic_calls} calls"
+            f" · codex-cli {codex_k}k tokens / {codex_calls} calls"
+        )
 
         if lead_session_tokens is not None:
             line_lead = (
                 f"  * /lead supervisor: state={lead_state},"
-                f" session_tokens={lead_session_tokens}/50000 ({lead_pct}%)"
+                f" session_tokens={lead_session_tokens}/{_LEAD_QUOTA_TOKENS} ({lead_pct}%)"
             )
         else:
             line_lead = f"  * /lead supervisor: state={lead_state}"
 
-        # --- weekly_max_snapshot ---
+        # --- weekly_max_snapshot (uses already-parsed balancer_data) ---
         weekly_line = "  * weekly_max_snapshot: unknown"
         try:
-            if balancer_path.exists():
-                balancer_data = json.loads(balancer_path.read_text(encoding="utf-8"))
+            if balancer_data is not None:
                 snap = balancer_data.get("inputs_snapshot", {})
                 decision_date = balancer_data.get("decision_date", "")
 
@@ -303,9 +331,10 @@ def main() -> None:
         else:
             full_context = ""
 
-        balancer_summary = _build_balancer_summary()
+        balancer_data = _load_balancer_data()
+        balancer_summary = _build_balancer_summary(balancer_data)
         try:
-            limits_summary = _build_limits_summary()
+            limits_summary = _build_limits_summary(balancer_data)
         except Exception:
             limits_summary = "=== LIMITS ===\n  * (limits unavailable — Exception)"
         combined_header = f"{balancer_summary}\n\n{limits_summary}"

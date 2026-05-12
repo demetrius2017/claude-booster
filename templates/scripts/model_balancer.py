@@ -51,13 +51,14 @@ Files:
 from __future__ import annotations
 
 import argparse
+import copy
 import json
 import os
 import shutil
 import sqlite3
 import statistics
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -72,6 +73,16 @@ _BALANCER_PATH: Path = Path(
 _DB_PATH: Path = Path.home() / ".claude" / "rolling_memory.db"
 _OAI_MODELS_PATH: Path = Path.home() / ".claude" / "openai_models.json"
 _MAX_BACKUPS = 7
+
+# Provider name constants — single source of truth, prevents silent typos
+# in routing entries / metric rows / log queries.
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_CODEX = "codex-cli"
+PROVIDER_PAL = "pal"
+
+# Neutral fallback for unknown models (e.g. gpt-5.3-codex variants not in
+# openai_models.json yet). Sits between Sonnet (17) and Haiku (13).
+_INTELLIGENCE_SCORE_UNKNOWN = 15
 
 # ---------------------------------------------------------------------------
 # Active-path constants
@@ -97,6 +108,9 @@ _QUALITY_SCORES_ANTHROPIC: dict[str, int] = {
     "claude-haiku-4-5": 13,
 }
 
+# Anthropic-only — used to compute budget_pressure term (other providers = 0)
+_BUDGET_PRESSURE_PROVIDERS: frozenset[str] = frozenset({PROVIDER_ANTHROPIC})
+
 # Pinned categories — their routing is NEVER overwritten by active logic
 _PINNED_CATEGORIES: frozenset[str] = frozenset({"lead", "high_blast_radius"})
 
@@ -112,16 +126,16 @@ DEFAULTS: dict = {
     "weight_profile": "balanced",
     "rationale": "bootstrap — no prior decision",
     "routing": {
-        "trivial":        {"provider": "anthropic", "model": "claude-haiku-4-5"},
-        "recon":          {"provider": "anthropic", "model": "claude-haiku-4-5"},
-        "medium":         {"provider": "anthropic", "model": "claude-sonnet-4-6"},
-        "coding":         {"provider": "anthropic", "model": "claude-sonnet-4-6"},
-        "hard":           {"provider": "anthropic", "model": "claude-opus-4-7"},
-        "consilium_bio":  {"provider": "anthropic", "model": "claude-opus-4-7"},
-        "audit_external": {"provider": "pal",       "model": "gpt-5.5"},
-        "lead":           {"provider": "anthropic", "model": "claude-opus-4-7"},
+        "trivial":        {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
+        "recon":          {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
+        "medium":         {"provider": PROVIDER_ANTHROPIC, "model": "claude-sonnet-4-6"},
+        "coding":         {"provider": PROVIDER_ANTHROPIC, "model": "claude-sonnet-4-6"},
+        "hard":           {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-7"},
+        "consilium_bio":  {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-7"},
+        "audit_external": {"provider": PROVIDER_PAL,       "model": "gpt-5.5"},
+        "lead":           {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-7"},
         "high_blast_radius": {
-            "provider": "anthropic",
+            "provider": PROVIDER_ANTHROPIC,
             "model": "claude-sonnet-4-6",
             "applies_to": [
                 "auth", "security", "secrets",
@@ -158,11 +172,21 @@ def _now_iso8601() -> str:
 
 def _valid_until_str() -> str:
     """Return tomorrow midnight UTC as ISO8601 with Z suffix."""
-    from datetime import timedelta
     tomorrow = datetime.now(timezone.utc).replace(
         hour=0, minute=0, second=0, microsecond=0
     ) + timedelta(days=1)
     return tomorrow.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _rationale_to_source(rationale: str) -> str:
+    """Map rationale prefix to a one-word source label for CLI status output."""
+    if rationale.startswith("bootstrap"):
+        return "bootstrap"
+    if rationale.startswith("active"):
+        return "active"
+    if rationale.startswith("passive"):
+        return "passive"
+    return "seed"
 
 
 def _load_file() -> dict | None:
@@ -265,11 +289,9 @@ def _get_intelligence_score(provider: str, model: str) -> int:
     Falls back to 15 (neutral) if unknown.
     """
     scores = _load_intelligence_scores()
-    # Try exact model name first
     if model in scores:
         return scores[model]
-    # Fallback neutral
-    return 15
+    return _INTELLIGENCE_SCORE_UNKNOWN
 
 
 def _query_metrics(category: str, db_path: Path) -> list[dict[str, Any]]:
@@ -329,7 +351,7 @@ def _score_candidate(
     """
     quality = _get_intelligence_score(provider, model)          # 0..20
     norm_lat = (p50 / max_p50) if max_p50 > 0.0 else 0.0       # 0..1
-    budget = weekly_max_pct if provider == "anthropic" else 0.0  # 0..1
+    budget = weekly_max_pct if provider in _BUDGET_PRESSURE_PROVIDERS else 0.0  # 0..1
 
     score = (
         _WEIGHTS["q"] * quality
@@ -348,20 +370,18 @@ def _active_decide(prior: dict) -> dict:
     """
     today = _today_utc()
 
-    # Deep copy prior so we can modify safely
-    decision = json.loads(json.dumps(prior))
+    decision = copy.deepcopy(prior)
     decision["decision_date"] = today
     decision["valid_until"] = _valid_until_str()
 
     prior_routing: dict[str, dict] = prior.get("routing", {})
-    new_routing: dict[str, dict] = json.loads(json.dumps(prior_routing))
+    new_routing: dict[str, dict] = copy.deepcopy(prior_routing)
 
-    # Apply hard pins first — these keys are never touched
-    # (We restore them from prior at the end regardless of loop output)
-    pinned: dict[str, dict] = {}
-    for cat in _PINNED_CATEGORIES:
-        if cat in prior_routing:
-            pinned[cat] = json.loads(json.dumps(prior_routing[cat]))
+    pinned: dict[str, dict] = {
+        cat: copy.deepcopy(prior_routing[cat])
+        for cat in _PINNED_CATEGORIES
+        if cat in prior_routing
+    }
 
     # Read weekly_max_pct from inputs_snapshot (Anthropic budget pressure proxy)
     weekly_max_pct: float = 0.0
@@ -380,11 +400,7 @@ def _active_decide(prior: dict) -> dict:
         refreshed["rationale"] = "active — no samples in last 14d; preserved prior routing"
         return refreshed
 
-    # Evaluate each non-pinned category
-    transitions: list[dict] = list(prior.get("decision", {}).get("transitions", []))
-    # Also check top-level transitions key (in case it was stored there)
-    if not transitions:
-        transitions = list(prior.get("transitions", []))
+    transitions: list[dict] = list(prior.get("transitions", []))
 
     categories = [c for c in prior_routing if c not in _PINNED_CATEGORIES]
     total_samples_seen = 0
@@ -580,12 +596,7 @@ def _cmd_decide(args: argparse.Namespace) -> int:
     decision = decide(force=force_flag)
     date = decision.get("decision_date", "?")
     rationale = decision.get("rationale", "")
-    if rationale.startswith("bootstrap"):
-        source = "bootstrap"
-    elif rationale.startswith("active"):
-        source = "active"
-    else:
-        source = "seed"
+    source = _rationale_to_source(rationale)
     print(f"decision_date={date}  source={source}  routing_keys={list(decision.get('routing', {}).keys())}")
     print(f"rationale={rationale}")
     return 0
@@ -636,12 +647,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
         freshness = "stale"
 
     rationale = decision.get("rationale", "")
-    if rationale.startswith("bootstrap"):
-        source = "bootstrap"
-    elif rationale.startswith("active"):
-        source = "active"
-    else:
-        source = "seed"
+    source = _rationale_to_source(rationale)
     print(f"decision_date={date_str}, age={age_hours}h, source={source}, {freshness}")
     return 0
 

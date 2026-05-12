@@ -33,16 +33,24 @@ import os
 import re
 import sqlite3
 import sys
-from datetime import datetime, timezone
 
 DB_PATH = os.path.expanduser("~/.claude/rolling_memory.db")
 
+# Provider name constants — must match templates/scripts/model_balancer.py
+# (kept local to avoid hot-path import of model_balancer on every tool call).
+PROVIDER_ANTHROPIC = "anthropic"
+PROVIDER_CODEX = "codex-cli"
+
+# ts_utc uses SQL datetime('now') so format matches the comparison bound
+# `datetime('now','-14 days')` used by model_balancer._query_metrics.
+# Python isoformat() emits "2026-05-12T15:30:00+00:00" which lexically
+# diverges from SQLite's "2026-05-12 15:30:00" — same row, different sort.
 INSERT_SQL = """
 INSERT INTO model_metrics
     (ts_utc, provider, model, task_category, duration_ms, num_turns,
      per_turn_ms, tokens_in, tokens_out, success, session_id, project_root)
 VALUES
-    (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+    (datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
 """
 
 
@@ -91,7 +99,6 @@ def handle_event(event: dict) -> bool:
     tool_name = event.get("tool_name", "")
     session_id = event.get("session_id", "")
     project_root = _get_project_root()
-    ts_utc = datetime.now(timezone.utc).isoformat()
 
     if tool_name in ("Task", "Agent"):
         tool_response = event.get("tool_response") or {}
@@ -115,7 +122,7 @@ def handle_event(event: dict) -> bool:
         category = _task_category(subagent_type, description)
         per_turn_ms = int(duration_ms / max(num_turns, 1))
 
-        _insert_row(ts_utc, "anthropic", model, category,
+        _insert_row(PROVIDER_ANTHROPIC, model, category,
                     duration_ms, num_turns, per_turn_ms,
                     tokens_in, tokens_out, session_id, project_root)
         return True
@@ -125,7 +132,7 @@ def handle_event(event: dict) -> bool:
         command = tool_input.get("command") or ""
         if "codex_worker.sh" in command or "codex exec -m" in command:
             model = _parse_codex_model(command)
-            _insert_row(ts_utc, "codex-cli", model, "medium",
+            _insert_row(PROVIDER_CODEX, model, "medium",
                         None, None, None,
                         None, None, session_id, project_root)
             return True
@@ -133,18 +140,20 @@ def handle_event(event: dict) -> bool:
     return False
 
 
-def _insert_row(ts_utc, provider, model, task_category,
+def _insert_row(provider, model, task_category,
                 duration_ms, num_turns, per_turn_ms,
                 tokens_in, tokens_out, session_id, project_root):
-    conn = sqlite3.connect(DB_PATH, timeout=2.0)
+    # isolation_level=None → autocommit; PRAGMA synchronous=NORMAL trades
+    # one fsync per commit for ~3-8ms savings per PostToolUse invocation.
+    conn = sqlite3.connect(DB_PATH, timeout=2.0, isolation_level=None)
     try:
+        conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute(INSERT_SQL, (
-            ts_utc, provider, model, task_category,
+            provider, model, task_category,
             duration_ms, num_turns, per_turn_ms,
             tokens_in, tokens_out,
             session_id, project_root,
         ))
-        conn.commit()
     finally:
         conn.close()
 
