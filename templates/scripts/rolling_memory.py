@@ -94,7 +94,14 @@ if not logger.handlers:
 #     deadline surfaced by check_review_ages.py at /start.
 # FTS is NOT touched — none of the four are text-searchable. Source:
 # consilium_2026-04-18_memory_rearchitecture.md §Q1 verdict.
-SCHEMA_VERSION = 5
+# v5 → v6 (2026-05-12, model_balancer day-1, partial): initial model_metrics
+#   table created with incorrect schema (wrong column names/types). Superseded
+#   by v7.
+# v6 → v7 (2026-05-12, model_balancer day-1, corrected): drop and recreate
+#   model_metrics with exact Artifact Contract schema — ts_utc, per_turn_ms,
+#   project_root, nullable task_category/duration_ms. Two composite indexes:
+#   (model, ts_utc DESC) and (provider, ts_utc DESC). FTS NOT touched.
+SCHEMA_VERSION = 7
 
 ROLLING_LIMITS = {
     "directive": 50,
@@ -235,6 +242,26 @@ CREATE TRIGGER IF NOT EXISTS agent_memory_au AFTER UPDATE ON agent_memory BEGIN
 END;
 """
 
+_CREATE_MODEL_METRICS = """
+CREATE TABLE IF NOT EXISTS model_metrics (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts_utc TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  task_category TEXT,
+  duration_ms INTEGER,
+  num_turns INTEGER,
+  per_turn_ms INTEGER,
+  tokens_in INTEGER,
+  tokens_out INTEGER,
+  success INTEGER NOT NULL DEFAULT 1,
+  session_id TEXT,
+  project_root TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_model_metrics_model_ts ON model_metrics(model, ts_utc DESC);
+CREATE INDEX IF NOT EXISTS idx_model_metrics_provider_ts ON model_metrics(provider, ts_utc DESC);
+"""
+
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
@@ -347,6 +374,20 @@ def init_db() -> None:
             conn.commit()
             logger.info("migrated agent_memory to schema version 5 (supersession state, Q1)")
 
+
+        # v6 → v7: drop the incorrectly-schemed model_metrics table that was
+        # created in v6 (wrong column names: ts, decision_date, duration_per_turn_ms,
+        # notes; wrong nullability). Recreate with exact Artifact Contract schema.
+        # The table was always empty at this point so DROP is safe.
+        if version < 7:
+            mm_exists = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='model_metrics'"
+            ).fetchone() is not None
+            if mm_exists:
+                conn.execute("DROP TABLE IF EXISTS model_metrics")
+                conn.commit()
+                logger.info("dropped incorrect model_metrics table (v6 schema) for v7 rebuild")
+
         need_v3_migration = table_exists and version < 3
         # Rebuild FTS from the base table when either:
         #  (a) we are running the v2→v3 migration (FTS schema changed), or
@@ -367,6 +408,7 @@ def init_db() -> None:
         script_parts.append(_CREATE_TABLES)
         script_parts.append(_CREATE_FTS)
         script_parts.append(_CREATE_TRIGGERS)
+        script_parts.append(_CREATE_MODEL_METRICS)
         if should_rebuild_fts:
             script_parts.append(
                 "INSERT INTO agent_memory_fts(agent_memory_fts) VALUES('rebuild');\n"
@@ -382,7 +424,10 @@ def init_db() -> None:
         elif should_rebuild_fts:
             logger.info("repaired missing agent_memory_fts")
         if version < SCHEMA_VERSION:
-            logger.info("DB initialized at schema version %d", SCHEMA_VERSION)
+            if version < 7:
+                logger.info("migrated to schema version 7 (model_metrics table, corrected schema)")
+            else:
+                logger.info("DB initialized at schema version %d", SCHEMA_VERSION)
     except Exception:
         logger.exception("init_db failed")
         raise
@@ -1150,6 +1195,439 @@ def search(
         conn.close()
 
 
+# ---------------------------------------------------------------------------
+# D3 — Temporal-causal recon: topic timeline + stuck-loop detector
+# ---------------------------------------------------------------------------
+
+# Import STOPWORDS and make_stuck_loop_key from stuck_loop_key — single source of truth.
+# No fallback inline copy: stuck_loop_key.py is deployed alongside rolling_memory.py.
+# If the import fails here, raising is correct — a silent drift fallback is worse.
+import sys as _sys
+_scripts_dir = str(Path.home() / ".claude" / "scripts")
+if _scripts_dir not in _sys.path:
+    _sys.path.insert(0, _scripts_dir)
+from stuck_loop_key import STOPWORDS as _STUCK_STOPWORDS, make_stuck_loop_key, extract_first_step_body as _extract_first_step_body_from_key
+
+
+def _extract_first_step(content: str) -> str:
+    """Extract the body of the First-step / Первый шаг section from a handover.
+
+    Delegates to extract_first_step_body() from stuck_loop_key — single source
+    of truth for this regex (P1-7: no duplicate implementations).
+    Returns empty string when section is absent.
+    """
+    result = _extract_first_step_body_from_key(content)
+    return result if result is not None else ""
+
+
+def _handover_first_step(path: Path) -> str:
+    """Read a handover file and return its First-step body (empty on error)."""
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        return _extract_first_step(text)
+    except OSError:
+        return ""
+
+
+def _stuck_loop_signal(
+    handover_dir: Path,
+    project_basename: str,
+    window: int = 5,
+) -> dict:
+    """Analyse last `window` handover files for stuck-loop candidates.
+
+    Returns:
+        {
+            "warn": bool,
+            "hash": str | None,
+            "count": int,
+            "tokens": list[str],
+            "oldest_match_date": str | None,   # date of oldest matching handover
+            "since": str | None,               # same as oldest_match_date (alias)
+            "no_gate_pass": bool,              # True when no verify_gate=pass found
+        }
+    """
+    import re
+
+    # Detect handover files in the reports/ subdirectory, sorted by mtime DESC.
+    reports_dir = handover_dir / "reports"
+    if not reports_dir.is_dir():
+        reports_dir = handover_dir  # fallback: scope root
+    try:
+        candidates = sorted(
+            (f for f in reports_dir.glob("handover_*.md") if f.is_file()),
+            key=lambda f: f.stat().st_mtime,
+            reverse=True,
+        )[:window]
+    except OSError:
+        return {"warn": False, "hash": None, "count": 0, "tokens": [],
+                "oldest_match_date": None, "since": None, "no_gate_pass": True}
+
+    if not candidates:
+        return {"warn": False, "hash": None, "count": 0, "tokens": [],
+                "oldest_match_date": None, "since": None, "no_gate_pass": True}
+
+    # Compute hash for each handover that has a first-step body.
+    hash_entries: list[tuple[str, dict, Path]] = []  # (hash, key_result, path)
+    for f in candidates:
+        body = _handover_first_step(f)
+        if not body:
+            continue
+        key = make_stuck_loop_key(body, context_anchors=(project_basename,))
+        hash_entries.append((key["hash"], key, f))
+
+    if not hash_entries:
+        return {"warn": False, "hash": None, "count": 0, "tokens": [],
+                "oldest_match_date": None, "since": None, "no_gate_pass": True}
+
+    # Find the most-frequent hash.
+    from collections import Counter
+    counts = Counter(h for h, _, _ in hash_entries)
+    most_common_hash, most_common_count = counts.most_common(1)[0]
+
+    if most_common_count < 3:
+        return {"warn": False, "hash": most_common_hash, "count": most_common_count,
+                "tokens": [], "oldest_match_date": None, "since": None, "no_gate_pass": True}
+
+    # Gather tokens and oldest match date.
+    matching = [(h, key, f) for h, key, f in hash_entries if h == most_common_hash]
+    tokens: list[str] = []
+    for _, key, _ in matching:
+        for t in key["tokens"]:
+            if t not in tokens:
+                tokens.append(t)
+    tokens = tokens[:20]
+
+    # Oldest match = last in the list (they are already mtime-sorted newest-first).
+    oldest_path = matching[-1][2]
+    # Parse date from filename: handover_YYYY-MM-DD_HHMMSS.md
+    date_match = re.search(r"handover_(\d{4}-\d{2}-\d{2})", oldest_path.name)
+    oldest_date = date_match.group(1) if date_match else oldest_path.name[:10]
+
+    # Check verify_gate=pass references for this hash across the FULL window.
+    # P0-2: require both "status":"pass" AND "stuck_hash":"<hash>" in the SAME
+    # JSON-ish block — cross-block matches don't count.
+    # C1: scan ALL candidates (not only `matching`). A handover whose own
+    # First-step hashed to a different value can still carry the verify_gate
+    # clearance for an earlier hash — telemetry already scans the full window
+    # text, and rolling_memory must do the same to stay consistent.
+    no_gate_pass = True
+    try:
+        from _gate_common import has_pass_for_hash as _has_pass_for_hash_rm
+    except ImportError:
+        _has_pass_for_hash_rm = None
+
+    for f in candidates:
+        try:
+            text = f.read_text(encoding="utf-8", errors="replace")
+            if _has_pass_for_hash_rm is not None:
+                if _has_pass_for_hash_rm(text, most_common_hash):
+                    no_gate_pass = False
+                    break
+            else:
+                # _gate_common unavailable — conservative: leave no_gate_pass=True.
+                pass
+        except OSError:
+            pass
+
+    warn = most_common_count >= 3 and no_gate_pass
+    return {
+        "warn": warn,
+        "hash": most_common_hash,
+        "count": most_common_count,
+        "tokens": tokens,
+        "oldest_match_date": oldest_date,
+        "since": oldest_date,
+        "no_gate_pass": no_gate_pass,
+    }
+
+
+def _render_stuck_loop_block(signal: dict) -> str:
+    """Render the STUCK LOOP CANDIDATE prose block from a signal dict.
+
+    Returns empty string if ``signal['warn']`` is False (no candidate).
+    """
+    if not signal.get("warn"):
+        return ""
+    h = signal["hash"] or "?"
+    raw_tokens = signal.get("tokens") or []
+    tokens_str = ", ".join(raw_tokens) if raw_tokens else "(code-only / empty canonical; low semantic confidence)"
+    count = signal.get("count", 0)
+    since = signal.get("since") or "unknown"
+    lines = [
+        "=== STUCK LOOP CANDIDATE ===",
+        f"Hash: {h}",
+        f"Tokens: {tokens_str}",
+        f"Appearances: {count}/5 last handovers (since {since})",
+        "No verify_gate=pass evidence references this hash.",
+        "",
+        "Reframe questions Claude MUST answer in plan:",
+        "  Q1: Is this still the right problem? Symptom?",
+        "  Q2: Is the root upstream? What did each fix attempt assume about layer N-1?",
+        "  Q3: What did the original framing miss? Read the FIRST handover that",
+        "      surfaced this hash; name the assumption now invalidated.",
+        "  Q4: Is the acceptance criterion still meaningful?",
+        "",
+        "If answers don't justify continuing — tag [SUPERSEDED by <id>] in rolling_memory.",
+    ]
+    return "\n".join(lines)
+
+
+def build_topic_timeline(
+    conn: sqlite3.Connection,
+    seed_text: str,
+    git_paths: list,
+    limit: int = 6,
+) -> tuple:
+    """Build a chronological topic timeline from consilium/audit rows.
+
+    Contract:
+        Вход:
+            conn       — read-only SQLite connection (agent_memory schema).
+            seed_text  — text seed for topic-keyword extraction (e.g. first-step body).
+            git_paths  — list of changed file paths (git status --porcelain basenames).
+            limit      — max rows to return (default 6).
+        Выход:
+            (timeline_rows, stale_msg | None, topic_match_count)
+            timeline_rows:     list of dicts with keys from agent_memory schema.
+            stale_msg:         string warning if topic is stale, else None.
+            topic_match_count: int — number of rows returned by the FTS5 topic query.
+                               When 0, the caller MUST suppress the TOPIC TIMELINE block
+                               (recency floor alone does not justify showing the block).
+
+    Algorithm (spec §D3b):
+        1. Extract top-5 keywords from seed_text + path basenames.
+        2. FTS5 query with hyphen-fixed keywords (spec §6 R3: '-' → ' ' before MATCH).
+        3. Recency floor: union with last 4 consilium/audit rows from last 21 days,
+           BUT ONLY when topic_match_count ≥ 1 (provides recency anchor, not sole content).
+        4. Dedupe, sort ASC by created_at, prune to limit (oldest 2 + newest limit-2).
+        5. Stale flag: len ≥ 5 AND span_days ≥ 14 AND ≥ 3 open (status != 'superseded').
+    """
+    import re
+    from datetime import datetime, timezone
+
+    # Step 1 — extract topic keywords (shared helper: P1-6 lift).
+    top_keywords = _top_keywords(seed_text, git_paths, n=5)
+
+    # Step 2 — FTS5 query. Fix hyphen tokens: 'newest-block-wins' → 'newest block wins'.
+    def _fts_fix_kw(kw: str) -> str:
+        """Normalize keyword for FTS5: replace hyphens with spaces, strip punctuation."""
+        kw = kw.replace("-", " ").replace("_", " ").strip(" .,;:")
+        return kw.strip()
+
+    topic_rows: list[dict] = []
+    if top_keywords:
+        # Build MATCH expression: quote all tokens (single-word too, for FTS5 safety).
+        parts = []
+        for kw in top_keywords:
+            fixed = _fts_fix_kw(kw)
+            if not fixed:
+                continue
+            parts.append(f'"{fixed}"')
+        fts_match = " OR ".join(parts) if parts else None
+
+        if fts_match:
+            try:
+                sql = """
+                    SELECT am.id, am.content, am.created_at, am.status,
+                           am.memory_type, am.source, am.category
+                    FROM agent_memory_fts fts
+                    JOIN agent_memory am ON am.id = fts.rowid
+                    WHERE agent_memory_fts MATCH ?
+                      AND am.active = 1
+                      AND am.memory_type IN ('consilium','audit')
+                    ORDER BY
+                      CASE am.status WHEN 'superseded' THEN 2 WHEN 'under_review' THEN 1 ELSE 0 END,
+                      am.created_at ASC
+                    LIMIT 12
+                """
+                topic_rows = [dict(r) for r in conn.execute(sql, (fts_match,)).fetchall()]
+            except sqlite3.OperationalError as exc:
+                logger.warning("build_topic_timeline FTS5 query failed: %s | match=%s", exc, fts_match)
+                topic_rows = []
+
+    topic_match_count = len(topic_rows)
+
+    # P0-3: When topic_match_count == 0, suppress the timeline entirely.
+    # Recency floor alone does not justify showing causal labels (Premise/Tried/etc.)
+    # because those labels imply topic continuity that FTS5 has not confirmed.
+    if topic_match_count == 0:
+        return [], None, 0
+
+    # Step 3 — recency floor: last 4 consilium/audit rows from last 21 days.
+    # Only included when ≥1 topic match exists (provides recency anchor).
+    recency_rows: list[dict] = []
+    try:
+        recency_sql = """
+            SELECT id, content, created_at, status, memory_type, source, category
+            FROM agent_memory
+            WHERE active = 1
+              AND memory_type IN ('consilium','audit')
+              AND created_at >= datetime('now', '-21 days')
+            ORDER BY created_at DESC
+            LIMIT 4
+        """
+        recency_rows = [dict(r) for r in conn.execute(recency_sql).fetchall()]
+    except sqlite3.OperationalError as exc:
+        logger.warning("build_topic_timeline recency query failed: %s", exc)
+
+    # Step 4 — dedupe by id, sort ASC, prune to limit (oldest 2 + newest limit-2).
+    seen_ids: set = set()
+    combined_rows: list[dict] = []
+    for r in topic_rows + recency_rows:
+        rid = r.get("id")
+        if rid not in seen_ids:
+            seen_ids.add(rid)
+            combined_rows.append(r)
+
+    combined_rows.sort(key=lambda r: r.get("created_at") or "")
+
+    if len(combined_rows) > limit:
+        oldest_2 = combined_rows[:2]
+        newest_rest = combined_rows[-(limit - 2):]
+        # Merge avoiding duplicates.
+        ids_in_oldest = {r["id"] for r in oldest_2}
+        pruned = oldest_2 + [r for r in newest_rest if r["id"] not in ids_in_oldest]
+        combined_rows = pruned
+
+    # Step 5 — stale flag.
+    stale_msg: Optional[str] = None
+    if len(combined_rows) >= 5:
+        dates = [r.get("created_at") or "" for r in combined_rows if r.get("created_at")]
+        if len(dates) >= 2:
+            try:
+                def _parse_dt(s: str) -> datetime:
+                    # Handle both 'YYYY-MM-DDTHH:MM:SSZ' and 'YYYY-MM-DD' forms.
+                    s = s.rstrip("Z").replace("T", " ")
+                    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                        try:
+                            return datetime.strptime(s, fmt)
+                        except ValueError:
+                            pass
+                    return datetime.min
+
+                min_dt = _parse_dt(min(dates))
+                max_dt = _parse_dt(max(dates))
+                span_days = (max_dt - min_dt).days
+                # P1-5: use open_count (not len(combined_rows)) in stale_msg.
+                open_count = sum(
+                    1 for r in combined_rows if (r.get("status") or "active") != "superseded"
+                )
+                if span_days >= 14 and open_count >= 3:
+                    stale_msg = f"{span_days} days span, {open_count} entries unresolved"
+            except Exception:
+                pass
+
+    return combined_rows, stale_msg, topic_match_count
+
+
+def _row_title(row: dict, max_len: int = 80) -> str:
+    """Extract display title from a consilium/audit row's content.
+
+    Skips YAML frontmatter (--- blocks), returns first non-empty content line,
+    truncated to max_len.
+    """
+    content = row.get("content") or ""
+    lines = content.split("\n")
+    in_frontmatter = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped == "---":
+            in_frontmatter = not in_frontmatter
+            continue
+        if in_frontmatter:
+            continue
+        if stripped.startswith("# "):
+            return stripped[2:].strip()[:max_len]
+        if stripped:
+            return stripped[:max_len]
+    src = row.get("source") or ""
+    return Path(src).name[:max_len] if src else "(untitled)"[:max_len]
+
+
+def _render_topic_timeline(rows: list, keywords: list, stale_msg: Optional[str]) -> str:
+    """Render the TOPIC TIMELINE prose block.
+
+    Label assignment (spec §D3c):
+        2 rows:  Premise + Current
+        3 rows:  Premise + Tried + Current
+        4 rows:  Premise + Tried + Result + Current
+        5 rows:  Premise + Tried + Result + Tried + Current
+        6 rows:  Premise + Tried + Result + Tried + Tried + Current
+
+    Row labels are assigned by index, not by status.
+    OPEN line appears when any row has status != 'superseded'.
+    """
+    if len(rows) < 2:
+        return ""
+
+    n = len(rows)
+    # Label sequences per spec.
+    if n == 2:
+        labels = ["Premise", "Current"]
+    elif n == 3:
+        labels = ["Premise", "Tried  ", "Current"]
+    elif n == 4:
+        labels = ["Premise", "Tried  ", "Result ", "Current"]
+    elif n == 5:
+        labels = ["Premise", "Tried  ", "Result ", "Tried  ", "Current"]
+    else:  # 6+
+        labels = ["Premise", "Tried  ", "Result ", "Tried  ", "Tried  ", "Current"]
+        rows = rows[:6]  # cap at 6
+
+    kw_str = ", ".join(keywords[:3]) if keywords else "?"
+    header = f'=== TOPIC TIMELINE: "{kw_str}" ==='
+
+    lines = [header]
+    for label, row in zip(labels, rows):
+        date = (row.get("created_at") or "")[:10]
+        title = _row_title(row)
+        lines.append(f"{label} ({date}): {title}")
+
+    # OPEN line: surface under_review rows or open (non-superseded) rows.
+    under_review = [r for r in rows if (r.get("status") or "active") == "under_review"]
+    open_rows = [r for r in rows if (r.get("status") or "active") != "superseded"]
+    if under_review:
+        open_titles = "; ".join(_row_title(r, 40) for r in under_review[:2])
+        lines.append(f"OPEN: {open_titles} [under_review]")
+    elif len(open_rows) == len(rows):
+        lines.append(f"OPEN: all {len(open_rows)} entries unresolved")
+    elif open_rows:
+        lines.append(f"OPEN: {len(open_rows)} of {len(rows)} unresolved")
+
+    if stale_msg:
+        lines.append(f"⚠ STALE-TOPIC ({stale_msg}) — recommend /consilium pivot")
+
+    return "\n".join(lines)
+
+
+def _top_keywords(seed_text: str, git_paths: list, n: int = 5) -> list:
+    """Extract top-N topic keywords from seed_text + path basenames.
+
+    P1-6: Lifted from build_topic_timeline() Step 1 and
+    _extract_topic_keywords_for_display() to eliminate duplication.
+    Both callers now use this single implementation.
+    """
+    import re as _re
+    combined = seed_text + " " + " ".join(Path(p).name for p in git_paths[:10])
+    combined = combined.lower()
+    raw = _re.findall(r"[a-z][a-z0-9_./-]{3,}", combined)
+    all_stops = _STUCK_STOPWORDS | _STOPWORDS
+    filtered = [t for t in raw if t not in all_stops and not t.isdigit()]
+    freq: dict = {}
+    for t in filtered:
+        freq[t] = freq.get(t, 0) + 1
+    return sorted(freq, key=lambda k: -freq[k])[:n]
+
+
+def _extract_topic_keywords_for_display(seed_text: str, git_paths: list) -> list:
+    """Extract top-5 topic keywords from seed_text + paths (for display in timeline header).
+
+    Delegates to _top_keywords — P1-6: no duplicate implementation.
+    """
+    return _top_keywords(seed_text, git_paths, n=5)
+
+
 def _category_from_scope(scope: Optional[str]) -> Optional[str]:
     """Derive an `index_reports.py` category from a scope path.
 
@@ -1159,7 +1637,7 @@ def _category_from_scope(scope: Optional[str]) -> Optional[str]:
     upward from ``scope`` to the first ancestor that owns a ``reports/`` or
     ``audits/`` directory — that ancestor is the indexed project root, and
     its basename is the category. This means a subdirectory scope like
-    ``~/Projects/foo/src`` still resolves to ``foo``.
+    ``~/Projects/horizon/src`` still resolves to ``horizon``.
 
     Returns ``None`` for ``None``/``"global"``/empty scopes, anything outside
     ``~/Projects``, or scopes whose ancestry contains no indexed project
@@ -1296,8 +1774,8 @@ def build_start_context(
 
     Replaces the legacy ``Glob("reports/consilium_*.md")+Read`` step in the
     /start workflow. Pulls from the `agent_memory` rows ingested by
-    ``index_reports.py`` so cross-project knowledge (e.g., an audit from one
-    project consulted from inside another) becomes discoverable.
+    ``index_reports.py`` so cross-project knowledge (e.g., a horizon IBKR audit
+    consulted from inside Claude_Booster) becomes discoverable.
 
     Ordering:
         1. Rows whose ``category`` matches the project derived from ``scope``.
@@ -1482,7 +1960,7 @@ def trim_rolling(memory_type: str, scope: str = "", conn: Optional[sqlite3.Conne
         # preserve=1 rows are immune to eviction. They were seeded as canonical
         # source-of-truth (institutional rules, consilium/audit imports) and
         # must not be auto-deleted when the rolling limit is exceeded — that
-        # would silently re-open questions that the user has already closed.
+        # would silently re-open questions that Dmitry has already closed.
         # Counting them in the total is fine; excluding them from the DELETE
         # candidate pool is what matters.
         if memory_type == "project_context" and scope:
@@ -1683,6 +2161,16 @@ def _cli():
     p_start.add_argument("--query", default=None,
                          help="Optional FTS5 query to filter reports by topic")
     p_start.add_argument("--limit", type=int, default=10)
+    p_start.add_argument(
+        "--stuck-check",
+        action="store_true",
+        default=False,
+        help=(
+            "Detect stuck-loop candidates in last 5 handovers + emit TOPIC TIMELINE block "
+            "before the flat consilium/audit list. Backwards-compatible: without this flag "
+            "output is identical to pre-D3 behaviour."
+        ),
+    )
 
     p_forget = sub.add_parser("forget", help="Soft-delete a memory")
     p_forget.add_argument("id", type=int)
@@ -1806,6 +2294,70 @@ def _cli():
                 # scope so _category_from_scope returns None and we still
                 # produce a useful (unbiased) result instead of crashing.
                 scope = None
+
+        stuck_check = getattr(args, "stuck_check", False)
+
+        # --- D3a + D3b: compute stuck-loop signal and topic timeline when requested ---
+        stuck_signal: dict = {}
+        topic_rows_result: list = []
+        topic_stale_msg: Optional[str] = None
+        topic_keywords_display: list = []
+        topic_match_count: int = 0
+
+        if stuck_check and scope:
+            project_basename = Path(scope).name if scope else "project"
+
+            # D3a — stuck-loop signal (reads handover files from scope/reports/).
+            stuck_signal = _stuck_loop_signal(Path(scope), project_basename)
+
+            # D3b — topic timeline: seed from latest handover first-step body.
+            try:
+                reports_dir = Path(scope) / "reports"
+                if not reports_dir.is_dir():
+                    reports_dir = Path(scope)
+                candidates = sorted(
+                    (f for f in reports_dir.glob("handover_*.md") if f.is_file()),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True,
+                )
+                seed_text = _handover_first_step(candidates[0]) if candidates else ""
+            except (OSError, IndexError):
+                seed_text = ""
+
+            # git paths: use scope dir if available.
+            git_paths_for_seed: list = []
+            try:
+                import subprocess
+                gp = subprocess.run(
+                    ["git", "status", "--porcelain"],
+                    capture_output=True, text=True, timeout=5,
+                    cwd=scope,
+                )
+                if gp.returncode == 0:
+                    git_paths_for_seed = [
+                        line[3:].strip() for line in gp.stdout.splitlines() if len(line) > 3
+                    ]
+            except Exception:
+                pass
+
+            topic_keywords_display = _extract_topic_keywords_for_display(seed_text, git_paths_for_seed)
+
+            # Build timeline using a fresh read-only connection.
+            # P0-3: build_topic_timeline now returns 3-tuple including topic_match_count.
+            try:
+                tl_conn = get_readonly_connection()
+                try:
+                    topic_rows_result, topic_stale_msg, topic_match_count = build_topic_timeline(
+                        tl_conn, seed_text, git_paths_for_seed, limit=6
+                    )
+                finally:
+                    tl_conn.close()
+            except Exception as exc:
+                logger.warning("build_topic_timeline failed: %s", exc)
+                topic_rows_result = []
+                topic_stale_msg = None
+                topic_match_count = 0
+
         if args.json:
             rows, category, err_msg = _fetch_start_context(scope, args.query, args.limit)
             projected = []
@@ -1824,17 +2376,65 @@ def _cli():
                     "priority": r.get("priority"),
                     "created_at": r.get("created_at"),
                 })
-            _emit_json({
+            payload: dict = {
                 "cmd": "start-context",
                 "scope": scope,
                 "query": args.query,
                 "category": category,
                 "error": err_msg,
                 "rows": projected,
-            })
+            }
+            # D3 — JSON mode: add topic_timeline and stuck_loop_candidate keys.
+            if stuck_check:
+                payload["topic_timeline"] = {
+                    "keywords": topic_keywords_display,
+                    "topic_match_count": topic_match_count,
+                    "rows": [
+                        {
+                            "id": r.get("id"),
+                            "created_at": r.get("created_at"),
+                            "status": r.get("status"),
+                            "memory_type": r.get("memory_type"),
+                            "title": _row_title(r),
+                        }
+                        for r in topic_rows_result
+                    ],
+                    "stale_msg": topic_stale_msg,
+                }
+                payload["stuck_loop_candidate"] = {
+                    "warn": bool(stuck_signal.get("warn")),
+                    "hash": stuck_signal.get("hash"),
+                    "count": stuck_signal.get("count", 0),
+                    "tokens": stuck_signal.get("tokens", []),
+                    "since": stuck_signal.get("since"),
+                }
+            _emit_json(payload)
         else:
+            # Prose mode — D3c: emit TOPIC TIMELINE before flat list (and before STUCK LOOP block).
+            output_parts: list[str] = []
+
+            if stuck_check:
+                # TOPIC TIMELINE block (D3c).
+                # P0-3: suppress entirely when topic_match_count == 0 (no FTS5 topic matches).
+                # Recency floor alone does not justify causal Premise/Tried/Current labels.
+                if topic_match_count > 0:
+                    tl_block = _render_topic_timeline(
+                        topic_rows_result, topic_keywords_display, topic_stale_msg
+                    )
+                    if tl_block:
+                        output_parts.append(tl_block)
+
+                # STUCK LOOP CANDIDATE block (D3a).
+                sl_block = _render_stuck_loop_block(stuck_signal)
+                if sl_block:
+                    output_parts.append(sl_block)
+
+            # Existing flat list (unchanged when no --stuck-check).
             out = build_start_context(scope=scope, query=args.query, limit=args.limit)
-            print(out if out else "(no consilium/audit reports indexed for this scope)")
+            flat_list = out if out else "(no consilium/audit reports indexed for this scope)"
+            output_parts.append(flat_list)
+
+            print("\n\n".join(output_parts))
 
     elif args.cmd == "forget":
         ok = forget(args.id)
