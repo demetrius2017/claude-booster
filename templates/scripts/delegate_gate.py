@@ -44,6 +44,8 @@ State:
   TaskCreate  — TaskCreate is the orchestrator's planning primitive
   Bash invoking `python3 ~/.claude/scripts/supervisor/supervisor.py *`
     (or any path ending in /supervisor/supervisor.py) — /supervise worker spawn
+  Bash invoking `codex_worker.sh <model>` or `codex exec -m <model>` —
+    Codex CLI delegation (same budget-reset semantics as supervisor spawn).
   Bash invoking `mcp__pal__*` via shell is impossible — PAL is its own tool
     but since it runs a deep Claude-like analysis, it counts as delegation.
 
@@ -140,6 +142,13 @@ DELEGATION_TOOLS = {"Agent", "TaskCreate"}
 SUPERVISOR_BASH_PATTERNS = [
     re.compile(r"python3?\s+[^\s]*\.claude/scripts/supervisor/supervisor\.py\b"),
     re.compile(r"python3?\s+-m\s+supervisor\.supervisor\b"),
+]
+
+# Codex worker spawn — treat as delegation signal, not direct action.
+# Token-boundary anchored to avoid matching grep/cat/vim invocations.
+CODEX_WORKER_PATTERNS = [
+    re.compile(r'(?:^|[\s;]|&&|\|\|)codex_worker\.sh\s+\S+'),
+    re.compile(r'(?:^|[\s;]|&&|\|\|)codex\s+exec\s+(?:[^|;&\n]+?\s)?-m\s+\S+'),
 ]
 
 # Recon Bash — read-only / diagnostic, exempt from budget like Read/Grep.
@@ -283,6 +292,10 @@ def _bash_is_supervisor_spawn(cmd: str) -> bool:
     return any(p.search(cmd) for p in SUPERVISOR_BASH_PATTERNS)
 
 
+def _bash_is_codex_worker(cmd: str) -> bool:
+    return any(p.search(cmd) for p in CODEX_WORKER_PATTERNS)
+
+
 def _bash_is_recon(cmd: str) -> bool:
     return any(p.search(cmd) for p in RECON_BASH_PATTERNS)
 
@@ -422,6 +435,14 @@ def main() -> int:
                 **base,
                 "decision": DECISION_ALLOW,
                 "reason": "supervisor spawn resets counter",
+            })
+            return 0
+        if _bash_is_codex_worker(cmd):
+            _atomic_reset(root)
+            append_jsonl(DELEGATE_LOG_NAME, {
+                **base,
+                "decision": DECISION_ALLOW,
+                "reason": "codex_worker spawn resets counter",
             })
             return 0
         if _bash_is_recon(cmd):
