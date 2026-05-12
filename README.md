@@ -62,6 +62,95 @@ A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explor
 
 ---
 
+## What's new in v1.8.0 — model_balancer: data-driven model routing across providers
+
+**The problem this release solves.** Three weeks of running Claude Booster on a Max-86%-weekly-used profile surfaced a structural gap: the routing rules in `tool-strategy.md` were static. Trivial → Haiku, Coding → Sonnet, Hard → Opus — fine on paper. In practice:
+
+1. **Claude infra got 3× slower for hours-at-a-time** (2026-05-12 incident — observable as a p75 latency spike on every Sonnet/Opus delegate). The static map had no signal to react to it. Lead kept routing coding work to Sonnet at 4× its baseline per-turn-ms while a perfectly good Codex `gpt-5.3-codex` sat idle on the ChatGPT Pro subscription that was already paid for.
+2. **Weekly Max usage was at 86 %.** Every Opus delegate burned more of the dwindling budget when an equivalent-quality Codex path was available — and the routing layer had no way to know it.
+3. **Manual JSON editing.** The only way to override the static map was to hand-edit `tool-strategy.md`, restart the session, and hope you remembered to undo it tomorrow.
+
+The fix is `model_balancer` — a daily routing decision engine that observes actual model performance via PostToolUse hooks, persists a per-category routing dict at `~/.claude/model_balancer.json` (one file for all projects on the same UTC day), and lets `tool-strategy.md` stay as the **fallback** when the data doesn't tell a clear story.
+
+### How it works
+
+**Collection.** A new PostToolUse hook (`model_metric_capture.py`, ~140 LOC) fires on every `Task`/`Agent`/`Bash` tool call. For Task/Agent it extracts `tool_response.usage.duration_ms` and computes `per_turn_ms = duration_ms / max(num_turns, 1)`. For Bash, it matches `codex_worker.sh` or `codex exec -m <MODEL>` to capture Codex CLI invocations. Rows land in a new `model_metrics` table (schema v7 of `rolling_memory.db`): `(ts_utc, provider, model, task_category, duration_ms, num_turns, per_turn_ms, tokens_in, tokens_out, success, session_id, project_root)`. Bypass via `CLAUDE_BOOSTER_SKIP_METRIC_CAPTURE=1`.
+
+**Decision (active path).** Once per UTC day, `model_balancer.py decide` runs as a SessionStart hook. The active path (day-N) reads `model_metrics` over a 14-day window, groups by `(provider, model)` within each `task_category`, keeps only groups with `n_samples >= MIN_SAMPLES` (default 5, env-overridable), and applies a Pareto score per candidate:
+
+```
+score = 0.5 * intelligence_score        # 0..20  — from openai_models.json + Anthropic table
+      - 0.3 * (p50 / max_p50) * 20      # latency penalty, normalized in-category
+      - 0.2 * weekly_max_pct * 20       # budget pressure — only for Anthropic provider
+```
+
+Tie-break: lower p50, then higher success rate. Pinned categories — `lead` (always `anthropic:claude-opus-4-7`) and `high_blast_radius` (always `anthropic:claude-sonnet-4-6` with `applies_to: [auth, security, secrets, db_migrations, financial_dml, infra_config]`) — are restored unconditionally so PreToolUse guards (`dep_guard.py`, `financial_dml_guard.py`, `verify_gate.py`) still fire on writes to sensitive code. Every routing change appends a row to `transitions[]` (capped at 50) with `{category, old, new, computed_at, n_samples_winner, p50_ms_winner}` — so you can read the file and see *why* yesterday's coding category flipped from Sonnet to gpt-5.3-codex.
+
+**Visibility at /start.** Two new blocks are injected into `additionalContext` so Lead sees today's routing decision and quota state at the top of every session:
+
+```
+=== MODEL BALANCER ===
+  * date=2026-05-12 (fresh) — lead=anthropic:claude-opus-4-7, coding=codex-cli:gpt-5.3-codex, hard=codex-cli:gpt-5.5, audit=pal:gpt-5.5
+
+=== LIMITS ===
+  * 5h window: anthropic 14k tokens / 12 calls · codex-cli 89k tokens / 6 calls
+  * /lead supervisor: state=inactive
+  * weekly_max_snapshot: 86% (captured 2026-05-12)
+  * codex_pro_quota: (no source — wire in day-N)
+```
+
+**Hook safety.** The entire active path is wrapped in `try/except Exception` — on any error, `decide()` falls back to `_build_refreshed(prior)` (day-1 passive date refresh). SessionStart never crashes. All DB reads use `file:?mode=ro` URI with 2 s timeout. Two escape hatches: `CLAUDE_BALANCER_DISABLE_ACTIVE=1` (force passive day-1 mode, rationale is explicitly marked `"passive — ... bypass"`), `CLAUDE_BALANCER_FORCE_ACTIVE=1` (re-evaluate even if today's decision exists).
+
+**Routing precedence (when delegating).** Explicit `model:` parameter in `Agent` call > balancer's daily decision > static `tool-strategy.md` defaults. So a one-off override still wins; the balancer is the new default, not a hard mandate.
+
+### Why Codex CLI as a second provider
+
+ChatGPT Pro subscription is flat-fee. Codex `gpt-5.5` has `intelligence_score=20` in `~/.claude/openai_models.json` — same tier as Opus 4.7. On a 86%-weekly-used Max day, every bio-agent or hard-task delegate that can route to Codex saves Anthropic budget without quality cost. The integration is a subprocess wrapper (`codex_worker.sh`, 19 LOC) — no MCP server, no auth juggling. Lead spawns it via `Bash`, captures stdout, classifies the metric, and the next day's balancer sees the latency data. The runtime probe on 2026-05-12 confirmed that ChatGPT-subscription Codex auth supports `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`, `gpt-5.3-codex`, `gpt-5.3-codex-spark`, `gpt-5.2` — six models, all live. The tier hierarchy in `reports/recon_2026-05-12_model_balancer.md` was preserved; older catalog names (`gpt-5-nano`, `gpt-5-codex`, `gpt-5.1-codex`) return 400 and were dropped.
+
+### What's NOT done (day-M carry-out)
+
+- **`claude_max_tracker.py`** — `weekly_max_pct` is still a snapshot value read from `inputs_snapshot.claude_max_weekly_used_pct`. The scoring algorithm already consumes it, but the source needs to become live (stream-json adapter agg into a new `claude_max_usage` table).
+- **Codex Pro quota live source** — RECON found no `codex usage`/`codex status` CLI command. Either grep stderr for rate-limit markers or HTTP-probe the subscription endpoint. Today the limits block honestly says `(no source — wire in day-N)`.
+- **Adaptive override** — current decision is frozen for 24 h. The consilium decision allowed an adaptive override (3 consecutive calls > p95 × 2 → switch to fallback); not implemented yet.
+
+### Dogfooded — /simplify caught what review-by-author would miss
+
+The 360-LOC active `decide()` path went through paired Worker+Verifier (both Sonnet via `Agent` — `high_blast_radius`, so PreToolUse guards fire). Worker's first attempt regressed `rolling_memory.py` schema to v6 to match a runtime DB state — code-over-docs override prevented merging; Lead respawned with explicit "trust the Artifact Contract, not the DB" and a ground-truth schema in the brief. Retry passed 11/11 immediately.
+
+Then `/simplify` ran 3 parallel review agents (reuse / quality / efficiency) on the 4477-line diff. 14 findings; 11 applied:
+
+- **Stringly-typed providers** — `"anthropic"` repeated 18 times across the three new scripts → `PROVIDER_ANTHROPIC` / `PROVIDER_CODEX` / `PROVIDER_PAL` constants. Silent-typo class of bugs eliminated.
+- **Timestamp format drift** — `model_metric_capture.py` was writing `datetime.now(timezone.utc).isoformat()` (`2026-05-12T15:30:00+00:00`) into `model_metrics.ts_utc`, but `model_balancer.py` compared against SQLite's `datetime('now','-14 days')` (`2026-05-12 15:30:00`). Lexical comparison happened to work, but was fragile. Switched the hook to use SQL `datetime('now')` directly — format consistent, Python timestamp computation removed.
+- **Hot-path DB cost** — the PostToolUse hook fires on every tool call. Added `isolation_level=None` (autocommit) + `PRAGMA synchronous=NORMAL` — saves ~3-8 ms per invocation, ~0.6-1.6 s over a typical 200-call session.
+- **Double JSON read at /start** — `_build_balancer_summary` and `_build_limits_summary` were each `read_text + json.loads`-ing the same `~2 KB` file. Extracted `_load_balancer_data()`, parse once in `main()`, pass dict to both helpers.
+- **Two DB connections in `_build_limits_summary`** — one for the 5h-window query, one for `supervisor_quota`. Worst-case 4 s timeout under contention. Merged into a single connection.
+- **Magic numbers named** — `_LEAD_QUOTA_TOKENS = 50_000` (matches `supervisor/quota.py session_token_cap`), `_INTELLIGENCE_SCORE_UNKNOWN = 15` (neutral fallback for `gpt-5.3-codex` variants not yet in `openai_models.json`).
+- **Duplicated rationale→source mapping** — extracted to `_rationale_to_source()`; surfaced a `"passive"` branch that had been silently mapped to `"seed"`.
+- **Removed dual-location read of `transitions[]`** — schema canonicalized to top-level.
+
+Tests held: **7/7 suites, 125 assertions**, no regressions across the simplify pass.
+
+### Quick start
+
+```bash
+# See today's routing decision
+python3 ~/.claude/scripts/model_balancer.py show
+
+# Force re-evaluation (e.g. after seeding metrics manually)
+CLAUDE_BALANCER_FORCE_ACTIVE=1 python3 ~/.claude/scripts/model_balancer.py decide --force
+
+# Query routing for one category
+python3 ~/.claude/scripts/model_balancer.py get coding
+# → {"provider": "codex-cli", "model": "gpt-5.3-codex"}
+
+# Disable active path (fall back to day-1 passive refresh)
+CLAUDE_BALANCER_DISABLE_ACTIVE=1 python3 ~/.claude/scripts/model_balancer.py decide --force
+```
+
+The balancer is opt-in via the SessionStart hook — installed automatically by `python3 install.py`, but bypassable per-session if you ever need a deterministic routing day.
+
+---
+
 ## What's new in v1.7.0 — Auto-/compact discipline + Token budget reduction
 
 **Two problems this release solves:**
