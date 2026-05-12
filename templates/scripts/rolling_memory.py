@@ -101,7 +101,12 @@ if not logger.handlers:
 #   model_metrics with exact Artifact Contract schema — ts_utc, per_turn_ms,
 #   project_root, nullable task_category/duration_ms. Two composite indexes:
 #   (model, ts_utc DESC) and (provider, ts_utc DESC). FTS NOT touched.
-SCHEMA_VERSION = 7
+# v7 → v8 (2026-05-13, weekly_max_pct live feed): add claude_max_usage table
+#   for StopSession token tracking. session_id UNIQUE (upsert via INSERT OR
+#   REPLACE). Indexes on session_id and ts_utc for 7-day rolling queries.
+#   FTS NOT touched. claude_max_tracker.py (StopSession hook) writes here;
+#   model_balancer._get_weekly_max_pct() reads here.
+SCHEMA_VERSION = 8
 
 ROLLING_LIMITS = {
     "directive": 50,
@@ -262,6 +267,22 @@ CREATE INDEX IF NOT EXISTS idx_model_metrics_model_ts ON model_metrics(model, ts
 CREATE INDEX IF NOT EXISTS idx_model_metrics_provider_ts ON model_metrics(provider, ts_utc DESC);
 """
 
+_CREATE_CLAUDE_MAX_USAGE = """
+CREATE TABLE IF NOT EXISTS claude_max_usage (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id  TEXT    NOT NULL,
+    ts_utc      TEXT    NOT NULL,
+    input_tokens          INTEGER NOT NULL DEFAULT 0,
+    cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens         INTEGER NOT NULL DEFAULT 0,
+    project_root TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_claude_max_session
+    ON claude_max_usage (session_id);
+CREATE INDEX IF NOT EXISTS idx_claude_max_ts
+    ON claude_max_usage (ts_utc);
+"""
+
 # ---------------------------------------------------------------------------
 # Connection
 # ---------------------------------------------------------------------------
@@ -409,6 +430,7 @@ def init_db() -> None:
         script_parts.append(_CREATE_FTS)
         script_parts.append(_CREATE_TRIGGERS)
         script_parts.append(_CREATE_MODEL_METRICS)
+        script_parts.append(_CREATE_CLAUDE_MAX_USAGE)
         if should_rebuild_fts:
             script_parts.append(
                 "INSERT INTO agent_memory_fts(agent_memory_fts) VALUES('rebuild');\n"
@@ -426,6 +448,8 @@ def init_db() -> None:
         if version < SCHEMA_VERSION:
             if version < 7:
                 logger.info("migrated to schema version 7 (model_metrics table, corrected schema)")
+            elif version < 8:
+                logger.info("migrated to schema version 8 (claude_max_usage table, weekly_max_pct live feed)")
             else:
                 logger.info("DB initialized at schema version %d", SCHEMA_VERSION)
     except Exception:

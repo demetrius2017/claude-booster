@@ -361,6 +361,27 @@ def _score_candidate(
     return score
 
 
+def _get_weekly_max_pct(prior: dict) -> float:
+    """Return weekly_max_pct (0..1). Live from DB if cap configured; else snapshot fallback."""
+    try:
+        cap = prior.get("weekly_tokens_cap", 0)
+        if cap and cap > 0:
+            with sqlite3.connect(str(_DB_PATH), timeout=1.0) as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(input_tokens + cache_creation_tokens + output_tokens), 0) "
+                    "FROM claude_max_usage WHERE ts_utc >= datetime('now', '-7 days')"
+                ).fetchone()
+                total = row[0] if row else 0
+                return min(1.0, total / cap)
+    except Exception:
+        pass
+    # Fallback: stale snapshot
+    try:
+        return float(prior.get("inputs_snapshot", {}).get("claude_max_weekly_used_pct", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _active_decide(prior: dict) -> dict:
     """
     Active routing logic: reads model_metrics, applies Pareto scoring,
@@ -383,14 +404,8 @@ def _active_decide(prior: dict) -> dict:
         if cat in prior_routing
     }
 
-    # Read weekly_max_pct from inputs_snapshot (Anthropic budget pressure proxy)
-    weekly_max_pct: float = 0.0
-    try:
-        weekly_max_pct = float(
-            prior.get("inputs_snapshot", {}).get("claude_max_weekly_used_pct", 0.0)
-        )
-    except (TypeError, ValueError):
-        weekly_max_pct = 0.0
+    # Read weekly_max_pct — live from DB if cap configured, else stale snapshot
+    weekly_max_pct: float = _get_weekly_max_pct(prior)
 
     # Ensure DB exists before attempting reads
     db_path = _DB_PATH
