@@ -9,7 +9,7 @@ dir="${PWD:-$HOME}"
 while true; do
     phase_file="$dir/.claude/.phase"
     if [ -f "$phase_file" ]; then
-        read -r content < "$phase_file" 2>/dev/null; content="${content:-}"
+        read -r content < "$phase_file" 2>/dev/null
         content="${content//[[:space:]]/}"
         if [ -n "$content" ]; then
             phase="$content"
