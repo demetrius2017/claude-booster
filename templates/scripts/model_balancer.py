@@ -54,7 +54,6 @@ import argparse
 import copy
 import json
 import os
-import re
 import shutil
 import sqlite3
 import statistics
@@ -108,9 +107,6 @@ _QUALITY_SCORES_ANTHROPIC: dict[str, int] = {
     "claude-sonnet-4-6": 17,
     "claude-haiku-4-5": 13,
 }
-
-# Anthropic-only — used to compute budget_pressure term (other providers = 0)
-_BUDGET_PRESSURE_PROVIDERS: frozenset[str] = frozenset({PROVIDER_ANTHROPIC})
 
 # Pinned categories — their routing is NEVER overwritten by active logic
 _PINNED_CATEGORIES: frozenset[str] = frozenset({"lead", "high_blast_radius"})
@@ -394,13 +390,10 @@ def _get_codex_quota_pct(prior: dict) -> float:
         cap = prior.get("codex_pro_weekly_tokens_cap", 0)
         if cap and cap > 0:
             codex_dir = Path.home() / ".codex"
-            dbs = sorted(
-                codex_dir.glob("state_*.sqlite"),
-                key=lambda p: int(p.stem.split("_", 1)[1]),
-            )
-            if not dbs:
+            candidates = list(codex_dir.glob("state_*.sqlite"))
+            if not candidates:
                 return 0.0
-            codex_db = dbs[-1]
+            codex_db = max(candidates, key=lambda p: p.stat().st_mtime)
             with sqlite3.connect(f"file:{codex_db}?mode=ro", uri=True, timeout=1.0) as conn:
                 row = conn.execute(
                     "SELECT COALESCE(SUM(tokens_used), 0) FROM threads "
@@ -409,13 +402,18 @@ def _get_codex_quota_pct(prior: dict) -> float:
                 ).fetchone()
                 total = int(row[0]) if row else 0
                 return min(1.0, total / cap)
-    except Exception:
+    except (sqlite3.OperationalError, sqlite3.DatabaseError, FileNotFoundError, ValueError, OSError):
         pass
     # Fallback: stale snapshot
     try:
         return float(prior.get("inputs_snapshot", {}).get("codex_pro_weekly_used_pct", 0.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def _set_codex_snapshot(decision: dict, codex_pct: float) -> None:
+    """Write codex_pro_weekly_used_pct into inputs_snapshot."""
+    decision.setdefault("inputs_snapshot", {})["codex_pro_weekly_used_pct"] = codex_pct
 
 
 def _active_decide(prior: dict) -> dict:
@@ -560,9 +558,7 @@ def _active_decide(prior: dict) -> dict:
     decision["rationale"] = rationale
     decision["transitions"] = transitions
 
-    if "inputs_snapshot" not in decision:
-        decision["inputs_snapshot"] = {}
-    decision["inputs_snapshot"]["codex_pro_weekly_used_pct"] = codex_pct
+    _set_codex_snapshot(decision, codex_pct)
 
     return decision
 
@@ -612,9 +608,7 @@ def decide(*, force: bool = False) -> dict:
         new_decision = _build_refreshed(prior)
         new_decision["rationale"] = "passive — CLAUDE_BALANCER_DISABLE_ACTIVE=1 bypass (day-1 refresh)"
         codex_pct = _get_codex_quota_pct(prior)
-        if "inputs_snapshot" not in new_decision:
-            new_decision["inputs_snapshot"] = {}
-        new_decision["inputs_snapshot"]["codex_pro_weekly_used_pct"] = codex_pct
+        _set_codex_snapshot(new_decision, codex_pct)
     else:
         # Active path — wrapped in try/except so hook never crashes
         try:
