@@ -372,7 +372,7 @@ def _get_weekly_max_pct(prior: dict) -> float:
     try:
         cap = prior.get("weekly_tokens_cap", 0)
         if cap and cap > 0:
-            with sqlite3.connect(str(_DB_PATH), timeout=1.0) as conn:
+            with sqlite3.connect(f"file:{_DB_PATH}?mode=ro", uri=True, timeout=1.0) as conn:
                 row = conn.execute(
                     "SELECT COALESCE(SUM(input_tokens + cache_creation_tokens + output_tokens), 0) "
                     "FROM claude_max_usage WHERE ts_utc >= datetime('now', '-7 days')"
@@ -392,32 +392,26 @@ def _get_codex_quota_pct(prior: dict) -> float:
     """Return codex_pro_weekly_used_pct (0..1). Reads ~/.codex/state_*.sqlite directly."""
     try:
         cap = prior.get("codex_pro_weekly_tokens_cap", 0)
-        if not cap or cap <= 0:
-            try:
-                return float(prior.get("inputs_snapshot", {}).get("codex_pro_weekly_used_pct", 0.0))
-            except (TypeError, ValueError):
+        if cap and cap > 0:
+            codex_dir = Path.home() / ".codex"
+            dbs = sorted(
+                codex_dir.glob("state_*.sqlite"),
+                key=lambda p: int(p.stem.split("_", 1)[1]),
+            )
+            if not dbs:
                 return 0.0
-
-        # Find latest state_N.sqlite in ~/.codex/ by integer suffix
-        codex_dir = Path.home() / ".codex"
-        dbs = sorted(
-            codex_dir.glob("state_*.sqlite"),
-            key=lambda p: int(re.search(r"\d+", p.stem).group()),
-        )
-        if not dbs:
-            return 0.0
-        codex_db = dbs[-1]
-
-        with sqlite3.connect(f"file:{codex_db}?mode=ro", uri=True, timeout=1.0) as conn:
-            row = conn.execute(
-                "SELECT COALESCE(SUM(tokens_used), 0) FROM threads "
-                "WHERE model_provider = 'openai' "
-                "AND updated_at >= strftime('%s', datetime('now', '-7 days'))"
-            ).fetchone()
-            total = int(row[0]) if row else 0
-            return min(1.0, total / cap)
+            codex_db = dbs[-1]
+            with sqlite3.connect(f"file:{codex_db}?mode=ro", uri=True, timeout=1.0) as conn:
+                row = conn.execute(
+                    "SELECT COALESCE(SUM(tokens_used), 0) FROM threads "
+                    "WHERE model_provider = 'openai' "
+                    "AND updated_at >= strftime('%s', datetime('now', '-7 days'))"
+                ).fetchone()
+                total = int(row[0]) if row else 0
+                return min(1.0, total / cap)
     except Exception:
         pass
+    # Fallback: stale snapshot
     try:
         return float(prior.get("inputs_snapshot", {}).get("codex_pro_weekly_used_pct", 0.0))
     except (TypeError, ValueError):
