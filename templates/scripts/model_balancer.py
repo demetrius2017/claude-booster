@@ -54,6 +54,7 @@ import argparse
 import copy
 import json
 import os
+import re
 import shutil
 import sqlite3
 import statistics
@@ -125,6 +126,8 @@ DEFAULTS: dict = {
     "schema_version": 2,
     "weight_profile": "balanced",
     "rationale": "bootstrap — no prior decision",
+    "weekly_tokens_cap": 0,
+    "codex_pro_weekly_tokens_cap": 0,
     "routing": {
         "trivial":        {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
         "recon":          {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
@@ -340,7 +343,7 @@ def _score_candidate(
     model: str,
     p50: float,
     max_p50: float,
-    weekly_max_pct: float,
+    budget_pcts: dict[str, float],
 ) -> float:
     """
     Compute Pareto score for a (provider, model) candidate.
@@ -348,10 +351,13 @@ def _score_candidate(
     score = 0.5 * quality - 0.3 * norm_lat * 20 - 0.2 * budget * 20
 
     All three terms are scaled to [0..20] range before weighting.
+
+    budget_pcts maps provider name to its weekly-quota used fraction (0..1).
+    Providers absent from the dict get budget pressure = 0.0.
     """
     quality = _get_intelligence_score(provider, model)          # 0..20
     norm_lat = (p50 / max_p50) if max_p50 > 0.0 else 0.0       # 0..1
-    budget = weekly_max_pct if provider in _BUDGET_PRESSURE_PROVIDERS else 0.0  # 0..1
+    budget = budget_pcts.get(provider, 0.0)                     # 0..1
 
     score = (
         _WEIGHTS["q"] * quality
@@ -382,6 +388,42 @@ def _get_weekly_max_pct(prior: dict) -> float:
         return 0.0
 
 
+def _get_codex_quota_pct(prior: dict) -> float:
+    """Return codex_pro_weekly_used_pct (0..1). Reads ~/.codex/state_*.sqlite directly."""
+    try:
+        cap = prior.get("codex_pro_weekly_tokens_cap", 0)
+        if not cap or cap <= 0:
+            try:
+                return float(prior.get("inputs_snapshot", {}).get("codex_pro_weekly_used_pct", 0.0))
+            except (TypeError, ValueError):
+                return 0.0
+
+        # Find latest state_N.sqlite in ~/.codex/ by integer suffix
+        codex_dir = Path.home() / ".codex"
+        dbs = sorted(
+            codex_dir.glob("state_*.sqlite"),
+            key=lambda p: int(re.search(r"\d+", p.stem).group()),
+        )
+        if not dbs:
+            return 0.0
+        codex_db = dbs[-1]
+
+        with sqlite3.connect(f"file:{codex_db}?mode=ro", uri=True, timeout=1.0) as conn:
+            row = conn.execute(
+                "SELECT COALESCE(SUM(tokens_used), 0) FROM threads "
+                "WHERE model_provider = 'openai' "
+                "AND updated_at >= strftime('%s', datetime('now', '-7 days'))"
+            ).fetchone()
+            total = int(row[0]) if row else 0
+            return min(1.0, total / cap)
+    except Exception:
+        pass
+    try:
+        return float(prior.get("inputs_snapshot", {}).get("codex_pro_weekly_used_pct", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def _active_decide(prior: dict) -> dict:
     """
     Active routing logic: reads model_metrics, applies Pareto scoring,
@@ -406,6 +448,11 @@ def _active_decide(prior: dict) -> dict:
 
     # Read weekly_max_pct — live from DB if cap configured, else stale snapshot
     weekly_max_pct: float = _get_weekly_max_pct(prior)
+    codex_pct: float = _get_codex_quota_pct(prior)
+    budget_pcts: dict[str, float] = {
+        PROVIDER_ANTHROPIC: weekly_max_pct,
+        PROVIDER_CODEX: codex_pct,
+    }
 
     # Ensure DB exists before attempting reads
     db_path = _DB_PATH
@@ -462,7 +509,7 @@ def _active_decide(prior: dict) -> dict:
         # Score each candidate
         for c in candidates:
             c["score"] = _score_candidate(
-                c["provider"], c["model"], c["p50"], max_p50, weekly_max_pct
+                c["provider"], c["model"], c["p50"], max_p50, budget_pcts
             )
 
         # Pick winner: max score; tie → lower p50; tie again → higher success_rate
@@ -519,6 +566,10 @@ def _active_decide(prior: dict) -> dict:
     decision["rationale"] = rationale
     decision["transitions"] = transitions
 
+    if "inputs_snapshot" not in decision:
+        decision["inputs_snapshot"] = {}
+    decision["inputs_snapshot"]["codex_pro_weekly_used_pct"] = codex_pct
+
     return decision
 
 
@@ -566,6 +617,10 @@ def decide(*, force: bool = False) -> dict:
         # Day-1 passive mode: only refresh date, mark rationale as passive bypass
         new_decision = _build_refreshed(prior)
         new_decision["rationale"] = "passive — CLAUDE_BALANCER_DISABLE_ACTIVE=1 bypass (day-1 refresh)"
+        codex_pct = _get_codex_quota_pct(prior)
+        if "inputs_snapshot" not in new_decision:
+            new_decision["inputs_snapshot"] = {}
+        new_decision["inputs_snapshot"]["codex_pro_weekly_used_pct"] = codex_pct
     else:
         # Active path — wrapped in try/except so hook never crashes
         try:
@@ -664,6 +719,12 @@ def _cmd_status(_args: argparse.Namespace) -> int:
     rationale = decision.get("rationale", "")
     source = _rationale_to_source(rationale)
     print(f"decision_date={date_str}, age={age_hours}h, source={source}, freshness={freshness}")
+    snapshot = decision.get("inputs_snapshot", {})
+    codex_pct_val = snapshot.get("codex_pro_weekly_used_pct")
+    if codex_pct_val is not None:
+        print(f"codex_pro_quota: {codex_pct_val * 100:.0f}%")
+    else:
+        print("codex_pro_quota: (no source — wire codex_pro_weekly_tokens_cap in model_balancer.json)")
     return 0
 
 
