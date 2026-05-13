@@ -663,7 +663,7 @@ def _cmd_status(_args: argparse.Namespace) -> int:
 
     rationale = decision.get("rationale", "")
     source = _rationale_to_source(rationale)
-    print(f"decision_date={date_str}, age={age_hours}h, source={source}, {freshness}")
+    print(f"decision_date={date_str}, age={age_hours}h, source={source}, freshness={freshness}")
     return 0
 
 
