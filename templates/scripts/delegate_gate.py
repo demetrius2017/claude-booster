@@ -145,11 +145,11 @@ SUPERVISOR_BASH_PATTERNS = [
 ]
 
 # Codex worker spawn — treat as delegation signal, not direct action.
-# Token-boundary anchored to avoid matching grep/cat/vim invocations.
+# Anchor and model charset must match model_metric_capture.py _RE_CODEX_* patterns.
 CODEX_WORKER_PATTERNS = [
-    re.compile(r'(?:^|[;&|])\s*codex_worker\.sh\s+\S+'),
-    re.compile(r'(?:^|[;&|])\s*codex_sandbox_worker\.sh\s+\S+'),
-    re.compile(r'(?:^|[;&|])\s*codex\s+exec\s+(?:[^|;&\n]+?\s)?-m\s+\S+'),
+    re.compile(r'(?:^|[/;&|])\s*codex_worker\.sh\s+[a-zA-Z][a-zA-Z0-9._-]*'),
+    re.compile(r'(?:^|[/;&|])\s*codex_sandbox_worker\.sh\s+[a-zA-Z][a-zA-Z0-9._-]*'),
+    re.compile(r'(?:^|[/;&|])\s*codex\s+exec\s+(?:[^|;&\n]+?\s)?-m\s+[a-zA-Z][a-zA-Z0-9._-]*'),
 ]
 
 # Recon Bash — read-only / diagnostic, exempt from budget like Read/Grep.

@@ -63,18 +63,19 @@ _CODEX_ALLOWLIST = frozenset({
     "gpt-5.2",
 })
 
-# Token-boundary anchored patterns for codex commands.
-# Group 1 in each captures the model token.
-# The leading alternation ensures the command keyword is a proper shell token,
-# not a substring inside a path like `grep codex_worker.sh logs/`.
+# Codex command patterns — Group 1 captures the model token.
+# Anchor `[/;&|]` matches path separator (full-path invocations like
+# ~/.claude/scripts/codex_worker.sh) and shell operators. Model charset
+# `[a-zA-Z][a-zA-Z0-9._-]*` stops at shell metacharacters.
+# Keep in sync with delegate_gate.py CODEX_WORKER_PATTERNS.
 _RE_CODEX_WORKER = re.compile(
-    r'(?:^|[;&|])\s*codex_worker\.sh\s+(\S+)(?=\s|$|\'|")',
+    r'(?:^|[/;&|])\s*codex_worker\.sh\s+([a-zA-Z][a-zA-Z0-9._-]*)',
 )
 _RE_CODEX_SANDBOX_WORKER = re.compile(
-    r'(?:^|[;&|])\s*codex_sandbox_worker\.sh\s+(\S+)(?=\s|$|\'|")',
+    r'(?:^|[/;&|])\s*codex_sandbox_worker\.sh\s+([a-zA-Z][a-zA-Z0-9._-]*)',
 )
 _RE_CODEX_EXEC = re.compile(
-    r'(?:^|[;&|])\s*codex\s+exec\s+(?:[^|;&\n]+?\s)?-m\s+(\S+)(?=\s|$|\'|")',
+    r'(?:^|[/;&|])\s*codex\s+exec\s+(?:[^|;&\n]+?\s)?-m\s+([a-zA-Z][a-zA-Z0-9._-]*)',
 )
 
 # ts_utc uses SQL datetime('now') so format matches the comparison bound
