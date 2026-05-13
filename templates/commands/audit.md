@@ -78,7 +78,7 @@ As each background agent completes, output a cumulative progress line:
 Audit ▰▱▱▱▱▱▱ 1/<total> · <lens> ✓ (<verdict>)
 Audit ▰▰▱▱▱▱▱ 2/<total> · <lens> ✓ · <lens> ✓
 ```
-Where `<total>` is the number of selected lenses + 1 (PAL). Fill in lens names and verdicts (PASS/FAIL/CONCERN) as each returns. **Do NOT begin Phase 3 synthesis until ALL agents have returned.**
+Where `<total>` is the number of selected lenses + 1 (PAL), or just the number of lenses if PAL is unavailable. Fill in lens names and verdicts (PASS/FAIL/CONCERN) as each returns. **Do NOT begin Phase 3 synthesis until ALL agents have returned.**
 
 Every agent receives:
 - The **Verified Facts Brief** from Phase 0
