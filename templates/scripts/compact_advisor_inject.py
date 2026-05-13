@@ -78,7 +78,6 @@ def main() -> int:
     marker = Path.home() / ".claude" / f".compact_recommended_{session_id}"
 
     if not marker.exists():
-        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "no_marker", "session_id": session_id})
         return 0
 
     # Read token estimate from marker

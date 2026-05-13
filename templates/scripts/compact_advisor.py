@@ -29,6 +29,7 @@ import os
 import re
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 try:
@@ -80,10 +81,15 @@ def main() -> int:
 
     marker = Path.home() / ".claude" / f".compact_recommended_{session_id}"
 
-    # One-shot: if marker already exists, nothing to do
+    # One-shot: if marker already exists, nothing to do.
+    # Guard against stale markers left by dead sessions (> 2 hours old).
     if marker.exists():
-        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "marker_exists", "session_id": session_id})
-        return 0
+        try:
+            if time.time() - marker.stat().st_mtime < 7200:
+                return 0  # marker is fresh, reminder already issued
+            marker.unlink(missing_ok=True)  # stale marker from dead session — clean it up
+        except OSError:
+            return 0  # can't stat/unlink — treat as existing, skip
 
     # Estimate tokens via transcript file size (bytes // 4 ≈ tokens)
     try:
@@ -95,7 +101,6 @@ def main() -> int:
     estimated_tokens = size_bytes // 4
 
     if estimated_tokens < _THRESHOLD:
-        append_jsonl("compact_advisor.jsonl", {"ts": iso_now(), "event": "below_threshold", "session_id": session_id, "estimated_tokens": estimated_tokens, "threshold": _THRESHOLD})
         return 0
 
     # Write marker atomically to avoid partial writes / race conditions
