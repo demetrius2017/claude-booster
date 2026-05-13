@@ -68,10 +68,13 @@ _CODEX_ALLOWLIST = frozenset({
 # The leading alternation ensures the command keyword is a proper shell token,
 # not a substring inside a path like `grep codex_worker.sh logs/`.
 _RE_CODEX_WORKER = re.compile(
-    r'(?:^|[\s;]|&&|\|\|)codex_worker\.sh\s+(\S+)(?=\s|$|\'|")',
+    r'(?:^|[;&|])\s*codex_worker\.sh\s+(\S+)(?=\s|$|\'|")',
+)
+_RE_CODEX_SANDBOX_WORKER = re.compile(
+    r'(?:^|[;&|])\s*codex_sandbox_worker\.sh\s+(\S+)(?=\s|$|\'|")',
 )
 _RE_CODEX_EXEC = re.compile(
-    r'(?:^|[\s;]|&&|\|\|)codex\s+exec\s+(?:[^|;&\n]+?\s)?-m\s+(\S+)(?=\s|$|\'|")',
+    r'(?:^|[;&|])\s*codex\s+exec\s+(?:[^|;&\n]+?\s)?-m\s+(\S+)(?=\s|$|\'|")',
 )
 
 # ts_utc uses SQL datetime('now') so format matches the comparison bound
@@ -165,6 +168,7 @@ def _match_codex_command(command: str):
 
     Accepted patterns (token-boundary anchored):
         codex_worker.sh <MODEL> [...]
+        codex_sandbox_worker.sh <MODEL> [...]
         codex exec [...] -m <MODEL> [...]
 
     Rejected:
@@ -172,7 +176,7 @@ def _match_codex_command(command: str):
         codex --help, codex auth, codex exec without -m,
         codex exec -m <model-not-in-allowlist>.
     """
-    for pattern in (_RE_CODEX_WORKER, _RE_CODEX_EXEC):
+    for pattern in (_RE_CODEX_WORKER, _RE_CODEX_SANDBOX_WORKER, _RE_CODEX_EXEC):
         m = pattern.search(command)
         if m:
             model = m.group(1)

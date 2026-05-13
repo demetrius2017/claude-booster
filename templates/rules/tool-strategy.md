@@ -17,6 +17,32 @@ description: "Tool strategy: direct tools, agents, PAL MCP, Context7, Browser MC
   - **Tie-breakers:** if the agent will write ≥20 lines of non-boilerplate code → `sonnet`. If the task has a "why" question (root cause, trade-offs, design) → `opus`. If the task is purely "what / where" (locate, list, extract) → `haiku` is enough.
   - **Do not downgrade the Lead** via `ANTHROPIC_DEFAULT_OPUS_MODEL` / settings.json `model` — the Lead orchestrates, synthesises, and decides routing; that requires the strongest model. Speed gains come from routing delegates, not from weakening the orchestrator.
   - **`model_balancer` (daily decision, since 2026-05-12):** The static tier mapping above is the **fallback**. The live daily routing decision lives in `~/.claude/model_balancer.json`, refreshed by `model_balancer.py decide` (SessionStart hook, idempotent per UTC day). On `/start`, `memory_session_start.py` injects a `=== MODEL BALANCER ===` line into `additionalContext` showing today's `lead/coding/hard/audit` routing. When delegating, prefer the balancer's choice over the static defaults — query via `python3 ~/.claude/scripts/model_balancer.py get <category>` (returns `{"provider","model"}`) or read the JSON directly. Categories: `trivial, recon, medium, coding, hard, consilium_bio, audit_external, lead, high_blast_radius`. **Explicit `model:` in command frontmatter or in the `Agent` call still wins** — balancer is the default, not the override. **high_blast_radius stays on Claude Sonnet via `Agent` tool** (not Codex) so `dep_guard.py` / `financial_dml_guard.py` / `verify_gate.py` PreToolUse hooks fire — Codex subprocess is opaque to those guards by design. Applies to: auth, security, secrets, db_migrations, financial_dml, infra_config.
+- **Calling Codex (when balancer returns `"provider": "codex-cli"`):** Use `Bash` with `~/.claude/scripts/codex_worker.sh <model>` — this is a delegation signal; `delegate_gate.py` resets budget (same as `Agent`). Safe categories: `trivial`, `recon`, `medium` (read-only analysis), standalone `coding` on new isolated files, `consilium_bio`. NOT for `high_blast_radius` (migrations, auth, broker, infra). Lead MUST review output before applying file changes.
+  ```bash
+  # Write task to temp file, pipe to Codex
+  printf '%s\n' '<describe task in detail>' | ~/.claude/scripts/codex_worker.sh gpt-5.3-codex-spark
+  # For longer prompts:
+  cat > /tmp/codex_task.txt << 'EOF'
+  <multi-line task description>
+  EOF
+  ~/.claude/scripts/codex_worker.sh gpt-5.3-codex < /tmp/codex_task.txt
+  ```
+  Check `python3 ~/.claude/scripts/model_balancer.py get <category>` to get today's model choice. If output needs to be applied as file edits, paste into Edit tool directly — do NOT let Codex write files directly.
+- **Calling Codex Sandbox (when task requires file changes):** Use `codex_sandbox_worker.sh` when Codex needs to produce code edits. The sandbox copies the project into a temp dir, runs Codex there, and returns ONLY a unified diff on stdout. Lead applies each changed file via Edit tool — PreToolUse guards (`dep_guard.py`, `financial_dml_guard.py`, `verify_gate.py`) fire normally.
+  ```bash
+  # Pipe task to sandbox worker, get diff on stdout
+  printf '%s\n' '<describe the coding task>' | ~/.claude/scripts/codex_sandbox_worker.sh gpt-5.3-codex
+  # For longer prompts:
+  cat > /tmp/codex_task.txt << 'EOF'
+  <multi-line coding task with file paths and context>
+  EOF
+  ~/.claude/scripts/codex_sandbox_worker.sh gpt-5.3-codex < /tmp/codex_task.txt
+  ```
+  The diff output is a standard unified diff. For each file in the diff, apply changes via Edit tool. For new files, use Write tool. Guards fire on each Edit/Write.
+  **When to use which:**
+  - `codex_worker.sh` — read-only analysis, recon, trivial questions, consilium bio-agents. Output is text, not file changes.
+  - `codex_sandbox_worker.sh` — coding tasks that produce file changes. Output is a diff. Lead applies via Edit/Write.
+  - Neither (use `Agent` tool) — `high_blast_radius` tasks (auth, security, migrations, broker, infra) so PreToolUse hooks fire directly.
 - **[CRITICAL] /lead model override for supervised workers:** When spawning workers via `/lead`, always pass `--model` explicitly. Default: `--model claude-sonnet-4-6` for coding tasks. Use `--model claude-opus-4-6` only when the task requires deep reasoning AND fast output. Never omit `--model` — without it, the worker inherits whatever `CLAUDE_BOOSTER_MODEL` env var is set to (or no model override at all).
 - **Skills:** `/simplify` for code review (AUDIT phase). `/frontend-design` for UI tasks with Design Gate.
 - **PAL MCP (GPT-5.5)** — mandatory in AUDIT and consilium phases. `ask` for questions, `thinkdeep` for architecture, `consensus` for debates, `second_opinion`/`codereview` for validation.
