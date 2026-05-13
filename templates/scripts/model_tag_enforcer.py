@@ -1,8 +1,12 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook: enforce [model] tag in Agent tool call descriptions.
+PreToolUse hook: enforce [model] tag in Agent tool call descriptions AND
+model_balancer routing decisions.
 
 Purpose:
+    Two enforcement layers in one hook:
+
+    1. [model] TAG ENFORCEMENT
     Claude Code's UI renders the Agent tool's `description` field but does NOT
     display the `model` parameter separately. Without a visible [model] tag in
     the description, there is no way to know at a glance which model tier a
@@ -13,14 +17,33 @@ Purpose:
     On block, the hook emits a helpful stderr message telling Claude exactly
     what tag to add and where, so the retry succeeds on the first attempt.
 
+    2. MODEL_BALANCER ROUTING ENFORCEMENT
+    Reads ~/.claude/model_balancer.json and classifies each Agent call into a
+    routing category (trivial, recon, medium, coding, hard, high_blast_radius,
+    etc.).  When the balancer routes a category to codex-cli, Agent is the
+    wrong tool — Bash + codex_worker.sh should be used instead.  The hook
+    blocks such calls (exit 2) with a clear message explaining which script to
+    use.
+
+    When the balancer routes to anthropic and the Agent's `model` param
+    disagrees with the recommended model, the hook auto-fixes the model param
+    via updatedInput (exit 0 + JSON stdout) rather than blocking.
+
+    Exemptions from routing enforcement:
+    - Explore agents (subagent_type == "Explore") always need tool access and
+      cannot run in Codex; they are exempt from the codex-cli block.
+    - high_blast_radius categories are always routed to Agent (dep_guard and
+      other PreToolUse hooks fire on Agent, not on Bash+codex subprocess).
+    - All routing errors (missing JSON, parse error, unknown category) fail open.
+
 Contract:
     stdin  — PreToolUse JSON from Claude Code harness:
                {tool_name, tool_input.{description, model, prompt, …},
                 cwd, session_id, agent_id, agent_type, …}
     stdout — (silent on block)
              OR JSON {hookSpecificOutput: {hookEventName, permissionDecision,
-             updatedInput}} when AUTO_INJECT mode is enabled via env var (see
-             ENV section below)
+             updatedInput}} when AUTO_INJECT mode is enabled or when routing
+             auto-fix is applied.
     stderr — human-readable block reason on exit 2 only
     exit   — 0 allow, 2 block
 
@@ -70,18 +93,23 @@ Limitations:
       tools (harmless but wastes cycles on non-Agent calls).
     - Auto-inject mode requires Claude Code >= v2.0.10 which introduced the
       `updatedInput` stdout field.
+    - Routing enforcement requires ~/.claude/model_balancer.json to be present
+      and up-to-date (refreshed daily by model_balancer.py decide).  Missing or
+      malformed JSON silently disables routing enforcement (fail-open).
 
 ENV / Files:
-    - Reads  : stdin (PreToolUse JSON)
+    - Reads  : stdin (PreToolUse JSON),
+               ~/.claude/model_balancer.json (routing table, optional)
     - Writes : nothing (no side effects, no log files)
     - ENV    : CLAUDE_BOOSTER_SKIP_MODEL_TAG_ENFORCER=1
                    -- bypass this hook entirely (useful for testing / one-off
-                      sessions where tagging is intentionally relaxed)
+                      sessions where tagging is intentionally relaxed);
+                      bypasses BOTH tag enforcement AND routing enforcement
                CLAUDE_MODEL_TAG_AUTO_INJECT=1
-                   -- instead of blocking, silently inject a [model] tag derived
-                      from the `model` param (or [inherit] when absent) into the
-                      description via updatedInput stdout JSON (requires CC
-                      >= v2.0.10)
+                   -- instead of blocking on missing tag, silently inject a
+                      [model] tag derived from the `model` param (or [inherit]
+                      when absent) into the description via updatedInput stdout
+                      JSON (requires CC >= v2.0.10)
 """
 from __future__ import annotations
 
@@ -89,7 +117,7 @@ import json
 import os
 import re
 import sys
-from typing import Optional
+from typing import Dict, Optional
 
 try:
     from _gate_common import is_subagent_context
@@ -123,6 +151,89 @@ _TIER_EXAMPLES = "[sonnet], [opus], [haiku]"
 # Environment variables
 _SKIP_ENV = "CLAUDE_BOOSTER_SKIP_MODEL_TAG_ENFORCER"
 _AUTO_INJECT_ENV = "CLAUDE_MODEL_TAG_AUTO_INJECT"
+
+# ---------------------------------------------------------------------------
+# model_balancer routing
+# ---------------------------------------------------------------------------
+
+_BALANCER_PATH = os.path.expanduser("~/.claude/model_balancer.json")
+
+_HIGH_BLAST_KEYWORDS = frozenset({
+    "auth", "security", "secret", "secrets", "migration", "db_migration",
+    "financial", "financial_dml", "broker", "infra", "infra_config",
+    "dml", "credential", "deploy", "permission",
+})
+
+
+def _load_routing() -> Optional[Dict]:
+    """Load routing table from model_balancer.json. Returns dict or None on any error."""
+    try:
+        with open(_BALANCER_PATH, "r") as f:
+            data = json.load(f)
+        return data.get("routing") or {}
+    except (OSError, json.JSONDecodeError, KeyError):
+        return None
+
+
+def _infer_category(description: str, subagent_type: str) -> str:
+    """
+    Classify an Agent call into a model_balancer category.
+
+    Conservative: when in doubt, returns "medium" rather than misfiring on a
+    block.  high_blast_radius is checked first because those tasks must always
+    stay on Agent (dep_guard and other hooks fire on Agent, not on Bash+Codex).
+    """
+    desc = description.lower()
+    # Check high blast radius first — these stay on Agent regardless of balancer
+    if any(kw in desc for kw in _HIGH_BLAST_KEYWORDS):
+        return "high_blast_radius"
+    if subagent_type == "Explore" or "explore" in desc or "recon" in desc:
+        return "recon"
+    if "consilium" in desc:
+        return "consilium_bio"
+    if "audit" in desc and "audit-trace" not in desc:
+        return "audit_external"
+    if (
+        "worker" in desc or "implement" in desc or "fix" in desc
+        or "refactor" in desc or "write code" in desc
+    ):
+        return "coding"
+    if subagent_type == "Plan" or "plan" in desc or "architecture" in desc:
+        return "hard"
+    if (
+        "trivial" in desc or "find" in desc or "grep" in desc
+        or "lookup" in desc
+    ):
+        return "trivial"
+    if (
+        "simplify" in desc or "review" in desc or "judge" in desc
+        or "research" in desc
+    ):
+        return "medium"
+    return "medium"
+
+
+def _build_routing_block_message(
+    category: str, model: str, worker_script: str, description: str
+) -> str:
+    """Build a helpful stderr block message for codex-cli routing violations."""
+    preview = description[:80] + ("..." if len(description) > 80 else "")
+    return "\n".join([
+        f"model_tag_enforcer: model_balancer routes '{category}' to codex-cli:{model}.",
+        "",
+        f"  Description: {preview!r}",
+        f"  Category:    {category}",
+        f"  Required:    codex-cli:{model} (not Agent)",
+        "",
+        "Use Bash with codex worker instead of Agent:",
+        f"  printf '%s\\n' '<task>' | ~/.claude/scripts/{worker_script} {model}",
+        "",
+        "Agent tool is reserved for:",
+        "  - high_blast_radius tasks (auth, security, migrations, financial, broker)",
+        "  - Explore agents (subagent_type: Explore) that need tool access",
+        "",
+        "To bypass: CLAUDE_BOOSTER_SKIP_MODEL_TAG_ENFORCER=1",
+    ])
 
 
 # ---------------------------------------------------------------------------
@@ -271,28 +382,72 @@ def main() -> int:
 
     description: str = tool_input.get("description") or ""
     model_param: Optional[str] = tool_input.get("model") or None
+    subagent_type: str = tool_input.get("subagent_type") or ""
+    updated_fields: dict = {}
 
-    # --- check for tag ---
+    # --- PHASE 1: routing enforcement (model_balancer) ---
+    # Runs BEFORE tag check so auto-inject cannot bypass Codex routing.
+    routing = _load_routing()
+    if routing is not None:
+        category = _infer_category(description, subagent_type)
+        route = routing.get(category)
+
+        if route:
+            provider = route.get("provider", "")
+            recommended_model = route.get("model", "")
+
+            if provider == "codex-cli" and subagent_type != "Explore":
+                worker_script = (
+                    "codex_sandbox_worker.sh" if category == "coding"
+                    else "codex_worker.sh"
+                )
+                msg = _build_routing_block_message(
+                    category, recommended_model, worker_script, description
+                )
+                print(msg, file=sys.stderr)
+                return 2
+
+            elif provider == "anthropic" and recommended_model:
+                if model_param and model_param != recommended_model:
+                    updated_fields["model"] = recommended_model
+
+    # --- PHASE 2: tag enforcement ---
     tag_match = _find_model_tag(description)
     if tag_match:
-        # Tag present -- check for mismatch and warn, but allow
         warning = _check_mismatch(tag_match, model_param)
         if warning:
             print(warning, file=sys.stderr)
-        return 0
+    else:
+        if os.environ.get(_AUTO_INJECT_ENV) == "1":
+            effective_model = updated_fields.get("model", model_param)
+            tag = _infer_tag_from_model_param(effective_model)
+            updated_fields["description"] = f"{tag} {description}"
+        else:
+            msg = _build_block_message(description, model_param)
+            print(msg, file=sys.stderr)
+            return 2
 
-    # --- tag absent ---
+    # --- emit combined updatedInput if any fields were modified ---
+    if updated_fields:
+        reasons = []
+        if "model" in updated_fields:
+            reasons.append(
+                f"model '{model_param}'->'{updated_fields['model']}'"
+            )
+        if "description" in updated_fields:
+            reasons.append("auto-injected [model] tag")
+        print(json.dumps({
+            "hookSpecificOutput": {
+                "hookEventName": "PreToolUse",
+                "permissionDecision": "allow",
+                "permissionDecisionReason": (
+                    "model_tag_enforcer: " + ", ".join(reasons)
+                ),
+                "updatedInput": updated_fields,
+            }
+        }))
 
-    # Auto-inject mode: silently fix the description via updatedInput
-    if os.environ.get(_AUTO_INJECT_ENV) == "1":
-        stdout_json = _build_auto_inject_stdout(description, model_param)
-        print(stdout_json)
-        return 0
-
-    # Default mode: block with helpful message
-    msg = _build_block_message(description, model_param)
-    print(msg, file=sys.stderr)
-    return 2
+    return 0
 
 
 if __name__ == "__main__":

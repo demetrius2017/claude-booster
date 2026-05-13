@@ -249,7 +249,7 @@
   "skipAutoPermissionPrompt": false,
   "statusLine": {
     "type": "command",
-    "command": "${CLAUDE_HOME}/scripts/statusline.sh"
+    "command": "~/.claude/scripts/statusline.sh"
   },
   "_booster": {
     "version": "${BOOSTER_VERSION}",
