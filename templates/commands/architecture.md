@@ -27,9 +27,23 @@ Before spawning any agents:
 
 ## Phase 1 — MAP (4 parallel Haiku Explore agents)
 
-Spawn **all four agents in a single message** (one `Agent` tool call per agent, all in the same response turn). All use `subagent_type: "Explore"`, `model: "haiku"`.
+Spawn **all four agents in a single message** with `run_in_background: true` (one `Agent` tool call per agent, all in the same response turn). All use `subagent_type: "Explore"`, `model: "haiku"`.
 
 Each agent is independent — they share only the Verified Facts Brief and their specific search instructions. They do NOT share results with each other.
+
+### Progress output
+
+Before spawning, output: `/architecture: spawning 4 MAP agents (DB Analyst · API Mapper · Logic Tracer · Integration Mapper)`
+
+As each MAP agent completes, output a cumulative progress line:
+```
+MAP ▰▱▱▱ 1/4 · DB Analyst ✓
+MAP ▰▰▱▱ 2/4 · DB Analyst ✓ · API Mapper ✓
+```
+
+After all 4 MAP agents return: `MAP complete (4/4). Spawning REDUCE (Opus Architect)...`
+
+**Do NOT begin Phase 2 REDUCE until ALL four MAP agents have returned.**
 
 ---
 

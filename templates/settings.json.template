@@ -247,6 +247,10 @@
   },
   "enabledPlugins": {},
   "skipAutoPermissionPrompt": false,
+  "statusLine": {
+    "type": "command",
+    "command": "${CLAUDE_HOME}/scripts/statusline.sh"
+  },
   "_booster": {
     "version": "${BOOSTER_VERSION}",
     "installed_at": "${INSTALLED_AT}"

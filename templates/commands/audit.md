@@ -62,12 +62,23 @@ Audit lenses selected: correctness, security, data-integrity
 
 ## Phase 2 — PARALLEL AUDIT (spawn all **selected** lens agents in ONE message)
 
-**[CRITICAL] Spawn all selected lens agents AND the PAL external review IN A SINGLE MESSAGE as parallel tool calls.** Do not wait for one to finish before starting another. PAL runs in parallel with the auditors — not after.
+**[CRITICAL] Spawn all selected lens agents AND the PAL external review IN A SINGLE MESSAGE as parallel tool calls, each with `run_in_background: true`.** Do not wait for one to finish before starting another. PAL runs in parallel with the auditors — not after.
 
 Spawn only the lenses selected in Phase 1. Do not spawn auditors for unselected lenses.
 
 Each auditor agent is `subagent_type: "general-purpose"`, `model: "sonnet"`.
 PAL runs as a tool call in the same batch.
+
+### Progress output
+
+Before spawning, output one line: `Starting audit: <N> lenses + PAL`
+
+As each background agent completes, output a cumulative progress line:
+```
+Audit ▰▱▱▱▱▱▱ 1/<total> · <lens> ✓ (<verdict>)
+Audit ▰▰▱▱▱▱▱ 2/<total> · <lens> ✓ · <lens> ✓
+```
+Where `<total>` is the number of selected lenses + 1 (PAL). Fill in lens names and verdicts (PASS/FAIL/CONCERN) as each returns. **Do NOT begin Phase 3 synthesis until ALL agents have returned.**
 
 Every agent receives:
 - The **Verified Facts Brief** from Phase 0

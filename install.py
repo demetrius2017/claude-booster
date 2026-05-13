@@ -557,7 +557,7 @@ def merge_settings(user: dict, booster: dict) -> dict:
     # top-level simple keys: adopt booster default only when user has no value.
     # User overrides (e.g., effortLevel=max, skipAutoPermissionPrompt=true)
     # are preserved verbatim.
-    for key in ("effortLevel", "skipAutoPermissionPrompt"):
+    for key in ("effortLevel", "skipAutoPermissionPrompt", "statusLine"):
         if key in booster and key not in result:
             result[key] = booster[key]
 

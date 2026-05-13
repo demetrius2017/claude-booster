@@ -25,6 +25,8 @@ Unlike `/consilium` (opinions) and paired Worker+Verifier (one implementation), 
 
 ## Phase 2 — Competition (all Workers in ONE message, parallel)
 
+Before spawning, output: `Hackathon: spawning <N> Workers (Contestant 1..<N>) in parallel`
+
 Spawn N Worker agents in a single `Agent` tool message. Each receives:
 - The full Artifact Contract
 - Their contestant ID: "You are Contestant N of M. Implement independently."
@@ -33,6 +35,8 @@ Spawn N Worker agents in a single `Agent` tool message. Each receives:
 - Hard rule: do NOT read other contestants' output paths — implement from the contract only
 
 ## Phase 3 — Judging (one fresh-context Judge agent)
+
+After all Workers return, output: `Workers complete (<N>/<N>). Spawning Judge...`
 
 After ALL Workers return, spawn ONE Judge agent (new context, no Worker knowledge):
 
