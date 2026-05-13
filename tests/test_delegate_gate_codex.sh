@@ -68,10 +68,11 @@ print(json.dumps({
 }))
 " "$cmd" "$proj")
 
+    local rc=0
     env CLAUDE_HOME="$gate_home" \
         CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" \
-        python3 "$GATE_PY" <<< "$payload" 2>/dev/null
-    echo $?
+        python3 "$GATE_PY" <<< "$payload" 2>/dev/null || rc=$?
+    echo $rc
 }
 
 # ---------------------------------------------------------------------------
@@ -81,7 +82,7 @@ read_counter() {
     local proj="$1"
     local file="$proj/.claude/.delegate_counter"
     if [[ -f "$file" ]]; then
-        cat "$file" | tr -d '[:space:]'
+        tr -d '[:space:]' < "$file"
     else
         echo "0"
     fi
@@ -94,38 +95,7 @@ read_counter() {
 echo ""
 echo "=== SECTION 1: _bash_is_codex_worker() pattern matching ==="
 
-check_codex_worker() {
-    local cmd="$1"
-    local expect_true="$2"  # "true" or "false"
-    local label="$3"
-
-    local tmp_file
-    tmp_file=$(mktemp "$TMPDIR_BASE/cmd_XXXXXX.txt")
-    printf '%s' "$cmd" > "$tmp_file"
-
-    result=$(python3 - "$tmp_file" <<'PYEOF' 2>/dev/null
-import sys
-sys.path.insert(0, sys.argv[1].replace(sys.argv[1].split('/')[-1], '') )
-# read script dir from env fallback
-import os
-script_dir = os.environ.get('_GATE_SCRIPT_DIR', '')
-sys.path.insert(0, script_dir)
-from delegate_gate import _bash_is_codex_worker
-with open(sys.argv[1]) as f:
-    cmd = f.read()
-result = _bash_is_codex_worker(cmd)
-print('true' if result else 'false')
-PYEOF
-)
-    rm -f "$tmp_file"
-    if [[ "$result" == "$expect_true" ]]; then
-        pass "$label"
-    else
-        fail "$label (expected $expect_true, got $result for: $cmd)"
-    fi
-}
-
-# Simpler direct helper using SCRIPT_DIR env
+# Direct helper using SCRIPT_DIR
 check_is_codex() {
     local cmd="$1"
     local expect_true="$2"

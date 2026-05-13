@@ -326,6 +326,13 @@ def _build_base_record(data: dict, root: Path) -> dict:
     }
 
 
+def _delegation_reset(root: Path, base: dict, reason: str) -> int:
+    """Reset budget counter and log a delegation-allow event. Returns 0."""
+    _atomic_reset(root)
+    append_jsonl(DELEGATE_LOG_NAME, {**base, "decision": DECISION_ALLOW, "reason": reason})
+    return 0
+
+
 def main() -> int:
     try:
         raw = sys.stdin.read()
@@ -420,31 +427,13 @@ def main() -> int:
         return 0
 
     if tool in DELEGATION_TOOLS:
-        _atomic_reset(root)
-        append_jsonl(DELEGATE_LOG_NAME, {
-            **base,
-            "decision": DECISION_ALLOW,
-            "reason": f"delegation signal {tool!r} resets counter",
-        })
-        return 0
+        return _delegation_reset(root, base, f"delegation signal {tool!r} resets counter")
     if tool == "Bash":
         cmd = tool_input.get("command") or ""
         if _bash_is_supervisor_spawn(cmd):
-            _atomic_reset(root)
-            append_jsonl(DELEGATE_LOG_NAME, {
-                **base,
-                "decision": DECISION_ALLOW,
-                "reason": "supervisor spawn resets counter",
-            })
-            return 0
+            return _delegation_reset(root, base, "supervisor spawn resets counter")
         if _bash_is_codex_worker(cmd):
-            _atomic_reset(root)
-            append_jsonl(DELEGATE_LOG_NAME, {
-                **base,
-                "decision": DECISION_ALLOW,
-                "reason": "codex_worker spawn resets counter",
-            })
-            return 0
+            return _delegation_reset(root, base, "codex_worker spawn resets counter")
         if _bash_is_recon(cmd):
             append_jsonl(DELEGATE_LOG_NAME, {
                 **base,
