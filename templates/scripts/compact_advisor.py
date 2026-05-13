@@ -83,13 +83,19 @@ def main() -> int:
 
     # One-shot: if marker already exists, nothing to do.
     # Guard against stale markers left by dead sessions (> 2 hours old).
-    if marker.exists():
+    try:
+        mtime = marker.stat().st_mtime
+    except FileNotFoundError:
+        pass  # no marker — fall through to threshold check
+    except OSError:
+        return 0  # can't stat — treat as existing, skip
+    else:
+        if time.time() - mtime < 7200:
+            return 0  # marker is fresh, reminder already issued
         try:
-            if time.time() - marker.stat().st_mtime < 7200:
-                return 0  # marker is fresh, reminder already issued
             marker.unlink(missing_ok=True)  # stale marker from dead session — clean it up
         except OSError:
-            return 0  # can't stat/unlink — treat as existing, skip
+            return 0  # can't unlink — treat as existing, skip
 
     # Estimate tokens via transcript file size (bytes // 4 ≈ tokens)
     try:

@@ -17,7 +17,7 @@
 # Exit 0 = all assertions passed
 # Exit 1 = one or more assertions failed
 
-set -uo pipefail
+set -euo pipefail
 
 ADVISOR_PATH="/Users/dmitrijnazarov/Projects/Claude_Booster/templates/scripts/compact_advisor.py"
 INJECT_PATH="/Users/dmitrijnazarov/Projects/Claude_Booster/templates/scripts/compact_advisor_inject.py"
@@ -87,6 +87,17 @@ print(count)
 " "$event"
 }
 
+count_log_lines() {
+    python3 -c "
+import sys
+try:
+    lines = [l.strip() for l in open('$JSONL_LOG', encoding='utf-8') if l.strip()]
+    print(len(lines))
+except FileNotFoundError:
+    print(0)
+" 2>/dev/null || echo 0
+}
+
 # ---------------------------------------------------------------------------
 # CASE 1 — advisor: below-threshold → exit 0, NO log entry of any kind
 # ---------------------------------------------------------------------------
@@ -121,14 +132,7 @@ else
 fi
 
 # Must NOT write any log entry at all (silent path)
-LOG_LINE_COUNT="$(python3 -c "
-import sys
-try:
-    lines = [l.strip() for l in open('$JSONL_LOG', encoding='utf-8') if l.strip()]
-    print(len(lines))
-except FileNotFoundError:
-    print(0)
-" 2>/dev/null || echo 0)"
+LOG_LINE_COUNT="$(count_log_lines)"
 if [[ "$LOG_LINE_COUNT" -eq 0 ]]; then
     pass_test "case1 advisor below-threshold: log file silent (no lines written)"
 else
@@ -173,14 +177,7 @@ else
 fi
 
 # Log must be empty (no writes at all on this path)
-LOG_LINE_COUNT="$(python3 -c "
-import sys
-try:
-    lines = [l.strip() for l in open('$JSONL_LOG', encoding='utf-8') if l.strip()]
-    print(len(lines))
-except FileNotFoundError:
-    print(0)
-" 2>/dev/null || echo 0)"
+LOG_LINE_COUNT="$(count_log_lines)"
 if [[ "$LOG_LINE_COUNT" -eq 0 ]]; then
     pass_test "case2 advisor marker-exists: log file silent (no lines written)"
 else
@@ -282,14 +279,7 @@ else
 fi
 
 # Log must be empty on this path
-LOG_LINE_COUNT="$(python3 -c "
-import sys
-try:
-    lines = [l.strip() for l in open('$JSONL_LOG', encoding='utf-8') if l.strip()]
-    print(len(lines))
-except FileNotFoundError:
-    print(0)
-" 2>/dev/null || echo 0)"
+LOG_LINE_COUNT="$(count_log_lines)"
 if [[ "$LOG_LINE_COUNT" -eq 0 ]]; then
     pass_test "case4 inject no-marker: log file silent (no lines written)"
 else
