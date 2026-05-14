@@ -156,7 +156,7 @@ CODEX_WORKER_PATTERNS = [
 # Gate enforces workflow discipline, not safety (that's permissions.deny).
 RECON_BASH_PATTERNS = [
     re.compile(r"python3?\s+\S+\.claude/scripts/(?!supervisor/)"),
-    re.compile(r"\bgit\s+(-\w+\s+\S*\s+)*(status|diff|log|show|branch|tag|rev-parse|describe|ls-files|ls-tree|blame|shortlog|remote|fetch|stash\s+list|config)\b"),
+    re.compile(r"\bgit\s+(-\w+\s+\S*\s+)*(status|diff|log|show|branch|tag|rev-parse|describe|ls-files|ls-tree|blame|shortlog|remote|fetch|stash\s+list|config|add|commit|push|worktree|cherry-pick|merge|rebase)\b"),
     re.compile(r"\bssh\b"),
     re.compile(r"(?:^|&&\s*|;\s*)(ls|find|grep|egrep|fgrep|rg|ag|cat|head|tail|wc|file|stat|du|df|diff|md5sum|shasum|sha256sum|which|type|command|echo|printf|date|whoami|hostname|uname|id|pwd|realpath|dirname|basename|env|printenv)\b"),
     re.compile(r"\b(curl|wget)\b"),
