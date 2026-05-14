@@ -144,10 +144,26 @@ _SKIP_ENV = "CLAUDE_BOOSTER_SKIP_MODEL_TAG_ENFORCER"
 
 _BALANCER_PATH = os.path.expanduser("~/.claude/model_balancer.json")
 
+_VALID_CATEGORIES = frozenset({
+    "coding", "high_blast_radius", "trivial", "recon", "medium",
+    "hard", "consilium_bio", "audit_external",
+})
+
+_CATEGORY_TAG_RE = re.compile(
+    r"\[(" + "|".join(sorted(_VALID_CATEGORIES)) + r")\]",
+    re.IGNORECASE,
+)
+
+_CODING_KEYWORDS = frozenset({
+    "worker", "verifier", "implement", "fix", "refactor", "write code",
+    "apply", "edit", "modify", "add", "change", "update",
+})
+
 _HIGH_BLAST_KEYWORDS = frozenset({
     "auth", "security", "secret", "secrets", "migration", "db_migration",
     "financial", "financial_dml", "broker", "infra", "infra_config",
     "dml", "credential", "deploy", "permission",
+    "high_blast_radius",
 })
 
 
@@ -165,19 +181,15 @@ def _infer_category(description: str, subagent_type: str) -> str:
     """
     Classify an Agent call into a model_balancer category.
 
-    Priority order: coding (Worker/Verifier) → high_blast_radius → rest.
-    Worker/Verifier agents are classified as "coding" even if their descriptions
-    mention blast-radius keywords (gate, guard, etc.), because:
-    - dep_guard and financial_dml_guard auto-skip for subagent context anyway
-    - Codex sandbox path (Lead applies via Edit) provides MORE guard protection
-      than Agent Worker path (guards fire on Lead's Edit, not on Worker's)
+    Priority: explicit [category] tag → coding keywords → high_blast_radius
+    keywords → subagent_type/other keywords → default "medium".
     """
+    cat_tag = _CATEGORY_TAG_RE.search(description)
+    if cat_tag:
+        return cat_tag.group(1).lower()
+
     desc = description.lower()
-    # Coding agents first — Worker/Verifier paired verification
-    if (
-        "worker" in desc or "verifier" in desc or "implement" in desc
-        or "fix" in desc or "refactor" in desc or "write code" in desc
-    ):
+    if any(kw in desc for kw in _CODING_KEYWORDS):
         return "coding"
     # High blast radius — stays on Agent for non-coding tasks
     if any(kw in desc for kw in _HIGH_BLAST_KEYWORDS):
@@ -372,6 +384,10 @@ def main() -> int:
             provider = route.get("provider", "")
             recommended_model = route.get("model", "")
 
+            # Codex routing: advisory, not blocking. Using Agent instead
+            # of codex costs more budget but doesn't break correctness.
+            # Safety gates (dep_guard, verify_gate) are hard blocks; budget
+            # optimization is a suggestion the Lead can override.
             if provider == "codex-cli" and subagent_type != "Explore":
                 worker_script = (
                     "codex_sandbox_worker.sh" if category == "coding"
@@ -380,8 +396,7 @@ def main() -> int:
                 msg = _build_routing_block_message(
                     category, recommended_model, worker_script, description
                 )
-                print(msg, file=sys.stderr)
-                return 2
+                print(f"model_tag_enforcer [advisory]: {msg}", file=sys.stderr)
 
             elif provider == "anthropic" and recommended_model:
                 param_tier = _extract_tier(model_param) if model_param else None
