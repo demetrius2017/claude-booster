@@ -237,7 +237,7 @@ echo "=== Section 7: Script content sanity ==="
 
 SANDBOX="$TMPL_SCRIPTS/codex_sandbox_worker.sh"
 
-for keyword in "rsync" "git diff" "trap" "mktemp" "workspace-write" "--ephemeral"; do
+for keyword in "worktree" "git diff" "trap" "workspace-write" "--ephemeral"; do
     if grep -qF -- "$keyword" "$SANDBOX" 2>/dev/null; then
         pass "codex_sandbox_worker.sh contains '$keyword'"
     else

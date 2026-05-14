@@ -28,7 +28,7 @@ description: "Tool strategy: direct tools, agents, PAL MCP, Context7, Browser MC
   ~/.claude/scripts/codex_worker.sh gpt-5.3-codex < /tmp/codex_task.txt
   ```
   Check `python3 ~/.claude/scripts/model_balancer.py get <category>` to get today's model choice. If output needs to be applied as file edits, paste into Edit tool directly — do NOT let Codex write files directly.
-- **Calling Codex Sandbox (when task requires file changes):** Use `codex_sandbox_worker.sh` when Codex needs to produce code edits. The sandbox copies the project into a temp dir, runs Codex there, and returns ONLY a unified diff on stdout. Lead applies each changed file via Edit tool — PreToolUse guards (`dep_guard.py`, `financial_dml_guard.py`, `verify_gate.py`) fire normally.
+- **Calling Codex Sandbox (when task requires file changes):** Use `codex_sandbox_worker.sh` when Codex needs to produce code edits. The sandbox runs Codex in an isolated git worktree, captures all changes as a unified diff on stdout. Lead applies each changed file via Edit tool — PreToolUse guards (`dep_guard.py`, `financial_dml_guard.py`, `verify_gate.py`) fire normally.
   ```bash
   # Pipe task to sandbox worker, get diff on stdout
   printf '%s\n' '<describe the coding task>' | ~/.claude/scripts/codex_sandbox_worker.sh gpt-5.3-codex

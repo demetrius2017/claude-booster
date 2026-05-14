@@ -26,8 +26,8 @@ Purpose:
     use.
 
     When the balancer routes to anthropic and the Agent's `model` param
-    disagrees with the recommended model, the hook auto-fixes the model param
-    via updatedInput (exit 0 + JSON stdout) rather than blocking.
+    disagrees with the recommended model, the hook blocks (exit 2) with a
+    message telling Claude which model to use.
 
     Exemptions from routing enforcement:
     - Explore agents (subagent_type == "Explore") always need tool access and
@@ -40,10 +40,7 @@ Contract:
     stdin  — PreToolUse JSON from Claude Code harness:
                {tool_name, tool_input.{description, model, prompt, …},
                 cwd, session_id, agent_id, agent_type, …}
-    stdout — (silent on block)
-             OR JSON {hookSpecificOutput: {hookEventName, permissionDecision,
-             updatedInput}} when AUTO_INJECT mode is enabled or when routing
-             auto-fix is applied.
+    stdout — silent (no JSON output; CC bug #16598 prevents updatedInput)
     stderr — human-readable block reason on exit 2 only
     exit   — 0 allow, 2 block
 
@@ -74,11 +71,6 @@ CLI / Examples:
     echo '{"tool_name":"Bash","tool_input":{"command":"ls"},"session_id":"s1"}' \
          | python3 model_tag_enforcer.py
 
-    # Auto-inject mode (env):
-    CLAUDE_MODEL_TAG_AUTO_INJECT=1  — derive tag from `model` param and inject
-                                      into description silently (exit 0 + JSON
-                                      stdout).  Falls back to [inherit] when
-                                      model param is absent.
 
 Limitations:
     - Tag matching is case-insensitive for the keyword part; bracket syntax
@@ -91,8 +83,6 @@ Limitations:
     - This hook only fires when registered in settings.json under PreToolUse
       with matcher "Agent".  If the matcher is omitted, the hook fires for ALL
       tools (harmless but wastes cycles on non-Agent calls).
-    - Auto-inject mode requires Claude Code >= v2.0.10 which introduced the
-      `updatedInput` stdout field.
     - Routing enforcement requires ~/.claude/model_balancer.json to be present
       and up-to-date (refreshed daily by model_balancer.py decide).  Missing or
       malformed JSON silently disables routing enforcement (fail-open).
@@ -106,10 +96,7 @@ ENV / Files:
                       sessions where tagging is intentionally relaxed);
                       bypasses BOTH tag enforcement AND routing enforcement
                CLAUDE_MODEL_TAG_AUTO_INJECT=1
-                   -- instead of blocking on missing tag, silently inject a
-                      [model] tag derived from the `model` param (or [inherit]
-                      when absent) into the description via updatedInput stdout
-                      JSON (requires CC >= v2.0.10)
+                   -- currently a no-op (CC bug #16598 prevents updatedInput)
 """
 from __future__ import annotations
 
@@ -150,7 +137,6 @@ _TIER_EXAMPLES = "[sonnet], [opus], [haiku]"
 
 # Environment variables
 _SKIP_ENV = "CLAUDE_BOOSTER_SKIP_MODEL_TAG_ENFORCER"
-_AUTO_INJECT_ENV = "CLAUDE_MODEL_TAG_AUTO_INJECT"
 
 # ---------------------------------------------------------------------------
 # model_balancer routing
@@ -162,6 +148,7 @@ _HIGH_BLAST_KEYWORDS = frozenset({
     "auth", "security", "secret", "secrets", "migration", "db_migration",
     "financial", "financial_dml", "broker", "infra", "infra_config",
     "dml", "credential", "deploy", "permission",
+    "hook", "enforcer", "gate", "guard",
 })
 
 
@@ -245,6 +232,15 @@ def _find_model_tag(description: str):
     return _MODEL_TAG_RE.search(description)
 
 
+def _extract_tier(model_str: str) -> Optional[str]:
+    """Extract tier keyword (opus/sonnet/haiku) from any model string format."""
+    lower = model_str.lower()
+    for tier in ("opus", "sonnet", "haiku"):
+        if tier in lower:
+            return tier
+    return None
+
+
 def _infer_tag_from_model_param(model_param: Optional[str]) -> str:
     """
     Derive a human-readable [tag] from the model param string.
@@ -321,28 +317,6 @@ def _build_block_message(
     return "\n".join(lines)
 
 
-def _build_auto_inject_stdout(
-    description: str, model_param: Optional[str]
-) -> str:
-    """
-    Build stdout JSON using updatedInput to inject the tag automatically.
-    Available since Claude Code v2.0.10.
-    """
-    tag = _infer_tag_from_model_param(model_param)
-    new_description = f"{tag} {description}"
-    payload = {
-        "hookSpecificOutput": {
-            "hookEventName": "PreToolUse",
-            "permissionDecision": "allow",
-            "permissionDecisionReason": (
-                f"model_tag_enforcer: auto-injected {tag} into description"
-            ),
-            "updatedInput": {"description": new_description},
-        }
-    }
-    return json.dumps(payload)
-
-
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -383,7 +357,6 @@ def main() -> int:
     description: str = tool_input.get("description") or ""
     model_param: Optional[str] = tool_input.get("model") or None
     subagent_type: str = tool_input.get("subagent_type") or ""
-    updated_fields: dict = {}
 
     # --- PHASE 1: routing enforcement (model_balancer) ---
     # Runs BEFORE tag check so auto-inject cannot bypass Codex routing.
@@ -408,8 +381,18 @@ def main() -> int:
                 return 2
 
             elif provider == "anthropic" and recommended_model:
-                if model_param and model_param != recommended_model:
-                    updated_fields["model"] = recommended_model
+                param_tier = _extract_tier(model_param) if model_param else None
+                rec_tier = _extract_tier(recommended_model)
+                if param_tier and rec_tier and param_tier != rec_tier:
+                    print(
+                        f"model_tag_enforcer: model_balancer routes "
+                        f"'{category}' to {recommended_model}, "
+                        f"but model param is '{model_param}'.\n"
+                        f"  Fix: change model=\"{rec_tier}\" "
+                        f"in the Agent call.",
+                        file=sys.stderr,
+                    )
+                    return 2
 
     # --- PHASE 2: tag enforcement ---
     tag_match = _find_model_tag(description)
@@ -418,35 +401,12 @@ def main() -> int:
         if warning:
             print(warning, file=sys.stderr)
     else:
-        if os.environ.get(_AUTO_INJECT_ENV) == "1":
-            effective_model = updated_fields.get("model", model_param)
-            tag = _infer_tag_from_model_param(effective_model)
-            updated_fields["description"] = f"{tag} {description}"
-        else:
-            msg = _build_block_message(description, model_param)
-            print(msg, file=sys.stderr)
-            return 2
+        # No tag — block with guidance (auto-inject disabled due to CC bug #16598)
+        msg = _build_block_message(description, model_param)
+        print(msg, file=sys.stderr)
+        return 2
 
-    # --- emit combined updatedInput if any fields were modified ---
-    if updated_fields:
-        reasons = []
-        if "model" in updated_fields:
-            reasons.append(
-                f"model '{model_param}'->'{updated_fields['model']}'"
-            )
-        if "description" in updated_fields:
-            reasons.append("auto-injected [model] tag")
-        print(json.dumps({
-            "hookSpecificOutput": {
-                "hookEventName": "PreToolUse",
-                "permissionDecision": "allow",
-                "permissionDecisionReason": (
-                    "model_tag_enforcer: " + ", ".join(reasons)
-                ),
-                "updatedInput": updated_fields,
-            }
-        }))
-
+    # CC bug #16598 — no JSON stdout until fix ships
     return 0
 
 
