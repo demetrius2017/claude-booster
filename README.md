@@ -62,6 +62,37 @@ A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explor
 
 ---
 
+## What's new in v1.9.3 — Enforcer deadlock fix + git exemptions
+
+**Two bugs in the hook pipeline that created a blocking loop for the Lead orchestrator.**
+
+### 1. `model_tag_enforcer.py` — category inference + advisory codex routing
+
+The enforcer's `_infer_category()` classified Agent calls like "Apply order marker overlay to 5 frontend files" as `medium` (default fallback) instead of `coding`. The balancer routes `medium` to `codex-cli` → enforcer hard-blocked the Agent call → Lead couldn't delegate → delegate_gate blocked inline work → deadlock.
+
+Three fixes:
+
+| Bug | Fix |
+|---|---|
+| Coding keywords too narrow — "apply", "edit", "update", "add", "change", "modify" missing | Added `_CODING_KEYWORDS` frozenset with 12 action verbs |
+| Explicit `[category]` tags in description ignored — Lead had no override | Added `_CATEGORY_TAG_RE` parser; `[high_blast_radius]`, `[coding]`, etc. now return immediately |
+| Codex routing was a hard block (exit 2) — Agent blocked even when codex wasn't available | Converted to advisory (exit 0 + stderr warning). Safety gates (`dep_guard`, `verify_gate`, `financial_dml_guard`) stay hard blocks; budget optimization is a suggestion |
+
+Design principle established: **safety gates = hard blocks, budget optimizations = advisory**. The enforcer now prints `[advisory]` to stderr when the balancer prefers codex, but doesn't prevent Agent usage.
+
+### 2. `delegate_gate.py` — git source control ops exempt from budget
+
+`RECON_BASH_PATTERNS` only had read-only git commands (`status`, `diff`, `log`, `show`...). After the Lead completed work via an agent, `git add && git commit` consumed the delegate budget and triggered the gate — blocking the commit that delivers the work.
+
+Added 7 git operations to the exemption regex: `add`, `commit`, `push`, `worktree`, `cherry-pick`, `merge`, `rebase`. These are source control operations, not inline coding work — they deliver or integrate work that was already done through proper delegation.
+
+### Tests
+
+- **model_tag_enforcer:** 26 new assertions (explicit tags, coding keywords, regression, tag priority, blast-radius). All pass.
+- **delegate_gate:** 74 existing assertions across 4 suites (codex, phase, TOCTOU, TTL) — 0 regressions. 8 additional regex verification tests for the new git commands.
+
+---
+
 ## What's new in v1.9.2 — Codex sandbox: git worktree + enforcer tier fix
 
 **Two changes shipped in this release.**
@@ -261,7 +292,7 @@ The problem: the gate was counting `git status` the same as `git push`. `ssh use
 **What v1.6.0 changes.** `RECON_BASH_PATTERNS` — 8 regex patterns that classify Bash commands as read-only recon, exempt from the budget. These patterns cover:
 
 - `.claude/scripts/*` diagnostic scripts (health checks, telemetry, canary)
-- `git status`, `git diff`, `git log` (including `git -C /path diff`)
+- `git status`, `git diff`, `git log`, `git add`, `git commit`, `git push`, `git worktree`, `git cherry-pick`, `git merge`, `git rebase` (including `git -C /path` prefix)
 - `ssh` commands that read remote state
 - `ls`, `find`, `grep`, `diff`
 - `curl`, `wget` (verification, not mutation)
