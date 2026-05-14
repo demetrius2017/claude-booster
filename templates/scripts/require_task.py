@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook: require a TaskCreate call in the recent transcript before
-allowing Edit/Write/NotebookEdit. Enforces the plan-before-implement gate.
+PreToolUse hook: advisory check for a TaskCreate call in the recent transcript
+before allowing Edit/Write/NotebookEdit. Encourages the plan-before-implement gate.
 
 Contract:
   stdin  — PreToolUse JSON: tool_name, tool_input, transcript_path
-  stdout — (nothing on success; reason on block)
-  stderr — feedback to Claude when blocking
-  exit   — 0 allow, 2 block
+  stdout — advisory additionalContext JSON when needed
+  stderr — (unused)
+  exit   — always 0 (advisory-only); emits additionalContext when TaskCreate missing
 
 Bypass:
   - file_path matches allowlist (docs/, reports/, audits/, tests/, .claude/, *.md, *.txt, CLAUDE.md)
@@ -65,6 +65,11 @@ def _log(decision: str, **extra: object) -> None:
             fh.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         pass
+
+
+def _emit_advisory(message: str) -> None:
+    """Emit a non-blocking advisory via additionalContext."""
+    print(json.dumps({"additionalContext": message}))
 
 
 def _is_allowlisted(file_path: str) -> str | None:
@@ -192,28 +197,19 @@ def main() -> int:
         if IMPACT_BYPASS_MARKER not in tail:
             ok, reason = _check_task_content(tail)
             if not ok:
-                _log("deny", reason="missing-impact-field", tool=tool_name, file=file_path)
-                print(reason, file=sys.stderr)
-                return 2
+                _log("advisory", reason="missing-impact-field", tool=tool_name, file=file_path)
+                _emit_advisory(reason)
         _log("allow", reason="task-found", tool=tool_name, file=file_path)
         return 0
 
-    _log("deny", tool=tool_name, file=file_path)
-    print(
-        "require_task gate: no TaskCreate found in this session's transcript.\n"
-        f"File: {file_path}\n"
-        "Before editing source code, call TaskCreate to describe:\n"
-        "  - what you are about to change\n"
-        "  - why (intent / user goal)\n"
-        "  - expected verification (how we'll know it worked)\n"
-        "Then proceed with the Edit/Write.\n\n"
-        "Bypass options (use sparingly, only for trivial changes):\n"
-        "  - add [no-task] to your assistant message (marker)\n"
-        "  - edit files under docs/, reports/, tests/, .claude/, or *.md/*.txt\n"
-        "  - set env CLAUDE_BOOSTER_SKIP_TASK_GATE=1\n",
-        file=sys.stderr,
+    _log("advisory", reason="no-task-create", tool=tool_name, file=file_path)
+    _emit_advisory(
+        "Advisory: no TaskCreate found in this session's transcript. "
+        f"File: {file_path}. "
+        "For substantive source edits, create/update a task to track intent; "
+        "for trivial edits add [no-task] to your message."
     )
-    return 2
+    return 0
 
 
 if __name__ == "__main__":

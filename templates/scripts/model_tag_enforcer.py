@@ -148,7 +148,6 @@ _HIGH_BLAST_KEYWORDS = frozenset({
     "auth", "security", "secret", "secrets", "migration", "db_migration",
     "financial", "financial_dml", "broker", "infra", "infra_config",
     "dml", "credential", "deploy", "permission",
-    "hook", "enforcer", "gate", "guard",
 })
 
 
@@ -166,12 +165,21 @@ def _infer_category(description: str, subagent_type: str) -> str:
     """
     Classify an Agent call into a model_balancer category.
 
-    Conservative: when in doubt, returns "medium" rather than misfiring on a
-    block.  high_blast_radius is checked first because those tasks must always
-    stay on Agent (dep_guard and other hooks fire on Agent, not on Bash+Codex).
+    Priority order: coding (Worker/Verifier) → high_blast_radius → rest.
+    Worker/Verifier agents are classified as "coding" even if their descriptions
+    mention blast-radius keywords (gate, guard, etc.), because:
+    - dep_guard and financial_dml_guard auto-skip for subagent context anyway
+    - Codex sandbox path (Lead applies via Edit) provides MORE guard protection
+      than Agent Worker path (guards fire on Lead's Edit, not on Worker's)
     """
     desc = description.lower()
-    # Check high blast radius first — these stay on Agent regardless of balancer
+    # Coding agents first — Worker/Verifier paired verification
+    if (
+        "worker" in desc or "verifier" in desc or "implement" in desc
+        or "fix" in desc or "refactor" in desc or "write code" in desc
+    ):
+        return "coding"
+    # High blast radius — stays on Agent for non-coding tasks
     if any(kw in desc for kw in _HIGH_BLAST_KEYWORDS):
         return "high_blast_radius"
     if subagent_type == "Explore" or "explore" in desc or "recon" in desc:
@@ -180,11 +188,6 @@ def _infer_category(description: str, subagent_type: str) -> str:
         return "consilium_bio"
     if "audit" in desc and "audit-trace" not in desc:
         return "audit_external"
-    if (
-        "worker" in desc or "implement" in desc or "fix" in desc
-        or "refactor" in desc or "write code" in desc
-    ):
-        return "coding"
     if subagent_type == "Plan" or "plan" in desc or "architecture" in desc:
         return "hard"
     if (
