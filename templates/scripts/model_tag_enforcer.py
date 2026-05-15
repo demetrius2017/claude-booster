@@ -402,29 +402,32 @@ def main() -> int:
                 param_tier = _extract_tier(model_param) if model_param else None
                 rec_tier = _extract_tier(recommended_model)
                 if param_tier and rec_tier and param_tier != rec_tier:
-                    print(
-                        f"model_tag_enforcer: model_balancer routes "
-                        f"'{category}' to {recommended_model}, "
-                        f"but model param is '{model_param}'.\n"
-                        f"  Fix: change model=\"{rec_tier}\" "
-                        f"in the Agent call.",
-                        file=sys.stderr,
-                    )
-                    return 2
+                    _TIER_RANK = {"haiku": 0, "sonnet": 1, "opus": 2}
+                    param_rank = _TIER_RANK.get(param_tier, -1)
+                    rec_rank = _TIER_RANK.get(rec_tier, -1)
+                    if param_rank > rec_rank:
+                        pass
+                    else:
+                        print(
+                            f"model_tag_enforcer: model_balancer routes "
+                            f"'{category}' to {recommended_model}, "
+                            f"but model param is '{model_param}'.\n"
+                            f"  Fix: change model=\"{rec_tier}\" "
+                            f"in the Agent call.",
+                            file=sys.stderr,
+                        )
+                        return 2
 
-    # --- PHASE 2: tag enforcement ---
+    # --- PHASE 2: tag enforcement (advisory — CC bug #16598 blocks auto-inject) ---
     tag_match = _find_model_tag(description)
     if tag_match:
         warning = _check_mismatch(tag_match, model_param)
         if warning:
             print(warning, file=sys.stderr)
     else:
-        # No tag — block with guidance (auto-inject disabled due to CC bug #16598)
         msg = _build_block_message(description, model_param)
-        print(msg, file=sys.stderr)
-        return 2
+        print(f"model_tag_enforcer [advisory]: {msg}", file=sys.stderr)
 
-    # CC bug #16598 — no JSON stdout until fix ships
     return 0
 
 

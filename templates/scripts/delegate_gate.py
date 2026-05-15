@@ -163,6 +163,8 @@ RECON_BASH_PATTERNS = [
     re.compile(r"\bdocker\s+(ps|logs|inspect|images|stats|top|compose\s+(ps|logs))\b"),
     re.compile(r"\bgh\s+(pr|issue|api|auth|repo|run)\s"),
     re.compile(r"\b(pip3?|npm|yarn|bun|cargo|go)\s+(list|show|info|outdated|audit|why|ls)\b"),
+    re.compile(r"\b(python3?|node|ruby|perl)\s+(-[ceEp]\b|-m\s)"),
+    re.compile(r"\b(jq|yq|sqlite3|psql|mysql|redis-cli)\b"),
 ]
 
 ALLOWLIST_PATHS = [

@@ -116,6 +116,18 @@ check_recon "ls foo" "true"  "standalone 'ls foo' still recon (no regression)"
 check_recon "cd /path && rm -rf foo" "false"  "compound 'cd && rm -rf' is NOT recon"
 check_recon "python3 script.py && rm -rf foo" "false"  "generic compound with rm -rf is NOT recon"
 
+# New patterns: interpreter one-liners + data inspection tools
+check_recon 'python3 -c "import json; print(json.dumps({}))"' "true" "python3 -c one-liner is recon"
+check_recon "python3 -m json.tool file.json" "true" "python3 -m module invocation is recon"
+check_recon 'node -e "console.log(1)"' "true" "node -e one-liner is recon"
+check_recon "node -p '1+1'" "true" "node -p print-eval is recon"
+check_recon "jq '.cells[0]' notebook.ipynb" "true" "jq is recon"
+check_recon "sqlite3 test.db 'SELECT count(*) FROM t'" "true" "sqlite3 query is recon"
+check_recon "psql -c 'SELECT 1'" "true" "psql query is recon"
+check_recon "redis-cli GET key" "true" "redis-cli is recon"
+check_recon "python3 script.py" "false" "python3 running a script file is NOT recon"
+check_recon "ruby script.rb" "false" "ruby running a script file is NOT recon"
+
 # ---------------------------------------------------------------------------
 # SECTION 2: Phase exemption via main() — RECON phase
 # ---------------------------------------------------------------------------
