@@ -11,38 +11,66 @@ Purpose:
     display the `model` parameter separately. Without a visible [model] tag in
     the description, there is no way to know at a glance which model tier a
     spawned sub-agent runs on.  This hook checks every Agent tool call made by
-    the Lead (top-level Claude session) and blocks any call whose `description`
-    field lacks a recognised [model] tag like [sonnet], [opus], or [haiku].
+    the Lead (top-level Claude session) and prints an advisory warning to stderr
+    when the `description` field lacks a recognised [model] tag like [sonnet],
+    [opus], or [haiku].  The call is NOT blocked — the warning tells Claude
+    exactly what tag to add so the next spawn is correctly labelled.
 
-    On block, the hook emits a helpful stderr message telling Claude exactly
-    what tag to add and where, so the retry succeeds on the first attempt.
+    NOTE (v1.9.4+): Missing [model] tags were originally blocked (exit 2), but
+    this caused a deadlock: the hook blocked the Agent call, and Claude could not
+    self-correct the description without making another Agent call.  Advisory
+    mode (exit 0 + stderr) resolves the deadlock.  This is intentional design,
+    not a gap to close.
 
     2. MODEL_BALANCER ROUTING ENFORCEMENT
     Reads ~/.claude/model_balancer.json and classifies each Agent call into a
     routing category (trivial, recon, medium, coding, hard, high_blast_radius,
     etc.).  When the balancer routes a category to codex-cli, Agent is the
     wrong tool — Bash + codex_worker.sh should be used instead.  The hook
-    blocks such calls (exit 2) with a clear message explaining which script to
-    use.
+    emits an advisory warning (exit 0 + stderr) explaining which script to use,
+    but does NOT block the call.
 
     When the balancer routes to anthropic and the Agent's `model` param
-    disagrees with the recommended model, the hook blocks (exit 2) with a
-    message telling Claude which model to use.
+    disagrees with the recommended model, the hook DOES block (exit 2) with a
+    message telling Claude which model to use.  This is the only hard-block path
+    in routing enforcement: it prevents a weaker model from silently replacing a
+    stronger one recommended by the balancer.
 
     Exemptions from routing enforcement:
     - Explore agents (subagent_type == "Explore") always need tool access and
-      cannot run in Codex; they are exempt from the codex-cli block.
+      cannot run in Codex; they are exempt from the codex-cli advisory.
     - high_blast_radius categories are always routed to Agent (dep_guard and
       other PreToolUse hooks fire on Agent, not on Bash+codex subprocess).
     - All routing errors (missing JSON, parse error, unknown category) fail open.
+
+    ENFORCEMENT MODEL SUMMARY (v1.9.4+):
+    ┌──────────────────────────────────────────┬────────────────────────────┐
+    │ Condition                                │ Action                     │
+    ├──────────────────────────────────────────┼────────────────────────────┤
+    │ Anthropic tier mismatch (weaker model    │ HARD BLOCK — exit 2        │
+    │ than balancer recommends)                │                            │
+    ├──────────────────────────────────────────┼────────────────────────────┤
+    │ Codex routing — wrong tool (Agent used   │ Advisory — exit 0 + stderr │
+    │ when balancer says codex-cli)            │                            │
+    ├──────────────────────────────────────────┼────────────────────────────┤
+    │ Missing [model] tag in description       │ Advisory — exit 0 + stderr │
+    └──────────────────────────────────────────┴────────────────────────────┘
+
+    WHY advisory for Codex routing and missing tags: CC bug #16598 prevents
+    updatedInput (the hook cannot rewrite the description to add the tag).
+    Blocking (exit 2) without the ability to self-correct creates a deadlock.
+    Advisory mode surfaces the issue in stderr without stalling the workflow.
+    Do NOT change Codex routing or missing-tag handling back to exit 2 — that
+    re-introduces the deadlock that v1.9.4 specifically resolved.
 
 Contract:
     stdin  — PreToolUse JSON from Claude Code harness:
                {tool_name, tool_input.{description, model, prompt, …},
                 cwd, session_id, agent_id, agent_type, …}
     stdout — silent (no JSON output; CC bug #16598 prevents updatedInput)
-    stderr — human-readable block reason on exit 2 only
-    exit   — 0 allow, 2 block
+    stderr — advisory warning on exit 0 (Codex routing / missing tag) OR
+             human-readable block reason on exit 2 (Anthropic tier mismatch)
+    exit   — 0 allow (includes advisory cases), 2 block (tier mismatch only)
 
     Sub-agent auto-skip:
         When `agent_id` is a non-empty string in the stdin JSON, this hook is
@@ -59,7 +87,7 @@ CLI / Examples:
     echo '{"tool_name":"Agent","tool_input":{"description":"[sonnet] Explore files"},
            "session_id":"s1"}' | python3 model_tag_enforcer.py; echo "exit: $?"
 
-    # Blocked — tag absent:
+    # Advisory (exit 0 + stderr warning) — tag absent:
     echo '{"tool_name":"Agent","tool_input":{"description":"Explore files"},
            "session_id":"s1"}' | python3 model_tag_enforcer.py; echo "exit: $?"
 
@@ -107,16 +135,25 @@ import sys
 from typing import Dict, Optional
 
 try:
-    from _gate_common import is_subagent_context
+    from _gate_common import DECISION_ALLOW, append_jsonl, is_subagent_context, iso_now
 except ImportError:
     import sys as _sys
     _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     try:
-        from _gate_common import is_subagent_context
+        from _gate_common import DECISION_ALLOW, append_jsonl, is_subagent_context, iso_now
     except ImportError:
+        DECISION_ALLOW = "allow"  # type: ignore[misc]
+
         def is_subagent_context(data):  # type: ignore[misc]
             aid = (data or {}).get("agent_id")
             return bool(aid and isinstance(aid, str))
+
+        def iso_now() -> str:  # type: ignore[misc]
+            import datetime as _dt
+            return _dt.datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%SZ")
+
+        def append_jsonl(log_name: str, record: dict) -> None:  # type: ignore[misc]
+            print("model_tag_enforcer: _gate_common unavailable, decision logging disabled", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -137,6 +174,14 @@ _TIER_EXAMPLES = "[sonnet], [opus], [haiku]"
 
 # Environment variables
 _SKIP_ENV = "CLAUDE_BOOSTER_SKIP_MODEL_TAG_ENFORCER"
+
+# Decision log name
+ENFORCER_LOG_NAME = "model_tag_enforcer_decisions.jsonl"
+
+# Decision constants (parallel to _gate_common.DECISION_* for delegate_gate)
+DECISION_ADVISORY_CODEX = "advisory_codex"
+DECISION_ALLOW_STRONGER = "allow_stronger_override"
+DECISION_BLOCK_TIER = "block_tier_mismatch"
 
 # ---------------------------------------------------------------------------
 # model_balancer routing
@@ -181,19 +226,19 @@ def _infer_category(description: str, subagent_type: str) -> str:
     """
     Classify an Agent call into a model_balancer category.
 
-    Priority: explicit [category] tag → coding keywords → high_blast_radius
-    keywords → subagent_type/other keywords → default "medium".
+    Priority: explicit [category] tag → high_blast_radius keywords → coding keywords
+    → subagent_type/other keywords → default "medium".
     """
     cat_tag = _CATEGORY_TAG_RE.search(description)
     if cat_tag:
         return cat_tag.group(1).lower()
 
     desc = description.lower()
-    if any(kw in desc for kw in _CODING_KEYWORDS):
-        return "coding"
-    # High blast radius — stays on Agent for non-coding tasks
+    # High blast radius — safety-critical, check FIRST
     if any(kw in desc for kw in _HIGH_BLAST_KEYWORDS):
         return "high_blast_radius"
+    if any(kw in desc for kw in _CODING_KEYWORDS):
+        return "coding"
     if subagent_type == "Explore" or "explore" in desc or "recon" in desc:
         return "recon"
     if "consilium" in desc:
@@ -376,8 +421,8 @@ def main() -> int:
     # --- PHASE 1: routing enforcement (model_balancer) ---
     # Runs BEFORE tag check so auto-inject cannot bypass Codex routing.
     routing = _load_routing()
+    category = _infer_category(description, subagent_type) if routing is not None else None
     if routing is not None:
-        category = _infer_category(description, subagent_type)
         route = routing.get(category)
 
         if route:
@@ -397,6 +442,16 @@ def main() -> int:
                     category, recommended_model, worker_script, description
                 )
                 print(f"model_tag_enforcer [advisory]: {msg}", file=sys.stderr)
+                append_jsonl(ENFORCER_LOG_NAME, {
+                    "ts": iso_now(),
+                    "gate": "model_tag_enforcer",
+                    "decision": DECISION_ADVISORY_CODEX,
+                    "category": category,
+                    "provider": provider,
+                    "recommended_model": recommended_model,
+                    "description_excerpt": description[:120],
+                    "session_id": payload.get("session_id", ""),
+                })
 
             elif provider == "anthropic" and recommended_model:
                 param_tier = _extract_tier(model_param) if model_param else None
@@ -406,7 +461,15 @@ def main() -> int:
                     param_rank = _TIER_RANK.get(param_tier, -1)
                     rec_rank = _TIER_RANK.get(rec_tier, -1)
                     if param_rank > rec_rank:
-                        pass
+                        append_jsonl(ENFORCER_LOG_NAME, {
+                            "ts": iso_now(),
+                            "gate": "model_tag_enforcer",
+                            "decision": DECISION_ALLOW_STRONGER,
+                            "category": category,
+                            "recommended_model": recommended_model,
+                            "actual_model": model_param or "",
+                            "session_id": payload.get("session_id", ""),
+                        })
                     else:
                         print(
                             f"model_tag_enforcer: model_balancer routes "
@@ -416,6 +479,17 @@ def main() -> int:
                             f"in the Agent call.",
                             file=sys.stderr,
                         )
+                        append_jsonl(ENFORCER_LOG_NAME, {
+                            "ts": iso_now(),
+                            "gate": "model_tag_enforcer",
+                            "decision": DECISION_BLOCK_TIER,
+                            "category": category,
+                            "provider": provider,
+                            "recommended_model": recommended_model,
+                            "actual_model": model_param or "",
+                            "description_excerpt": description[:120],
+                            "session_id": payload.get("session_id", ""),
+                        })
                         return 2
 
     # --- PHASE 2: tag enforcement (advisory — CC bug #16598 blocks auto-inject) ---
@@ -428,6 +502,13 @@ def main() -> int:
         msg = _build_block_message(description, model_param)
         print(f"model_tag_enforcer [advisory]: {msg}", file=sys.stderr)
 
+    append_jsonl(ENFORCER_LOG_NAME, {
+        "ts": iso_now(),
+        "gate": "model_tag_enforcer",
+        "decision": DECISION_ALLOW,
+        "category": category,
+        "session_id": payload.get("session_id", ""),
+    })
     return 0
 
 

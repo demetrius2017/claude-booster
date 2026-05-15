@@ -158,6 +158,16 @@
         ]
       },
       {
+        "matcher": "Agent",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/model_tag_enforcer.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      },
+      {
         "matcher": "Bash|Agent|TaskCreate",
         "hooks": [
           {

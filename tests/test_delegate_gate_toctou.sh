@@ -123,17 +123,17 @@ fi
 rm -rf "$T4"
 
 # ---------------------------------------------------------------------------
-# Test 5 — corrupted counter file (non-integer) treated as 0
+# Test 5 — corrupted counter file (non-integer) → fail-closed (BUDGET+1)
 # ---------------------------------------------------------------------------
 T5=$(mktemp -d)
 mkdir -p "$T5/.claude"
 printf 'not-a-number\n' > "$T5/.claude/.delegate_counter"
 
-v=$(py_increment "$T5")  # should treat corrupt as 0 → return 1
-if [[ "$v" == "1" ]]; then
-    pass "T5: corrupted counter file handled; increment returns 1"
+v=$(py_increment "$T5")  # corrupt → repair to BUDGET+1 (fail-closed)
+if [[ "$v" == "2" ]]; then
+    pass "T5: corrupted counter file repaired to BUDGET+1; increment returns 2"
 else
-    fail "T5: expected 1 after corrupt file, got $v"
+    fail "T5: expected 2 (BUDGET+1) after corrupt file, got $v"
 fi
 rm -rf "$T5"
 

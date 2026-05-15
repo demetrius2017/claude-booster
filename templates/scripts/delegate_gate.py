@@ -106,6 +106,7 @@ try:
         is_subagent_context,
         iso_now,
         project_root_from,
+        redact_secrets,
     )
 except ImportError:
     import pathlib as _pl
@@ -122,6 +123,7 @@ except ImportError:
         is_subagent_context,
         iso_now,
         project_root_from,
+        redact_secrets,
     )
 
 BUDGET = int(os.environ.get("CLAUDE_BOOSTER_DELEGATE_BUDGET", "1"))
@@ -225,7 +227,15 @@ def _atomic_increment(root: Path) -> int:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX)
             data = os.read(fd, 64).decode("utf-8", errors="replace").strip()
-            current = max(0, int(data)) if data else 0
+            try:
+                current = max(0, int(data)) if data else 0
+            except ValueError:
+                # Corrupt counter — repair to fail-closed value
+                closed = BUDGET + 1
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.ftruncate(fd, 0)
+                os.write(fd, f"{closed}\n".encode())
+                return closed
             new_val = current + 1
             os.lseek(fd, 0, os.SEEK_SET)
             os.ftruncate(fd, 0)
@@ -234,8 +244,8 @@ def _atomic_increment(root: Path) -> int:
         finally:
             fcntl.flock(fd, fcntl.LOCK_UN)
             os.close(fd)
-    except (OSError, ValueError):
-        return 1  # fail-closed: assume budget consumed
+    except OSError:
+        return BUDGET + 1  # fail-closed: assume budget consumed
 
 
 def _atomic_reset(root: Path) -> None:
@@ -326,6 +336,7 @@ def _build_base_record(data: dict, root: Path) -> dict:
         "project": root.name if root else "",
         "session_id": data.get("session_id") or "",
         "budget": BUDGET,
+        "command_excerpt": redact_secrets(data.get("tool_input", {}).get("command", ""))[:200],
     }
 
 
