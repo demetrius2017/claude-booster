@@ -3,6 +3,12 @@ description: "Run hackathon — competitive multi-agent implementation. N Worker
 argument-hint: <feature/task to implement>
 ---
 
+## Progress tracking
+Before each phase below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/5 <step_label>"`
+After the final step completes, run: `python3 ~/.claude/scripts/phase.py progress clear`
+
+Steps: `1/5 arena_setup`, `2/5 competition`, `3/5 judging`, `4/5 verdict`, `5/5 ext_audit`
+
 ## Pattern: competitive multi-agent implementation
 
 Unlike `/consilium` (opinions) and paired Worker+Verifier (one implementation), hackathon is **code that competes**. Multiple Worker agents implement the same Artifact Contract in isolation; an independent Judge runs the same acceptance tests against every implementation; highest score wins. No LLM judgment — only exit codes.

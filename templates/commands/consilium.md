@@ -3,6 +3,12 @@ description: "Run consilium (multi-agent debate). RECON first, spawn 3-5 bio-spe
 argument-hint: <topic for consilium/audit>
 ---
 
+## Progress tracking
+Before each numbered step below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/6 <step_label>"`
+After the final step completes, run: `python3 ~/.claude/scripts/phase.py progress clear`
+
+Steps: `1/6 recon`, `2/6 spawn_agents`, `3/6 analysis`, `4/6 gpt_review`, `5/6 synthesis`, `6/6 save_report`
+
 1. **[CRITICAL] RECON before opinions — verify current state against code, not memory:**
    - Spawn Explore agents to read actual code/configs relevant to the topic (Grep for key functions, Read configs, check deploy state)
    - Cross-reference findings with reports/memory — flag discrepancies ("report says X, code shows Y")

@@ -3,6 +3,12 @@ description: "Multi-agent code audit — parallel lens-specific agents (correctn
 argument-hint: "<topic> [--scope <path>] [--focus <lens1,lens2>]"
 ---
 
+## Progress tracking
+Before each phase below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/5 <step_label>"`
+After the final step completes, run: `python3 ~/.claude/scripts/phase.py progress clear`
+
+Steps: `1/5 brief_build`, `2/5 lens_selection`, `3/5 lens_audits`, `4/5 synthesis`, `5/5 report`
+
 Parse `$ARGUMENTS`:
 - Everything before the first `--` flag is the `<topic>` (what to audit — a feature, PR, component, or free-form description)
 - `--scope <path>` — restrict file search to this path or glob (e.g. `services/trading/`, `*.py`)

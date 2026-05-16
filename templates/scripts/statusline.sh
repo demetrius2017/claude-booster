@@ -53,5 +53,15 @@ while true; do
     dir="$parent"
 done
 
-printf '[%s]%s\n' "$phase" "$model_info"
+progress=""
+progress_file="$dir/.claude/.progress"
+if [ -f "$progress_file" ]; then
+    read -r progress < "$progress_file" 2>/dev/null
+fi
+
+if [ -n "$progress" ]; then
+    printf '[%s] %s%s\n' "$phase" "$progress" "$model_info"
+else
+    printf '[%s]%s\n' "$phase" "$model_info"
+fi
 exit 0

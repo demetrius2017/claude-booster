@@ -2,6 +2,13 @@
 description: "Initialize a session: read README, handover, knowledge base, telemetry, then plan."
 ---
 
+## Progress tracking
+Before each numbered step below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/4 <step_label>"`
+After the final step completes, run: `python3 ~/.claude/scripts/phase.py progress clear`
+
+Steps: `1/4 readme`, `2/4 knowledge_base`, `3/4 plan`
+(Step 0 is a phase-set command, not a tracked step — tracking begins at step 1.)
+
 0. **Set phase:** `python3 ~/.claude/scripts/phase.py set RECON` — session initialization is information gathering; this exempts diagnostic commands from the delegation gate.
 
 1. Read `README.md` (always present). For roadmap, **try `Read roadmap.html` then `Read roadmap.md` — if the tool returns "file does not exist", move on; do NOT probe via shell glob like `ls roadmap.*` (zsh `nomatch` aborts the command before redirects apply, and one shell error in a parallel tool-call block cancels every sibling call).** For the latest `reports/handover_*.md`, read ONLY the `## Summary`, the "first step tomorrow" / "First step" section (Russian or English), and the `## Required reading` section — use `Read` with `offset`/`limit` narrow slices, not the whole file. Read every file listed under `## Required reading` before touching any code. If those sections cite a specific file needed for today's task, `Read` that too. Only read the full handover if you cannot locate the needed context from these sections. (Saves ~5,000 tokens per /start — per `reports/audit_2026-04-18_startup_token_budget.md` R2.) If `docs/` or `doc/` folder exists — read key files (architecture, API, setup, conventions).
