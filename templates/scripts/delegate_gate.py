@@ -498,15 +498,7 @@ def _bash_is_recon(cmd: str) -> bool:
 
 
 def _feedback(root: Path, tool: str, counter: int) -> str:
-    # Deliberately no reference to the bypass file (.delegate_mode) or any
-    # 'echo off' recipe — sub-agents read stderr and will adopt any hint
-    # as a fix. Human Leads get the documentation in the README.
-    return (
-        f"delegate_gate: direct-action budget exhausted "
-        f"({counter}/{BUDGET} used on {tool!r}, counter resets on Agent/TaskCreate/supervisor-spawn).\n"
-        f"The Lead orchestrates; delegate via Agent(type=Explore|Plan|general-purpose) "
-        f"or `/supervise <task>` (→ python3 {root}/.claude/scripts/supervisor/supervisor.py <prompt>)."
-    )
+    return f"delegate_gate: → Agent ({counter}/{BUDGET} on {tool!r})"
 
 
 def _build_base_record(data: dict, root: Path) -> dict:
