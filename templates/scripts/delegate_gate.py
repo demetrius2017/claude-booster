@@ -175,6 +175,180 @@ ALLOWLIST_PATHS = [
     r"/scratch/", r"/tmp/", r"\.log$",
 ]
 
+# Pipe targets that are safe to receive recon output (read from stdin, no file edits).
+# A pipe chain ending in one of these stays recon; piping to bash/sh/eval makes it non-recon.
+_SAFE_PIPE_TARGETS: frozenset[str] = frozenset({
+    "jq", "yq", "grep", "egrep", "fgrep", "rg", "ag",
+    "head", "tail", "wc", "sort", "uniq", "tee", "cat",
+    "less", "more", "column", "cut", "awk", "sed", "tr", "xargs",
+})
+
+# Keywords in ssh argument strings that indicate a destructive remote command.
+_DESTRUCTIVE_SSH_PATTERNS = [
+    re.compile(r"\brm\b"),
+    re.compile(r"\bdd\b"),
+    re.compile(r"\bmkfs\b"),
+    re.compile(r"\bkill\b"),
+    re.compile(r"\bshutdown\b"),
+    re.compile(r"\breboot\b"),
+    re.compile(r"\bdocker\s+(rm|stop|kill)\b"),
+]
+
+# Regex to find unquoted shell operators (&&, ||, ;) for compound-command splitting.
+# We walk the string manually to skip content inside single or double quotes.
+_COMPOUND_SPLIT_RE = re.compile(r"&&|\|\||;")
+
+# Regex to detect unquoted output redirects to real files — these make a command
+# non-recon even if it otherwise looks read-only (e.g. "echo hi > file.txt").
+#
+# Matches: [012]? >> or > followed by a non-/dev/null, non-/dev/stderr,
+#          non-fd-dup (&), non-/dev/fd/ target.
+# Does NOT match:
+#   2>/dev/null   — suppress stderr, harmless
+#   2>/dev/stderr — harmless
+#   2>&1          — fd duplication, no file write (?!& lookahead)
+#   >&2           — same
+#   > /dev/fd/N   — fd via /dev/fd path
+# The leading (?:^|[^'"]) skips > chars that are preceded by a quote character
+# (i.e. the > sits inside a quoted string like grep ">" file).
+_REDIRECT_TO_FILE_RE = re.compile(
+    r"(?:^|[^'\"])\s*[012]?\s*>{1,2}\s*(?!/dev/(?:null|stderr)\b)(?!/dev/fd/)(?!&)\S"
+)
+
+# Trivially-safe command substitutions — $(pwd), $(git rev-parse ...), etc.
+# These are read-only by definition and do not alter shell state.
+_SAFE_SUBST_RE = re.compile(
+    r"\$\(\s*(?:pwd|git\s+rev-parse|git\s+describe|date|which|command\s+-v|basename|dirname|realpath)\b[^)]*\)",
+)
+
+# SSH command detector — used to narrow ssh calls for destructive-payload check.
+_SSH_CMD_RE = re.compile(r"\bssh\b")
+
+# Pipe targets that execute arbitrary code — piping to any of these makes a
+# command non-recon regardless of how read-only the source side looks.
+_DANGEROUS_PIPE_TARGETS: frozenset[str] = frozenset({
+    "bash", "sh", "dash", "zsh", "exec", "eval",
+    "python", "python3", "node", "ruby", "perl",
+})
+
+
+def _split_compound(cmd: str) -> list[str]:
+    """Split a shell command on unquoted &&, ||, ; operators.
+
+    Quoted sections (single or double quotes) are treated as opaque; operators
+    inside them are ignored. Returns a list of individual command segments with
+    leading/trailing whitespace stripped. Empty segments are dropped.
+
+    This is intentionally simple — it handles the common cases without a full
+    POSIX shell parser.  The gate is a workflow-discipline tool, not a security
+    boundary; shlex is not used here because it recognises neither && nor ||.
+    """
+    if not _COMPOUND_SPLIT_RE.search(cmd):
+        return [cmd.strip()] if cmd.strip() else []
+    segments: list[str] = []
+    current_chars: list[str] = []
+    in_quote: str | None = None  # None, "'", or '"'
+    i = 0
+    while i < len(cmd):
+        ch = cmd[i]
+        if in_quote:
+            current_chars.append(ch)
+            if ch == in_quote:
+                in_quote = None
+            i += 1
+        elif ch in ('"', "'"):
+            in_quote = ch
+            current_chars.append(ch)
+            i += 1
+        elif cmd[i : i + 2] in ("&&", "||"):
+            segments.append("".join(current_chars).strip())
+            current_chars = []
+            i += 2
+        elif ch == ";":
+            segments.append("".join(current_chars).strip())
+            current_chars = []
+            i += 1
+        else:
+            current_chars.append(ch)
+            i += 1
+    segments.append("".join(current_chars).strip())
+    return [s for s in segments if s]
+
+
+def _segment_is_recon(segment: str) -> bool:
+    """Return True if a single (non-compound) command segment is recon-safe.
+
+    Handles:
+    - SSH narrowing: ssh with a destructive payload → NOT recon.
+    - Pipe chains: the segment may contain pipes; every piped sub-command must
+      be either a RECON_BASH_PATTERN match or a _SAFE_PIPE_TARGETS entry.
+    - Command substitution ($(...) / backticks): treated conservatively as
+      non-recon unless the substitution is a trivially-safe read-only form
+      ($(pwd), $(git rev-parse ...), $(date ...), $(which ...)).
+    """
+    # Output-redirect guard: any unquoted > or >> to a real file makes this
+    # segment non-recon, even if the command itself is read-only.
+    # /dev/null, /dev/stderr, and fd-duplication (&) are exempted.
+    if _REDIRECT_TO_FILE_RE.search(segment):
+        return False
+
+    # Trivially safe shell builtins — read-only by definition.
+    # 'cd' changes the shell's CWD which is non-persistent between Bash calls in
+    # Claude Code (each call gets a fresh shell), so it has no lasting side-effect.
+    # 'true', 'false', ':' are no-ops used as separators in compound commands.
+    stripped = segment.strip()
+    if (
+        stripped in ("cd", "true", "false", ":")
+        or stripped.startswith("cd ")
+        or stripped.startswith("cd\t")
+    ):
+        return True
+
+    # Command substitution guard — conservative approach.
+    # Allow only trivially-safe $(…) forms; anything else is non-recon.
+    if "$(" in segment or "`" in segment:
+        # Strip out all safe substitutions; if any $(…) or ` remains → non-recon.
+        subst_residual = _SAFE_SUBST_RE.sub("", segment)
+        if "$(" in subst_residual or "`" in subst_residual:
+            return False
+
+    # Split on pipes to inspect each piped segment individually.
+    # Only the first part needs to match RECON_BASH_PATTERNS; subsequent parts
+    # must be safe pipe targets.  We do a simple unquoted-pipe split here.
+    if '|' not in segment:
+        # No pipes — just check the full segment against patterns.
+        pipe_parts = [segment]
+    else:
+        pipe_parts = re.split(r"(?<![|])\|(?![|])", segment)  # single | not part of ||
+
+    first_part = pipe_parts[0].strip()
+
+    # SSH narrowing: if the ssh command contains destructive keywords, not recon.
+    if _SSH_CMD_RE.match(first_part):
+        for pat in _DESTRUCTIVE_SSH_PATTERNS:
+            if pat.search(first_part):
+                return False
+        # ssh without destructive payload: let normal RECON_BASH_PATTERNS decide below.
+
+    # The first part must match at least one RECON_BASH_PATTERN.
+    if not any(p.search(first_part) for p in RECON_BASH_PATTERNS):
+        return False
+
+    # Each subsequent piped command must be a known safe pipe target.
+    for pipe_part in pipe_parts[1:]:
+        # Extract the leading command name (first word, ignoring flags).
+        pipe_cmd = pipe_part.strip().lstrip("| ").split()[0] if pipe_part.strip() else ""
+        # Strip any path prefix (e.g. /usr/bin/grep → grep).
+        pipe_cmd = pipe_cmd.rsplit("/", 1)[-1]
+        # Piping to bash/sh/exec/eval/python/node → definitely not recon.
+        if pipe_cmd in _DANGEROUS_PIPE_TARGETS:
+            return False
+        # Piping to something not in the safe set → conservative non-recon.
+        if pipe_cmd and pipe_cmd not in _SAFE_PIPE_TARGETS:
+            return False
+
+    return True
+
 
 def _project_root(cwd_hint: str) -> Path:
     found = project_root_from(cwd_hint)
@@ -310,7 +484,17 @@ def _bash_is_codex_worker(cmd: str) -> bool:
 
 
 def _bash_is_recon(cmd: str) -> bool:
-    return any(p.search(cmd) for p in RECON_BASH_PATTERNS)
+    """Return True only when ALL compound segments of cmd are individually recon-safe.
+
+    A compound command like ``git status && rm -rf foo`` must NOT be classified
+    as recon just because the first segment matches — every segment must pass.
+    Simple (non-compound) commands preserve their previous behaviour exactly,
+    since _split_compound() returns a single-element list for them.
+    """
+    segments = _split_compound(cmd)
+    if not segments:
+        return False
+    return all(_segment_is_recon(seg) for seg in segments)
 
 
 def _feedback(root: Path, tool: str, counter: int) -> str:
