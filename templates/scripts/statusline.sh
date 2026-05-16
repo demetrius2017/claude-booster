@@ -7,24 +7,53 @@
 # Consume stdin from Claude Code (unblocks the pipe; JSON session data)
 input=$(cat)
 
-# Extract model name and context percentage from JSON if jq is available
+# Pick ANSI color based on percentage (integer): green <70, yellow 70-89, red 90+
+# Emits ONLY the ANSI opener (\033[3Xm). Caller MUST append \033[0m reset in the template string.
+_color() {
+    local pct=$1
+    if [ "$pct" -ge 90 ]; then
+        printf '\033[31m'  # red
+    elif [ "$pct" -ge 70 ]; then
+        printf '\033[33m'  # yellow
+    else
+        printf '\033[32m'  # green
+    fi
+}
+RST=$'\033[0m'
+
+# Extract model name, context percentage, and rate-limit percentage from JSON
 model_info=""
 if command -v jq >/dev/null 2>&1 && [ -n "$input" ]; then
     raw_model=$(printf '%s' "$input" | jq -r '.model.display_name // empty' 2>/dev/null)
     raw_ctx=$(printf '%s' "$input" | jq -r '.context_window.used_percentage // empty' 2>/dev/null)
+    raw_rl=$(printf '%s' "$input" | jq -r '.rate_limits.five_hour.used_percentage // empty' 2>/dev/null)
+
     if [ -n "$raw_ctx" ]; then
         # Build progress bar: ▰ = filled, ▱ = empty, 20 blocks total
         pct=${raw_ctx%.*}  # truncate to integer
+        [[ "$pct" =~ ^-?[0-9]+$ ]] || pct=0
         filled=$(( pct * 20 / 100 ))
         [ "$filled" -gt 20 ] && filled=20
-        [ "$filled" -lt 0 ] && filled=0
+        [ "$filled" -lt 0  ] && filled=0
         bar=""
         for ((i=0; i<filled; i++)); do bar+="▰"; done
         for ((i=filled; i<20; i++)); do bar+="▱"; done
+
+        # Colored bar + percentage
+        ctx_str="$(_color "$pct")${bar} ${pct}%${RST}"
+
+        # Optional rate-limit suffix
+        rl_str=""
+        if [ -n "$raw_rl" ]; then
+            rl_pct=${raw_rl%.*}
+            [[ "$rl_pct" =~ ^-?[0-9]+$ ]] || rl_pct=0
+            rl_str=" | 5h: $(_color "$rl_pct")${rl_pct}%${RST}"
+        fi
+
         if [ -n "$raw_model" ]; then
-            model_info=" ${raw_model} ${bar} ${pct}%"
+            model_info=" ${raw_model} ${ctx_str}${rl_str}"
         else
-            model_info=" ${bar} ${pct}%"
+            model_info=" ${ctx_str}${rl_str}"
         fi
     elif [ -n "$raw_model" ]; then
         model_info=" ${raw_model}"
