@@ -124,7 +124,7 @@ set_phase "IMPLEMENT"
 clear_go_active
 run_gate "$(agent_json 'implement the fix')"
 assert_exit "VA1: implement+IMPLEMENT+no marker → exit 2" 2 "$GATE_EXIT"
-assert_stderr_contains "VA1: stderr contains 'Use /go'" "Use /go" "$GATE_STDERR"
+assert_stderr_contains "VA1: stderr contains '/go'" "/go" "$GATE_STDERR"
 
 # ── Assertion 2: implement + IMPLEMENT + .go_active present → exit 0 ────────────
 set_phase "IMPLEMENT"
@@ -312,6 +312,21 @@ set_phase "IMPLEMENT"
 clear_go_active
 GATE_STDERR=$(printf '\x00\x01\x02\x03' | python3 "${GATE}" 2>&1); GATE_EXIT=$?
 assert_exit "BRANCH: binary/non-JSON stdin → exit 0 (fail-open)" 0 "$GATE_EXIT"
+
+# ── New: description prefix 'Explore:' without subagent_type → exit 0 ───────────
+# Covers the false-positive case: Lead wrote "Explore:" in description but
+# omitted subagent_type field. Gate must allow it regardless.
+set_phase "IMPLEMENT"
+clear_go_active
+run_gate "$(agent_json 'Explore: run prod migration query')"
+assert_exit "NEW1: description='Explore: run query', no subagent_type, IMPLEMENT → exit 0" 0 "$GATE_EXIT"
+
+# ── New: gerund 'Exploring...' with coding keywords → exit 2 (not matched) ──────
+# 'Exploring' is NOT the exact word 'Explore' — must NOT get prefix exemption.
+set_phase "IMPLEMENT"
+clear_go_active
+run_gate "$(agent_json 'Exploring implementation of new feature with code changes')"
+assert_exit "NEW2: description='Exploring implementation...', IMPLEMENT, no subagent_type → exit 2" 2 "$GATE_EXIT"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # CLEANUP

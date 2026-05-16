@@ -53,6 +53,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -260,6 +261,17 @@ def _run() -> int:
               "reason": f"subagent_type={subagent_type!r} is non-coding (Explore/Plan)"})
         return 0
 
+    # ---- Directive 4b: description prefix detection (Explore/Plan intent) --
+    # Catches cases where Lead writes "Explore: ..." in description but omits
+    # subagent_type. Matches only the exact words "Explore" or "Plan" at
+    # position 0, followed by ':', space, or end-of-string. Gerund forms
+    # (Exploring, Explorer, Planning, Planned) are intentionally NOT matched.
+    description = tool_input.get("description") or ""
+    if re.match(r"(?i)^(explore|plan)(?:[:\s]|$)", description):
+        _log({**base, "decision": DECISION_ALLOW,
+              "reason": "description prefix matches Explore/Plan intent"})
+        return 0
+
     # ---- Directive 5: only enforce in IMPLEMENT phase ----------------------
     phase = _read_phase(root)
     if phase != ENFORCE_PHASE:
@@ -274,7 +286,7 @@ def _run() -> int:
         return 0
 
     # ---- Directive 12: keyword match against description AND prompt --------
-    description = tool_input.get("description") or ""
+    # description is already set above (used for prefix detection)
     prompt = tool_input.get("prompt") or ""
     combined_text = description + " " + prompt
     if not _has_coding_keyword(combined_text):
@@ -285,10 +297,7 @@ def _run() -> int:
     # ---- Directive 10: block with stderr message --------------------------
     _log({**base, "decision": DECISION_BLOCK,
           "reason": "IMPLEMENT phase + no .go_active marker + coding keywords detected"})
-    sys.stderr.write(
-        "go_gate: Use /go for coding tasks. "
-        "Direct Worker/coding Agent spawn blocked.\n"
-    )
+    sys.stderr.write("go_gate: → /go\n")
     return 2
 
 
