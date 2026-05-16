@@ -311,6 +311,128 @@ The `Focus on:` directive is mandatory when including session context — withou
 
 Session context goes to **Worker only**. Verifier tests observable behavior per Artifact Contract; session history is implementation context, not acceptance criteria. If a session decision changes *what* the artifact should do (not *how*), promote that decision into the Artifact Contract's `Objective` or `Expected observable behavior` fields instead.
 
+## Temporal & Process Verification
+
+Когда Artifact Contract ссылается на Process Flow Document (PFD), Verifier получает дополнительный источник executable-спецификации. PFD — это YAML-артефакт от Flow Designer, содержащий формализованные сценарии поведения системы во времени. Наличие PFD **расширяет** стандартный Verifier mandate, но не отменяет его: Test Legitimacy Standard и принцип «наблюдаемое поведение, не implementation details» по-прежнему действуют.
+
+### Когда применяется
+
+PFD-верификация активна когда Artifact Contract содержит:
+- Поле `Process Flow Document:` с путём к YAML-файлу, ИЛИ
+- Блок `verifier_assertions:` инлайн в контракте.
+
+Если ни того, ни другого нет — этот раздел не применяется, работает обычный Verifier flow.
+
+### Что Verifier видит из PFD
+
+| PFD-секция | Доступна Verifier'у? | Как используется |
+|---|---|---|
+| `verifier_assertions` | ✅ Да | Прямой источник тест-паттернов — каждый assertion = один или более test case |
+| `invariants` | ✅ Да | Postconditions, которые проверяются ПОСЛЕ каждого сценария |
+| `branching_scenarios` | ✅ Да | Список условий для injection — каждый сценарий = минимум один test case |
+| `timeline` | ✅ Да | Reference для ordering guarantees и expected state transitions |
+| `state_variables` | ✅ Да | Dependency graph для cascade verification |
+| `worker_directives` | ❌ Нет | Implementation guidance для Worker'а; Verifier не должен знать *как* реализовано |
+| `failure_modes` | ✅ Да | Expected graceful degradation — каждый failure mode = negative test case |
+
+### Temporal test patterns
+
+Время — самый частый источник недетерминизма. PFD-тесты обязаны быть deterministic, поэтому:
+
+**Mock clock / controllable time:**
+```python
+# monkeypatch time.time() для предсказуемости
+with unittest.mock.patch('time.time', side_effect=[1000.0, 1000.5, 1001.0]):
+    result = cache.get_or_refresh("key")
+    assert result.fetched_at == 1000.0
+```
+
+**Staleness detection** — если PFD описывает TTL/expiry:
+```bash
+# Inject T₀, advance clock past TTL, verify staleness detected
+set -e
+RESULT_T0=$(python3 -c "from module import get_value; print(get_value(clock=100))")
+RESULT_STALE=$(python3 -c "from module import get_value; print(get_value(clock=100 + TTL + 1))")
+[[ "$RESULT_STALE" == "STALE" || "$RESULT_STALE" == "" ]] || { echo "FAIL: stale value not detected"; exit 1; }
+```
+
+**Ordering guarantees** — когда PFD `timeline` задаёт «A before B»:
+- Inject событие B без предшествующего A → assert rejection/queue/error
+- Inject A then B → assert success
+- Inject A, B, A (повтор) → assert idempotency если PFD указывает
+
+### Branch injection testing
+
+Каждый `branching_scenarios` entry из PFD превращается в test case:
+
+| Сценарий PFD | Что инжектировать | Что assert'ить |
+|---|---|---|
+| Partial success | Mock data source возвращает 2/5 items, затем error | Processed count = 2, error logged, state consistent |
+| Timeout path | Inject timeout (mock sleep / deadline) раньше production значения | Cleanup/rollback выполнен, ресурсы освобождены |
+| Reject/deny path | Auth mock returns 403, validation returns error | Rollback выполнен, side effects откачены, состояние = pre-attempt |
+| Retry exhaustion | Mock возвращает transient error N+1 раз (N = max retries) | Final state = failed gracefully, не зависло |
+
+Минимум: **один test case на каждый `branching_scenarios` entry**. Если PFD описывает 4 сценария — в тесте минимум 4 отдельных assertion-блока.
+
+### Cascade verification
+
+Когда PFD `state_variables` описывает зависимости (derived variables):
+
+```
+state_variables:
+  price: {source: market_feed}
+  position_value: {derived_from: [price, quantity]}
+  portfolio_pnl: {derived_from: [position_value, cost_basis]}
+```
+
+Тест обязан проверить **каскад**, не только конечное состояние:
+
+1. **Propagation:** изменить `price` → assert `position_value` обновился → assert `portfolio_pnl` обновился
+2. **Invalidation:** удалить/обнулить `price` → assert dependents либо (a) выдают ошибку, либо (b) помечены invalid — НЕ возвращают stale значение молча
+3. **Partial cascade:** если PFD допускает async propagation — inject change, wait (mock), verify eventual consistency
+
+Тест assert'ит **связь** между переменными (cascade прошёл), а не конкретные числа (которые зависят от implementation).
+
+### Invariant assertion patterns
+
+PFD `invariants` — это свойства, которые должны выполняться **всегда**, независимо от пройденного branch:
+
+```yaml
+invariants:
+  - "balance >= 0"
+  - "sum(positions) == portfolio.total"
+  - "updated_at <= now()"
+```
+
+Правила использования:
+- Каждый invariant → **одна assertion-функция** (helper), вызываемая многократно
+- Эта assertion вызывается **ПОСЛЕ каждого branch scenario** — и positive, и negative
+- Invariant-assertion не зависит от конкретного сценария — она проверяет universal property
+
+```python
+def assert_invariants(state):
+    """PFD invariants — вызывать после КАЖДОГО test case."""
+    assert state.balance >= 0, f"balance={state.balance} < 0"
+    assert abs(sum(state.positions) - state.portfolio.total) < 0.01
+    assert state.updated_at <= time.time()
+
+# В каждом test case:
+def test_successful_trade():
+    state = execute_trade(...)
+    assert_invariants(state)  # ← обязательно
+
+def test_rejected_trade():
+    state = attempt_and_fail(...)
+    assert_invariants(state)  # ← тоже обязательно
+```
+
+### Quality criteria для temporal tests
+
+- **Deterministic:** никаких `time.sleep()` > 100ms в реальном времени; все temporal-проверки через mock clock или controllable deadline.
+- **Coverage:** минимум один happy-path + один failure-branch из PFD покрыты.
+- **Invariant presence:** минимум один PFD `invariant` assert'ится как postcondition.
+- **No implementation leakage:** тест не проверяет internal state, которого нет в PFD — тот же Test Legitimacy Standard, просто с temporal dimension.
+
 ## Anti-patterns (запрещено)
 
 - ❌ Спавнить Worker'а, потом Lead читает код и говорит «выглядит ок» — это и есть self-evaluation bias.
