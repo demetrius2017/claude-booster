@@ -224,6 +224,15 @@ _SAFE_SUBST_RE = re.compile(
 # SSH command detector — used to narrow ssh calls for destructive-payload check.
 _SSH_CMD_RE = re.compile(r"\bssh\b")
 
+# Git write-ops — source-control delivery commands (add/commit/push/tag/etc.).
+# $(cat <<'EOF'...) in commit messages is legitimate, not a local mutation.
+_GIT_WRITE_OPS_RE = re.compile(
+    r"\bgit\s+(-\w+\s+\S*\s+)*(add|commit|push|worktree|cherry-pick|merge|rebase|tag)\b"
+)
+
+# gh CLI — all subcommands are integration/delivery, not inline coding.
+_GH_CMD_RE = re.compile(r"\bgh\s+\w")
+
 # Pipe targets that execute arbitrary code — piping to any of these makes a
 # command non-recon regardless of how read-only the source side looks.
 _DANGEROUS_PIPE_TARGETS: frozenset[str] = frozenset({
@@ -286,17 +295,9 @@ def _segment_is_recon(segment: str) -> bool:
       non-recon unless the substitution is a trivially-safe read-only form
       ($(pwd), $(git rev-parse ...), $(date ...), $(which ...)).
     """
-    # Output-redirect guard: any unquoted > or >> to a real file makes this
-    # segment non-recon, even if the command itself is read-only.
-    # /dev/null, /dev/stderr, and fd-duplication (&) are exempted.
-    if _REDIRECT_TO_FILE_RE.search(segment):
-        return False
+    stripped = segment.strip()
 
     # Trivially safe shell builtins — read-only by definition.
-    # 'cd' changes the shell's CWD which is non-persistent between Bash calls in
-    # Claude Code (each call gets a fresh shell), so it has no lasting side-effect.
-    # 'true', 'false', ':' are no-ops used as separators in compound commands.
-    stripped = segment.strip()
     if (
         stripped in ("cd", "true", "false", ":")
         or stripped.startswith("cd ")
@@ -304,13 +305,26 @@ def _segment_is_recon(segment: str) -> bool:
     ):
         return True
 
-    # SSH early-exit: non-destructive SSH is always recon — heredoc content
-    # executes remotely, so $()/pipes inside it are not local mutations.
+    # Git source-control early-exit: add/commit/push/tag/etc. deliver work —
+    # MUST be before redirect/subst guards: Co-Authored-By <noreply@...>
+    # triggers redirect regex, $(cat ...) triggers subst guard.
+    if _GIT_WRITE_OPS_RE.search(stripped):
+        return True
+
+    # gh CLI early-exit: PR/issue/release/repo ops are integration, not coding.
+    if _GH_CMD_RE.search(stripped):
+        return True
+
+    # SSH early-exit: non-destructive SSH is always recon.
     if _SSH_CMD_RE.search(stripped):
         for pat in _DESTRUCTIVE_SSH_PATTERNS:
             if pat.search(stripped):
                 return False
         return True
+
+    # Output-redirect guard (after git/gh/ssh domain exits).
+    if _REDIRECT_TO_FILE_RE.search(segment):
+        return False
 
     # Command substitution guard — conservative approach.
     # Allow only trivially-safe $(…) forms; anything else is non-recon.
