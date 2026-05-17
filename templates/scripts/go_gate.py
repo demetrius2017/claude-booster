@@ -108,6 +108,11 @@ MARKER_REL = ".claude/.go_active"
 PHASE_REL = ".claude/.phase"
 NON_CODING_SUBAGENT_TYPES: frozenset[str] = frozenset({"Explore", "Plan"})
 
+# Recon-intent verbs in description — agent is searching/reading, not coding.
+_RECON_INTENT_RE = re.compile(
+    r"(?i)\b(find|search|locate|grep|check|look|read|scan|list|show|get|fetch|audit|review|inspect|trace|verify|analyze|diagnose)\b"
+)
+
 
 # ---- Helpers --------------------------------------------------------------
 
@@ -292,6 +297,19 @@ def _run() -> int:
     if not _has_coding_keyword(combined_text):
         _log({**base, "decision": DECISION_ALLOW,
               "reason": "no coding keywords found in description/prompt"})
+        return 0
+
+    # ---- Directive 13: recon-intent description overrides coding keywords --
+    if _RECON_INTENT_RE.search(description):
+        _log({**base, "decision": DECISION_ALLOW,
+              "reason": "recon-intent keyword in description overrides coding keyword"})
+        return 0
+
+    # ---- Directive 14: haiku model signals recon tier -------------------------
+    model = tool_input.get("model") or ""
+    if model == "haiku":
+        _log({**base, "decision": DECISION_ALLOW,
+              "reason": "model=haiku signals recon tier (trivial/mechanical)"})
         return 0
 
     # ---- Directive 10: block with stderr message --------------------------

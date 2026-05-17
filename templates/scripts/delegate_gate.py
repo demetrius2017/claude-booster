@@ -437,6 +437,42 @@ def _atomic_increment(root: Path) -> int:
         return BUDGET + 1  # fail-closed: assume budget consumed
 
 
+def _atomic_check_and_increment(root: Path, budget: int) -> tuple[int, bool]:
+    """Atomically check budget, increment only if within budget.
+
+    Returns (counter_value, incremented). If counter >= budget BEFORE this call,
+    returns (current_value, False) — no state mutation. If counter < budget,
+    increments and returns (new_value, True).
+    """
+    path = root / STATE_FILE_REL
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(path), os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            data = os.read(fd, 64).decode("utf-8", errors="replace").strip()
+            try:
+                current = max(0, int(data)) if data else 0
+            except ValueError:
+                closed = budget + 1
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.ftruncate(fd, 0)
+                os.write(fd, f"{closed}\n".encode())
+                return closed, False
+            if current >= budget:
+                return current, False
+            new_val = current + 1
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.ftruncate(fd, 0)
+            os.write(fd, f"{new_val}\n".encode())
+            return new_val, True
+        finally:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+    except OSError:
+        return budget + 1, False
+
+
 def _atomic_reset(root: Path) -> None:
     """Atomically reset counter to 0. Used on delegation signals."""
     path = root / STATE_FILE_REL
@@ -663,22 +699,22 @@ def main() -> int:
         })
         return 0
 
-    new_counter = _atomic_increment(root)
-    if new_counter > BUDGET:
-        sys.stderr.write(_feedback(root, tool, new_counter) + "\n")
+    counter_val, incremented = _atomic_check_and_increment(root, BUDGET)
+    if not incremented:
+        sys.stderr.write(_feedback(root, tool, counter_val) + "\n")
         append_jsonl(DELEGATE_LOG_NAME, {
             **base,
             "decision": DECISION_BLOCK,
-            "reason": f"budget exhausted ({new_counter}/{BUDGET})",
-            "counter": new_counter,
+            "reason": f"budget exhausted ({counter_val}/{BUDGET})",
+            "counter": counter_val,
         })
         return 2
 
     append_jsonl(DELEGATE_LOG_NAME, {
         **base,
         "decision": DECISION_ALLOW,
-        "reason": f"within budget ({new_counter}/{BUDGET})",
-        "counter": new_counter,
+        "reason": f"within budget ({counter_val}/{BUDGET})",
+        "counter": counter_val,
     })
     return 0
 
