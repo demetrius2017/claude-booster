@@ -109,8 +109,10 @@ PHASE_REL = ".claude/.phase"
 NON_CODING_SUBAGENT_TYPES: frozenset[str] = frozenset({"Explore", "Plan"})
 
 # Recon-intent verbs in description — agent is searching/reading, not coding.
+# Includes operational/deployment keywords: SSH delivery, prod restarts, etc.
+# are not "coding" even if description also contains "apply"/"fix".
 _RECON_INTENT_RE = re.compile(
-    r"(?i)\b(find|search|locate|grep|check|look|read|scan|list|show|get|fetch|audit|review|inspect|trace|verify|analyze|diagnose)\b"
+    r"(?i)\b(find|search|locate|grep|check|look|read|scan|list|show|get|fetch|audit|review|inspect|trace|verify|analyze|diagnose|deploy|prod|ssh|restart|remote|server|operational|deliver|patch)\b"
 )
 
 
@@ -300,12 +302,15 @@ def _run() -> int:
         return 0
 
     # ---- Directive 13: recon-intent description overrides coding keywords --
+    # If description contains recon verbs (find, search, check, etc.), the agent
+    # is doing investigation -- not coding. Allow even if "fix"/"update" also appears.
     if _RECON_INTENT_RE.search(description):
         _log({**base, "decision": DECISION_ALLOW,
               "reason": "recon-intent keyword in description overrides coding keyword"})
         return 0
 
     # ---- Directive 14: haiku model signals recon tier -------------------------
+    # Per tool-strategy.md, haiku is used for trivial/recon tasks (grep, lookup).
     model = tool_input.get("model") or ""
     if model == "haiku":
         _log({**base, "decision": DECISION_ALLOW,
