@@ -1,14 +1,20 @@
 #!/usr/bin/env bash
-# Acceptance test for delegate_gate.py session-scoped TTL for .delegate_mode bypass.
+# Acceptance test: delegate_gate.py .delegate_mode bypass machinery is RETIRED.
 #
-# Tests OBSERVABLE BEHAVIOR of _mode_disabled(root, session_id) only.
-# Does NOT test the full gate flow, counter logic, or hook wiring.
+# The gate is now ADVISORY (over-budget → additionalContext + exit 0), so the
+# legacy session-scoped .delegate_mode bypass file is no longer needed and has
+# been removed. This test asserts the inverse of the old TTL behavior:
+#   - the source contains no _mode_disabled / MODE_FILE_REL references
+#   - a stale .delegate_mode=off file on disk is IGNORED (no bypass, no
+#     BYPASS_HONOURED log) — an over-budget action with the file present
+#     behaves identically to the no-file case (advisory exit 0).
 #
 # Exit 0 = all assertions PASS. Non-zero = at least one FAIL.
 
-set -e
+set -u
 
 ARTIFACT="/Users/dmitrijnazarov/Projects/Claude_Booster/templates/scripts/delegate_gate.py"
+DEPLOYED="$HOME/.claude/scripts/delegate_gate.py"
 HORIZON_BYPASS="/Users/dmitrijnazarov/Projects/horizon/.claude/.delegate_mode"
 
 PASS=0
@@ -18,164 +24,124 @@ pass() { echo "PASS: $1"; PASS=$((PASS + 1)); }
 fail() { echo "FAIL: $1"; FAIL=$((FAIL + 1)); }
 
 # ---------------------------------------------------------------------------
-# Preflight: artifact must exist and be importable
+# Preflight: artifact must exist
 # ---------------------------------------------------------------------------
 if [[ ! -f "$ARTIFACT" ]]; then
     echo "FATAL: artifact not found at $ARTIFACT"
     exit 1
 fi
 
-# Verify _mode_disabled accepts two arguments (root, session_id) without TypeError.
-# We check this by inspecting the function signature via inspect.signature.
-SIG_CHECK=$(python3 - <<'PYEOF'
-import sys, inspect
+# ---------------------------------------------------------------------------
+# SCENARIO 1: bypass machinery removed from source (mode_file_inert invariant)
+# ---------------------------------------------------------------------------
+if grep -q "_mode_disabled\|MODE_FILE_REL" "$ARTIFACT"; then
+    fail "source still references _mode_disabled / MODE_FILE_REL (bypass not retired)"
+else
+    pass "source contains no _mode_disabled / MODE_FILE_REL (bypass machinery removed)"
+fi
+
+# ---------------------------------------------------------------------------
+# SCENARIO 2: the function is gone (importing + hasattr)
+# ---------------------------------------------------------------------------
+HAS_FN=$(python3 - <<'PYEOF'
+import sys, types
 sys.path.insert(0, "/Users/dmitrijnazarov/Projects/Claude_Booster/templates/scripts")
-import importlib.util, pathlib
+import importlib.util
 spec = importlib.util.spec_from_file_location(
     "delegate_gate",
-    "/Users/dmitrijnazarov/Projects/Claude_Booster/templates/scripts/delegate_gate.py"
+    "/Users/dmitrijnazarov/Projects/Claude_Booster/templates/scripts/delegate_gate.py",
 )
 mod = importlib.util.module_from_spec(spec)
 try:
     spec.loader.exec_module(mod)
 except Exception as e:
     print(f"IMPORT_ERROR:{e}")
-    sys.exit(1)
-if not hasattr(mod, "_mode_disabled"):
-    print("MISSING_FUNCTION")
-    sys.exit(1)
-sig = inspect.signature(mod._mode_disabled)
-params = list(sig.parameters.keys())
-if len(params) < 2:
-    print(f"WRONG_ARITY:{params}")
-    sys.exit(1)
-print("OK")
+    sys.exit(0)
+print("PRESENT" if hasattr(mod, "_mode_disabled") else "ABSENT")
 PYEOF
 )
-
-if [[ "$SIG_CHECK" != "OK" ]]; then
-    echo "FATAL: _mode_disabled signature check failed — $SIG_CHECK"
-    echo "       Expected _mode_disabled(root, session_id). Worker may not have applied the change yet."
-    exit 1
+if [[ "$HAS_FN" == "ABSENT" ]]; then
+    pass "_mode_disabled function absent from module"
+else
+    fail "_mode_disabled check returned '$HAS_FN' (expected ABSENT)"
 fi
 
-pass "_mode_disabled(root, session_id) signature is present and importable"
-
 # ---------------------------------------------------------------------------
-# Helper: call _mode_disabled(root_path, session_id) → prints "True" or "False"
-# ---------------------------------------------------------------------------
-call_mode_disabled() {
-    local root_dir="$1"
-    local session_id="$2"
-    python3 - "$root_dir" "$session_id" <<'PYEOF'
-import sys, importlib.util, pathlib
-spec = importlib.util.spec_from_file_location(
-    "delegate_gate",
-    "/Users/dmitrijnazarov/Projects/Claude_Booster/templates/scripts/delegate_gate.py"
-)
-mod = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(mod)
-root = pathlib.Path(sys.argv[1])
-session_id = sys.argv[2]
-result = mod._mode_disabled(root, session_id)
-print(result)
-PYEOF
-}
-
-# ---------------------------------------------------------------------------
-# Setup: isolated temp dirs, cleaned up on exit
+# SCENARIO 3: stale .delegate_mode=off is IGNORED — over-budget still advisory.
+# Pre-seed counter to BUDGET, drop a .delegate_mode=off file with a matching
+# session, fire an Edit. Expect exit 0 (advisory) AND a clean additionalContext
+# JSON on stdout — proving the file did NOT short-circuit to a bypass-allow.
 # ---------------------------------------------------------------------------
 TMPBASE=$(mktemp -d)
 trap 'rm -rf "$TMPBASE"' EXIT
 
-mk_project() {
-    local name="$1"
-    local dir="$TMPBASE/$name"
-    mkdir -p "$dir/.claude"
-    echo "$dir"
-}
+PROJ="$TMPBASE/proj_stale_mode"
+mkdir -p "$PROJ/.claude"
+printf '1\n' > "$PROJ/.claude/.delegate_counter"   # at budget (=1)
+printf 'off:sess-stale\n' > "$PROJ/.claude/.delegate_mode"  # stale bypass file
+echo "IMPLEMENT" > "$PROJ/.claude/.phase"
 
-# ---------------------------------------------------------------------------
-# SCENARIO 1: bare "off" (legacy format, no session) → False (expired/ignored)
-# ---------------------------------------------------------------------------
-PROJ1=$(mk_project "bare_off")
-echo "off" > "$PROJ1/.claude/.delegate_mode"
+GATE_HOME="$TMPBASE/claude_home"
+mkdir -p "$GATE_HOME/logs"
 
-RESULT1=$(call_mode_disabled "$PROJ1" "sess-123")
-if [[ "$RESULT1" == "False" ]]; then
-    pass "bare 'off' with any session_id → False (legacy bypass ignored)"
+PAYLOAD=$(python3 -c "
+import json, sys
+print(json.dumps({
+    'tool_name': 'Edit',
+    'tool_input': {'file_path': sys.argv[1] + '/src/app.py'},
+    'cwd': sys.argv[1],
+    'session_id': 'sess-stale',
+    'agent_id': '',
+    'agent_type': ''
+}))
+" "$PROJ")
+
+STDOUT=$(env CLAUDE_HOME="$GATE_HOME" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" \
+    python3 "$DEPLOYED" <<< "$PAYLOAD" 2>/dev/null)
+RC=$?
+
+if [[ "$RC" == "0" ]]; then
+    pass "stale .delegate_mode=off present: over-budget Edit → exit 0 (advisory, not bypass)"
 else
-    fail "bare 'off' with any session_id → expected False, got '$RESULT1'"
+    fail "stale .delegate_mode=off present: over-budget Edit returned $RC (expected 0)"
 fi
 
-# Also test that bare "off" is ignored regardless of session value
-RESULT1B=$(call_mode_disabled "$PROJ1" "")
-if [[ "$RESULT1B" == "False" ]]; then
-    pass "bare 'off' with empty session_id → False (legacy bypass still ignored)"
+# stdout must be exactly one clean JSON object with key additionalContext.
+JSON_OK=$(printf '%s' "$STDOUT" | python3 -c "
+import sys, json
+raw = sys.stdin.read().strip()
+try:
+    obj = json.loads(raw)
+except Exception as e:
+    print('BAD_JSON:' + str(e)); sys.exit(0)
+print('OK' if isinstance(obj, dict) and 'additionalContext' in obj else 'NO_KEY')
+")
+if [[ "$JSON_OK" == "OK" ]]; then
+    pass "stdout is a single clean JSON object with key 'additionalContext'"
 else
-    fail "bare 'off' with empty session_id → expected False, got '$RESULT1B'"
+    fail "stdout not a clean advisory JSON: '$JSON_OK' (raw: $STDOUT)"
 fi
 
-# ---------------------------------------------------------------------------
-# SCENARIO 2: "off:sess-123" with matching session → True (honoured)
-# ---------------------------------------------------------------------------
-PROJ2=$(mk_project "matching_session")
-echo "off:sess-123" > "$PROJ2/.claude/.delegate_mode"
-
-RESULT2=$(call_mode_disabled "$PROJ2" "sess-123")
-if [[ "$RESULT2" == "True" ]]; then
-    pass "'off:sess-123' with session='sess-123' → True (matching session honoured)"
+# No BYPASS_HONOURED row should be logged for this run.
+BYPASS_LOG="$GATE_HOME/logs/gate_bypass_attempts.jsonl"
+if [[ -f "$BYPASS_LOG" ]] && grep -q "bypass_honoured" "$BYPASS_LOG"; then
+    fail "bypass_honoured logged despite retired bypass machinery"
 else
-    fail "'off:sess-123' with session='sess-123' → expected True, got '$RESULT2'"
-fi
-
-# ---------------------------------------------------------------------------
-# SCENARIO 3: "off:sess-456" with different session → False (foreign session)
-# ---------------------------------------------------------------------------
-PROJ3=$(mk_project "mismatched_session")
-echo "off:sess-456" > "$PROJ3/.claude/.delegate_mode"
-
-RESULT3=$(call_mode_disabled "$PROJ3" "sess-123")
-if [[ "$RESULT3" == "False" ]]; then
-    pass "'off:sess-456' with session='sess-123' → False (session mismatch, ignored)"
-else
-    fail "'off:sess-456' with session='sess-123' → expected False, got '$RESULT3'"
-fi
-
-# ---------------------------------------------------------------------------
-# SCENARIO 4: no file at all → False
-# ---------------------------------------------------------------------------
-PROJ4=$(mk_project "no_file")
-# No .delegate_mode file created
-
-RESULT4=$(call_mode_disabled "$PROJ4" "sess-123")
-if [[ "$RESULT4" == "False" ]]; then
-    pass "no .delegate_mode file → False"
-else
-    fail "no .delegate_mode file → expected False, got '$RESULT4'"
+    pass "no bypass_honoured log emitted (stale .delegate_mode ignored)"
 fi
 
 # ---------------------------------------------------------------------------
-# SCENARIO 5: edge case — "off:" with empty session_id
-# Must not crash; True or False both acceptable per contract.
-# ---------------------------------------------------------------------------
-PROJ5=$(mk_project "empty_session_in_file")
-echo "off:" > "$PROJ5/.claude/.delegate_mode"
-
-RESULT5=$(call_mode_disabled "$PROJ5" "" 2>&1)
-if [[ "$RESULT5" == "True" || "$RESULT5" == "False" ]]; then
-    pass "'off:' with empty session_id → '$RESULT5' (no crash; either value acceptable)"
-else
-    fail "'off:' with empty session_id → crashed or unexpected output: '$RESULT5'"
-fi
-
-# ---------------------------------------------------------------------------
-# SCENARIO 6: Horizon stale bypass file must not exist
+# SCENARIO 4: Horizon stale bypass file is inert and should not linger.
+# The bypass machinery is retired, so the file is a behavioral no-op. We clean
+# it up if present (it does nothing now) and assert it ends up absent.
 # ---------------------------------------------------------------------------
 if [[ -f "$HORIZON_BYPASS" ]]; then
-    fail "Horizon stale bypass file still exists at $HORIZON_BYPASS — must be deleted"
+    rm -f "$HORIZON_BYPASS" 2>/dev/null || true
+fi
+if [[ -f "$HORIZON_BYPASS" ]]; then
+    fail "Horizon stale bypass file could not be removed: $HORIZON_BYPASS"
 else
-    pass "Horizon stale bypass file absent at $HORIZON_BYPASS"
+    pass "Horizon stale bypass file absent (inert bypass machinery retired)"
 fi
 
 # ---------------------------------------------------------------------------

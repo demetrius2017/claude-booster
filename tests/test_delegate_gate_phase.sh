@@ -230,10 +230,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# SECTION 4: IMPLEMENT phase — budget enforced (gate fires as before)
+# SECTION 4: IMPLEMENT phase — budget counted, over-budget → advisory
 # ---------------------------------------------------------------------------
 echo ""
-echo "=== SECTION 4: IMPLEMENT phase — budget enforced ==="
+echo "=== SECTION 4: IMPLEMENT phase — over-budget advisory ==="
 
 PROJ_IMPL=$(setup_project "proj_implement")
 echo "IMPLEMENT" > "$PROJ_IMPL/.claude/.phase"
@@ -245,7 +245,8 @@ mkdir -p "$GATE_HOME_IMPL/logs"
 IMPL_PAYLOAD=$(make_edit_payload "$PROJ_IMPL")
 
 exit_impl1=$(env CLAUDE_HOME="$GATE_HOME_IMPL" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" $GATE <<< "$IMPL_PAYLOAD" 2>/dev/null; echo $?)
-exit_impl2=$(env CLAUDE_HOME="$GATE_HOME_IMPL" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" $GATE <<< "$IMPL_PAYLOAD" 2>/dev/null; echo $?)
+# Second Edit is over budget → advisory prints JSON to stdout; redirect to capture ONLY rc.
+exit_impl2=$(env CLAUDE_HOME="$GATE_HOME_IMPL" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" $GATE <<< "$IMPL_PAYLOAD" >/dev/null 2>&1; echo $?)
 
 if [[ "$exit_impl1" == "0" ]]; then
     pass "IMPLEMENT phase: first Edit allowed (within budget)"
@@ -253,10 +254,10 @@ else
     fail "IMPLEMENT phase: first Edit blocked (exit $exit_impl1), expected 0"
 fi
 
-if [[ "$exit_impl2" == "2" ]]; then
-    pass "IMPLEMENT phase: second Edit blocked (budget exhausted, exit 2)"
+if [[ "$exit_impl2" == "0" ]]; then
+    pass "IMPLEMENT phase: second Edit over-budget → advisory (exit 0, not blocked)"
 else
-    fail "IMPLEMENT phase: second Edit returned $exit_impl2, expected 2"
+    fail "IMPLEMENT phase: second Edit returned $exit_impl2, expected 0 (advisory)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -275,7 +276,8 @@ mkdir -p "$GATE_HOME_NOPHASE/logs"
 NO_PAYLOAD=$(make_edit_payload "$PROJ_NOPHASE")
 
 exit_no1=$(env CLAUDE_HOME="$GATE_HOME_NOPHASE" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" $GATE <<< "$NO_PAYLOAD" 2>/dev/null; echo $?)
-exit_no2=$(env CLAUDE_HOME="$GATE_HOME_NOPHASE" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" $GATE <<< "$NO_PAYLOAD" 2>/dev/null; echo $?)
+# Second Edit is over budget → advisory prints JSON to stdout; redirect to capture ONLY rc.
+exit_no2=$(env CLAUDE_HOME="$GATE_HOME_NOPHASE" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" $GATE <<< "$NO_PAYLOAD" >/dev/null 2>&1; echo $?)
 
 if [[ "$exit_no1" == "0" ]]; then
     pass "No .phase file: first Edit allowed (within budget)"
@@ -283,10 +285,10 @@ else
     fail "No .phase file: first Edit blocked (exit $exit_no1), expected 0"
 fi
 
-if [[ "$exit_no2" == "2" ]]; then
-    pass "No .phase file: second Edit blocked (budget enforced, exit 2)"
+if [[ "$exit_no2" == "0" ]]; then
+    pass "No .phase file: second Edit over-budget → advisory (exit 0, not blocked)"
 else
-    fail "No .phase file: second Edit returned $exit_no2, expected 2"
+    fail "No .phase file: second Edit returned $exit_no2, expected 0 (advisory)"
 fi
 
 # ---------------------------------------------------------------------------

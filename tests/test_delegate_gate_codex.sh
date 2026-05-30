@@ -373,14 +373,15 @@ else
     fail "S4: first action returned $step1 (expected 0)"
 fi
 
-# Step 2: second action before delegation — should be BLOCKED (counter was 1)
+# Step 2: second action before delegation — over budget → ADVISORY (exit 0, counter was 1)
+# Over-budget prints the advisory JSON to stdout; redirect it so we capture ONLY rc.
 PAYLOAD2=$(make_bash_payload "$PROJ_INT" "vim anotherfile.py")
 step2=$(env CLAUDE_HOME="$GATE_HOME_INT" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" \
-    python3 "$GATE_PY" <<< "$PAYLOAD2" 2>/dev/null; echo $?)
-if [[ "$step2" == "2" ]]; then
-    pass "S4: second direct action BLOCKED (budget exhausted, exit 2)"
+    python3 "$GATE_PY" <<< "$PAYLOAD2" >/dev/null 2>&1; echo $?)
+if [[ "$step2" == "0" ]]; then
+    pass "S4: second direct action over-budget → advisory (exit 0, not blocked)"
 else
-    fail "S4: second action returned $step2 (expected 2 — budget exhausted)"
+    fail "S4: second action returned $step2 (expected 0 — advisory, not blocked)"
 fi
 
 # Step 3: delegation via codex_worker.sh — resets counter to 0
@@ -425,13 +426,14 @@ PEXEC1=$(make_bash_payload "$PROJ_EXEC" "vim file.py")
 e1=$(env CLAUDE_HOME="$GATE_HOME_EXEC" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" \
     python3 "$GATE_PY" <<< "$PEXEC1" 2>/dev/null; echo $?)
 PEXEC2=$(make_bash_payload "$PROJ_EXEC" "vim file2.py")
+# Over-budget prints the advisory JSON to stdout; redirect it so we capture ONLY rc.
 e2=$(env CLAUDE_HOME="$GATE_HOME_EXEC" CLAUDE_BOOSTER_SKIP_DELEGATE_GATE="" \
-    python3 "$GATE_PY" <<< "$PEXEC2" 2>/dev/null; echo $?)
+    python3 "$GATE_PY" <<< "$PEXEC2" >/dev/null 2>&1; echo $?)
 
-if [[ "$e2" == "2" ]]; then
-    pass "S5: budget exhausted before codex exec delegation (exit 2)"
+if [[ "$e2" == "0" ]]; then
+    pass "S5: over-budget before codex exec delegation → advisory (exit 0)"
 else
-    fail "S5: budget exhaustion check failed (got $e2, expected 2)"
+    fail "S5: over-budget advisory check failed (got $e2, expected 0)"
 fi
 
 # Delegate via codex exec -m

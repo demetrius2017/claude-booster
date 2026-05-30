@@ -66,6 +66,7 @@ BYPASS_LOG_NAME = "gate_bypass_attempts.jsonl"
 DECISION_ALLOW = "allow"
 DECISION_BLOCK = "block"
 DECISION_AUTO_SKIP = "auto_skip"
+DECISION_ADVISORY = "advisory"
 DECISION_BYPASS_HONOURED = "bypass_honoured"
 DECISION_BYPASS_REFUSED = "bypass_refused"
 

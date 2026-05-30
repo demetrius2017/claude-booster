@@ -1,20 +1,29 @@
 #!/usr/bin/env python3
 """
-PreToolUse hook: enforce "delegate, don't do" via a 1-action budget.
+PreToolUse hook: NUDGE "delegate, don't do" via a 1-action budget (ADVISORY).
 
 Purpose:
   The Lead (main Claude session) is supposed to orchestrate agents, not do
   the substantive work itself. pipeline.md says so, but soft rules get
-  ignored. This hook enforces the same rule at the harness layer: main
-  Claude may perform at most 1 "action" tool call per delegation window,
-  after which it MUST delegate (Agent / TaskCreate / /supervise) before
-  doing another direct action.
+  ignored. This hook keeps the same 1-action budget but, on exhaustion,
+  emits a NON-BLOCKING advisory (additionalContext + exit 0) instead of a
+  hard block. It nudges the Lead toward delegation without ever cancelling
+  the tool call — and therefore without cancelling sibling calls in a
+  parallel tool-batch (the harness cancels every sibling in a batch when
+  any one returns non-zero; a hard block here used to take out the very
+  Agent-spawn siblings that would have reset the budget).
+
+  Hard teeth live elsewhere: go_gate / phase_gate / dep_guard /
+  financial_dml_guard still block (exit 2). This gate is advisory only.
 
 Contract:
   stdin  — PreToolUse JSON {tool_name, tool_input, cwd, agent_id, agent_type,
            session_id}
-  stderr — feedback on block
-  exit   — 0 allow, 2 block
+  stdout — on budget exhaustion ONLY: a single JSON line
+           {"additionalContext": "<nudge>"}. No other path writes stdout.
+  stderr — unused on the budget path (kept for malformed-payload note).
+  exit   — 0 in ALL normal cases (allow + advisory). Exit 2 is reserved
+           for the malformed-payload fail-closed branch ONLY.
 
 Sub-agent auto-skip:
   Claude Code v2.1.114+ passes ``agent_id`` and ``agent_type`` fields in the
@@ -48,17 +57,16 @@ State:
     Codex CLI delegation (same budget-reset semantics as supervisor spawn).
   Bash invoking `mcp__pal__*` via shell is impossible — PAL is its own tool
     but since it runs a deep Claude-like analysis, it counts as delegation.
+  Because the over-budget response is now advisory (exit 0), the Agent /
+  TaskCreate sibling in a parallel batch always survives and resets the
+  counter — the advisory is self-clearing.
 
 Bypass (LEAD ONLY — sub-agents cannot self-disable):
   env CLAUDE_BOOSTER_SKIP_DELEGATE_GATE=1
-  file <project_root>/.claude/.delegate_mode containing 'off:<session_id>'
-       (session-scoped: only honoured when the session_id in the file matches
-       the current session's session_id, so the bypass expires automatically
-       at session end; bare 'off' without a session_id is treated as expired
-       and ignored — this prevents permanent bypass from stale forgotten files;
-       sub-agent self-bypass is refused and logged to
-       ~/.claude/logs/gate_bypass_attempts.jsonl)
   path allowlist match (reports/ audits/ *.md .claude/ etc.)
+  (The legacy <project_root>/.claude/.delegate_mode file bypass has been
+  RETIRED — the gate is advisory, so a bypass is no longer needed. Stale
+  .delegate_mode files on disk are ignored.)
 
 Phase-aware exemption:
   When <project_root>/.claude/.phase contains RECON or PLAN, the gate
@@ -67,22 +75,22 @@ Phase-aware exemption:
   enforcement is counterproductive.  If .phase is absent or contains any
   other value, the gate enforces normally.
 
-  The stderr block message deliberately does NOT mention the bypass file
-  path — sub-agents read the same stderr and adopt it as a fix-recipe.
-  README keeps the documentation for human Leads.
-
 Decision telemetry:
   Every invocation appends one JSON line to
   ~/.claude/logs/delegate_gate_decisions.jsonl with fields
   {ts, gate, decision, reason, agent_id, agent_type, tool_name, cwd,
-  project, session_id, counter, budget}. Fail-soft: log failures are
-  swallowed — the gate's primary job is gating, not logging.
+  project, session_id, counter, budget}. Over-budget events log
+  decision='advisory' (was 'block'). Fail-soft: log failures are swallowed
+  — the gate's primary job is gating, not logging.
 
 Limitations:
   - Per-project state in the repo, so parallel sessions on the same repo
     share the same counter (race-prone but state is idempotent).
   - Agent-spawn subprocesses run in their own tool context — the inner
     Claude's tool calls hit THEIR own hooks, not this one.
+  - Advisory only: an over-budget action is NOT blocked, just nudged. The
+    block-rate in gate_stats.py reads ~0 because over-budget now logs
+    'advisory', not 'block' (gate_stats does not yet count 'advisory').
 """
 from __future__ import annotations
 
@@ -95,12 +103,10 @@ from pathlib import Path
 
 try:
     from _gate_common import (
-        BYPASS_LOG_NAME,
+        DECISION_ADVISORY,
         DECISION_ALLOW,
         DECISION_AUTO_SKIP,
         DECISION_BLOCK,
-        DECISION_BYPASS_HONOURED,
-        DECISION_BYPASS_REFUSED,
         DELEGATE_LOG_NAME,
         append_jsonl,
         is_subagent_context,
@@ -112,12 +118,10 @@ except ImportError:
     import pathlib as _pl
     sys.path.insert(0, str(_pl.Path(__file__).resolve().parent))
     from _gate_common import (  # type: ignore[no-redef]
-        BYPASS_LOG_NAME,
+        DECISION_ADVISORY,
         DECISION_ALLOW,
         DECISION_AUTO_SKIP,
         DECISION_BLOCK,
-        DECISION_BYPASS_HONOURED,
-        DECISION_BYPASS_REFUSED,
         DELEGATE_LOG_NAME,
         append_jsonl,
         is_subagent_context,
@@ -128,7 +132,6 @@ except ImportError:
 
 BUDGET = int(os.environ.get("CLAUDE_BOOSTER_DELEGATE_BUDGET", "1"))
 STATE_FILE_REL = ".claude/.delegate_counter"
-MODE_FILE_REL = ".claude/.delegate_mode"
 
 # Phases exempt from the delegation budget — read-only by design;
 # phase_gate.py separately blocks Edit/Write during RECON/PLAN.
@@ -305,9 +308,10 @@ def _segment_is_recon(segment: str) -> bool:
     ):
         return True
 
-    # Git source-control early-exit: add/commit/push/tag/etc. deliver work —
-    # MUST be before redirect/subst guards: Co-Authored-By <noreply@...>
-    # triggers redirect regex, $(cat ...) triggers subst guard.
+    # Git source-control early-exit: add/commit/push/tag/etc. deliver work.
+    # Must fire BEFORE redirect/subst guards — commit messages contain > and $()
+    # in Co-Authored-By emails and heredoc formatting, not actual shell ops.
+    # Destructive ops (push --force, reset --hard) are in permissions.deny.
     if _GIT_WRITE_OPS_RE.search(stripped):
         return True
 
@@ -322,7 +326,9 @@ def _segment_is_recon(segment: str) -> bool:
     if _SSH_CMD_RE.search(stripped):
         return True
 
-    # Output-redirect guard (after git/gh/ssh domain exits).
+    # Output-redirect guard: any unquoted > or >> to a real file makes this
+    # segment non-recon, even if the command itself is read-only.
+    # /dev/null, /dev/stderr, and fd-duplication (&) are exempted.
     if _REDIRECT_TO_FILE_RE.search(segment):
         return False
 
@@ -333,6 +339,11 @@ def _segment_is_recon(segment: str) -> bool:
         subst_residual = _SAFE_SUBST_RE.sub("", segment)
         if "$(" in subst_residual or "`" in subst_residual:
             return False
+
+    # /tmp file operations are prep-work (temp scripts, patches), not project
+    # code editing. Covers: sed /tmp/..., cat > /tmp/..., cp X /tmp/..., etc.
+    if re.search(r"(/tmp/|/private/tmp/|/var/tmp/)", stripped) and not re.search(r"(/home/|/opt/|/srv/|/etc/|/usr/)", stripped):
+        return True
 
     # Split on pipes to inspect each piped segment individually.
     # Only the first part needs to match RECON_BASH_PATTERNS; subsequent parts
@@ -490,30 +501,6 @@ def _atomic_reset(root: Path) -> None:
         pass
 
 
-def _mode_disabled(root: Path, session_id: str) -> bool:
-    """Check if delegate gate is disabled for this session.
-
-    Format: 'off:<session_id>' — bypass is scoped to one session.
-    Legacy bare 'off' (no session_id) is treated as EXPIRED and ignored,
-    preventing permanent bypass from stale files.
-    """
-    path = root / MODE_FILE_REL
-    if not path.exists():
-        return False
-    try:
-        content = path.read_text().strip().lower()
-    except OSError:
-        return False
-    if content == "off":
-        # Legacy bare 'off' without session scope — treat as expired.
-        # This prevents permanent bypass from forgotten files.
-        return False
-    if content.startswith("off:"):
-        file_session = content[4:].strip()
-        return file_session == session_id.lower()
-    return False
-
-
 def _path_allowlisted(tool_input: dict) -> bool:
     for key in ("file_path", "path", "notebook_path"):
         v = tool_input.get(key)
@@ -548,8 +535,13 @@ def _bash_is_recon(cmd: str) -> bool:
     return all(_segment_is_recon(seg) for seg in segments)
 
 
-def _feedback(root: Path, tool: str, counter: int) -> str:
-    return f"delegate_gate: → Agent ({counter}/{BUDGET} on {tool!r})"
+def _advisory_nudge(counter: int) -> str:
+    """Build the non-blocking over-budget advisory text (additionalContext)."""
+    return (
+        f"ℹ delegate_gate: {counter}/{BUDGET} direct actions this window — "
+        f"prefer delegating code work via /go (Worker+Verifier). "
+        f"Advisory only, not blocking."
+    )
 
 
 def _build_base_record(data: dict, root: Path) -> dict:
@@ -605,7 +597,6 @@ def main() -> int:
     tool = data.get("tool_name") or ""
     tool_input = data.get("tool_input") or {}
     cwd = data.get("cwd") or ""
-    session_id = data.get("session_id") or ""
     is_subagent = is_subagent_context(data)
 
     root = _project_root(cwd)
@@ -613,25 +604,13 @@ def main() -> int:
     base["counter"] = _read_counter(root)
 
     # Sub-agent: delegation has already happened, the gate's job is done.
-    # But if the sub-agent ALSO wrote .delegate_mode=off to self-bypass,
-    # log the refused attempt for surveillance before returning.
+    # Auto-skip (exit 0). dep_guard auto-skips sub-agents the same way.
     if is_subagent:
-        attempted_bypass = _mode_disabled(root, session_id)
-        if attempted_bypass:
-            append_jsonl(BYPASS_LOG_NAME, {
-                **base,
-                "decision": DECISION_BYPASS_REFUSED,
-                "reason": "sub-agent cannot disable gate",
-                "bypass_file": str(root / MODE_FILE_REL),
-            })
-        auto_skip_rec = {
+        append_jsonl(DELEGATE_LOG_NAME, {
             **base,
             "decision": DECISION_AUTO_SKIP,
             "reason": "sub-agent context (agent_id/agent_type set)",
-        }
-        if attempted_bypass:
-            auto_skip_rec["attempted_bypass"] = True
-        append_jsonl(DELEGATE_LOG_NAME, auto_skip_rec)
+        })
         return 0
 
     if os.environ.get("CLAUDE_BOOSTER_SKIP_DELEGATE_GATE") == "1":
@@ -639,21 +618,6 @@ def main() -> int:
             **base,
             "decision": DECISION_ALLOW,
             "reason": "env CLAUDE_BOOSTER_SKIP_DELEGATE_GATE=1",
-        })
-        return 0
-
-    if _mode_disabled(root, session_id):
-        append_jsonl(BYPASS_LOG_NAME, {
-            **base,
-            "decision": DECISION_BYPASS_HONOURED,
-            "reason": "lead context honoured .delegate_mode=off",
-            "bypass_file": str(root / MODE_FILE_REL),
-        })
-        append_jsonl(DELEGATE_LOG_NAME, {
-            **base,
-            "decision": DECISION_BYPASS_HONOURED,
-            "reason": ".delegate_mode=off (lead)",
-            "attempted_bypass": True,
         })
         return 0
 
@@ -701,14 +665,24 @@ def main() -> int:
 
     counter_val, incremented = _atomic_check_and_increment(root, BUDGET)
     if not incremented:
-        sys.stderr.write(_feedback(root, tool, counter_val) + "\n")
+        # Over budget — ADVISORY, not a block. Emit a non-blocking nudge via
+        # additionalContext and exit 0. A hard block (exit 2) here would cause
+        # the harness to cancel every sibling call in the same parallel batch,
+        # including the Agent-spawn that would reset the counter. The advisory
+        # print is the ONLY stdout write on any code path. The try/except is
+        # MANDATORY: a BrokenPipe/OSError on the write must NOT degrade into a
+        # non-zero exit — that would resurrect the sibling-cancellation cascade.
+        try:
+            print(json.dumps({"additionalContext": _advisory_nudge(counter_val)}))
+        except OSError:
+            pass
         append_jsonl(DELEGATE_LOG_NAME, {
             **base,
-            "decision": DECISION_BLOCK,
-            "reason": f"budget exhausted ({counter_val}/{BUDGET})",
+            "decision": DECISION_ADVISORY,
+            "reason": f"budget exhausted ({counter_val}/{BUDGET}) — advisory nudge",
             "counter": counter_val,
         })
-        return 2
+        return 0
 
     append_jsonl(DELEGATE_LOG_NAME, {
         **base,
