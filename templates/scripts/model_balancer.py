@@ -108,8 +108,14 @@ _QUALITY_SCORES_ANTHROPIC: dict[str, int] = {
     "claude-haiku-4-5": 13,
 }
 
-# Pinned categories — their routing is NEVER overwritten by active logic
-_PINNED_CATEGORIES: frozenset[str] = frozenset({"lead", "high_blast_radius"})
+# Pinned categories — their routing is NEVER overwritten by active logic.
+# coding/hard pinned to Codex by user decision (2026-06-10): standalone Codex
+# sessions are not captured in model_metrics, so the active scorer only sees
+# Anthropic samples and would flip these back daily. Unpin once Codex
+# telemetry capture (retry/re-spawn metrics) lands.
+_PINNED_CATEGORIES: frozenset[str] = frozenset(
+    {"lead", "high_blast_radius", "coding", "hard"}
+)
 
 # Transitions ring-buffer cap
 _MAX_TRANSITIONS: int = 50
@@ -128,8 +134,8 @@ DEFAULTS: dict = {
         "trivial":        {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
         "recon":          {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
         "medium":         {"provider": PROVIDER_ANTHROPIC, "model": "claude-sonnet-4-6"},
-        "coding":         {"provider": PROVIDER_ANTHROPIC, "model": "claude-sonnet-4-6"},
-        "hard":           {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-8"},
+        "coding":         {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
+        "hard":           {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
         "consilium_bio":  {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-8"},
         "audit_external": {"provider": PROVIDER_PAL,       "model": "gpt-5.5"},
         "lead":           {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-8"},
