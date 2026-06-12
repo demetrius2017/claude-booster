@@ -570,6 +570,53 @@ def _active_decide(prior: dict) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Scheduled one-shot routing changes
+# ---------------------------------------------------------------------------
+
+def _apply_scheduled_changes(decision: dict) -> bool:
+    """
+    Apply due one-shot routing changes from decision["scheduled_changes"].
+
+    Entry shape: {effective_date: "YYYY-MM-DD", category, provider, model,
+    note, applied_on: null}. An entry is due when today >= effective_date
+    and applied_on is null. Deliberately overrides _PINNED_CATEGORIES:
+    pins freeze the daily active scorer, while scheduled changes are
+    explicit dated user decisions (e.g. promo-window reverts).
+    Returns True if at least one entry was applied.
+    """
+    today = _today_utc()
+    changed = False
+    routing = decision.setdefault("routing", {})
+    transitions = decision.setdefault("transitions", [])
+    for entry in decision.get("scheduled_changes", []):
+        if entry.get("applied_on"):
+            continue
+        eff = entry.get("effective_date", "")
+        cat = entry.get("category", "")
+        if not eff or today < eff or cat not in _KNOWN_CATEGORIES:
+            continue
+        old = copy.deepcopy(routing.get(cat, {}))
+        new = dict(routing.get(cat, {}))
+        new["provider"] = entry["provider"]
+        new["model"] = entry["model"]
+        routing[cat] = new
+        entry["applied_on"] = today
+        transitions.append({
+            "category": cat,
+            "old": old,
+            "new": {"provider": entry["provider"], "model": entry["model"]},
+            "computed_at": f"{today}T00:00:00Z",
+            "n_samples_winner": 0,
+            "p50_ms_winner": 0,
+            "note": f"scheduled change applied: {entry.get('note', '')}",
+        })
+        changed = True
+    if changed:
+        del transitions[:-_MAX_TRANSITIONS]
+    return changed
+
+
+# ---------------------------------------------------------------------------
 # Core decide logic
 # ---------------------------------------------------------------------------
 
@@ -599,7 +646,9 @@ def decide(*, force: bool = False) -> dict:
     disable_active = os.environ.get("CLAUDE_BALANCER_DISABLE_ACTIVE", "0") == "1"
 
     if prior is not None and prior.get("decision_date") == today and not force_active:
-        # Already fresh — no rewrite
+        # Already fresh — but a scheduled change may have become due mid-day
+        if _apply_scheduled_changes(prior):
+            _write_atomic(prior)
         _cached_decision = prior
         return prior
 
@@ -623,6 +672,7 @@ def decide(*, force: bool = False) -> dict:
             # Fall back gracefully to simple date refresh
             new_decision = _build_refreshed(prior)
 
+    _apply_scheduled_changes(new_decision)
     _write_atomic(new_decision)
     _cached_decision = new_decision
     return new_decision
