@@ -4,10 +4,10 @@ argument-hint: "<Artifact Contract — structured text with Objective, Verified 
 ---
 
 ## Progress tracking
-Before each numbered step below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/4 <step_label>"`
+Before each numbered step below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/5 <step_label>"`
 After the final step completes, run: `python3 ~/.claude/scripts/phase.py progress clear`
 
-Steps: `1/4 flow_designer`, `2/4 worker_verifier`, `3/4 test_run`, `4/4 verdict`
+Steps: `1/5 flow_designer`, `2/5 challenge`, `3/5 worker_verifier`, `4/5 test_run`, `5/5 verdict`
 
 ---
 
@@ -50,7 +50,7 @@ Then proceed to Phase 1.
 
 ## Phase 1 — FLOW DESIGNER
 
-Run: `python3 ~/.claude/scripts/phase.py progress "1/4 flow_designer"`
+Run: `python3 ~/.claude/scripts/phase.py progress "1/5 flow_designer"`
 
 Query the model balancer:
 ```bash
@@ -129,13 +129,87 @@ Output:
 Flow Designer complete. PFD: <N> failure modes, <M> worker directives, <K> verifier assertions.
 ```
 
-Save the full PFD text for Phase 2.
+Save the full PFD text for Phase 1B.
+
+---
+
+## Phase 1B — PFD ADVERSARIAL CHALLENGE (cross-provider, Opus)
+
+Run: `python3 ~/.claude/scripts/phase.py progress "2/5 challenge"`
+
+The Flow Designer drafted the PFD on the `hard` tier. This phase has a **different-provider** reviewer attack that PFD **before any code is written** — the cheapest place to catch rework. (Consilium 2026-06-13: contract ambiguity + missed failure modes are ~65% of returns-to-code; model capability is ~5%. Design-time is where the strong model earns its keep — see `reports/consilium_2026-06-13_dual_model_rework_reduction.md`, SHIP-1.)
+
+**Provider rule — the challenge MUST run on a different provider than the Flow Designer (this is the whole point — a model cannot find its own blind spots):**
+
+- Check what `python3 ~/.claude/scripts/model_balancer.py get hard` returned for Phase 1.
+- **If Flow Designer's provider was NOT `anthropic`** (e.g. `codex-cli:gpt-5.5` — today's pinned state): spawn ONE Challenge **Agent** with `model: "opus"` explicitly. **NOT `run_in_background`** — Lead waits.
+- **If Flow Designer's provider WAS `anthropic`** (balancer routed `hard` to Claude): run the challenge via Bash instead, to stay cross-provider — `~/.claude/scripts/codex_worker.sh gpt-5.5 < <prompt-file>` — capture stdout as the critique. (Codex is read-only analysis here; it produces a critique, never code.)
+
+Either way the prompt is identical:
+
+**Challenge prompt:**
+
+```
+You are a PFD Challenge agent. A Flow Designer (a DIFFERENT model) produced the Process Flow Document below. Attack it adversarially and find what it missed — before any code is written. You do NOT write code. You do NOT rewrite the PFD. You return a structured critique with concrete additions.
+
+---
+
+## Artifact Contract
+<INSERT FULL ARTIFACT CONTRACT FROM PHASE 0>
+
+---
+
+## Process Flow Document to challenge
+<INSERT FULL PFD FROM PHASE 1>
+
+---
+
+## Attack it on five axes — be specific (name the field / operation, not "improve error handling"):
+
+1. MISSING FAILURE MODES — apply each HAZOP guide word (NO/MORE/LESS/REVERSE/LATE/EARLY/OTHER/PARTIAL) to every external interaction in the PFD. Which guide word produced NO failure_mode entry? Add it.
+2. CONTRACT AMBIGUITY — is any AC field underspecified so that "correct" is undefined (a silent input, an unspecified error shape, an undefined return on an edge)? If yes → A-class signal; name the exact ambiguity.
+3. INTEGRATION MISMATCH — does the task touch existing code? Which existing helper/function/invariant could this duplicate or break? (This is the #1 under-caught rework class — design review usually misses it.)
+4. WEAK INVARIANTS — is any invariant not expressible as a boolean assertion? Any temporal_gap duration vague? Any worker_directive advisory ("should") instead of imperative ("MUST")?
+5. VERIFIER BLIND SPOTS — is there a failure_mode with NO corresponding verifier_assertion? Every CRITICAL/HIGH failure mode must be testable.
+
+## Required output — structured, no prose preamble:
+
+VERDICT: SOUND | GAPS_FOUND | CONTRACT_AMBIGUOUS
+
+ADDITIONS (only if GAPS_FOUND):
+- new_failure_modes: [<id, guide_word, trigger, mitigation, category> ...]
+- new_worker_directives: [<imperative "MUST..." + rationale> ...]
+- new_verifier_assertions: [<assertion + how-to-test + derived_from> ...]
+- invariant_fixes: [<which invariant, how to make it boolean> ...]
+
+CONTRACT_AMBIGUITY (only if CONTRACT_AMBIGUOUS):
+- <exact field + what is undefined + what the AC must specify>
+
+Output only the verdict block. Be ruthless but concrete — a vague critique is worse than none.
+```
+
+**After Challenge returns — Lead reconciles (additive, deterministic):**
+
+- **VERDICT: SOUND** → PFD unchanged. Output `Challenge: SOUND — PFD held.` Proceed to Phase 2 with the original PFD.
+- **VERDICT: GAPS_FOUND** → APPEND the agent's `new_failure_modes`, `new_worker_directives`, `new_verifier_assertions`, and `invariant_fixes` into the PFD's corresponding sections. **Additive only** — the challenge may ADD requirements, never delete the Flow Designer's. Output `Challenge: GAPS_FOUND — +<a> failure modes, +<b> directives, +<c> assertions folded into PFD.` Proceed to Phase 2 with the **augmented PFD**.
+- **VERDICT: CONTRACT_AMBIGUOUS** → A-class signal caught at design time (far cheaper than a post-implementation A/W-failure). STOP and surface to the user:
+  ```
+  /go PAUSED — PFD challenge found the Artifact Contract ambiguous:
+    <the ambiguity from the challenge>
+  Clarify the AC, then re-run /go. (Catching this now is exactly why the challenge exists.)
+  ```
+  Then run `python3 ~/.claude/scripts/phase.py progress clear` and remove the .go_active marker:
+  ```bash
+  rm -f "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.go_active"
+  ```
+
+**Why additive reconciliation preserves the exit-code axiom:** the challenge never produces code and never overrides a test verdict — it only enriches the PFD with more failure modes and stricter assertions. More verifier_assertions = a stricter acceptance test, which can only make a defective Worker output more likely to FAIL, never more likely to wrongly PASS. The "PASS = test exit code only" axiom is untouched.
 
 ---
 
 ## Phase 2 — WORKER + VERIFIER (parallel)
 
-Run: `python3 ~/.claude/scripts/phase.py progress "2/4 worker_verifier"`
+Run: `python3 ~/.claude/scripts/phase.py progress "3/5 worker_verifier"`
 
 Query model balancer for coding tier:
 ```bash
@@ -168,7 +242,7 @@ produce the artifact at the specified path. Do not explain plans. Do not ask for
 
 ## Process Flow Document (PFD)
 
-<INSERT FULL PFD FROM PHASE 1>
+<INSERT FULL PFD — the Phase 1B-augmented version if the challenge returned GAPS_FOUND, else the Phase 1 original>
 
 ---
 
@@ -272,7 +346,7 @@ Do NOT begin Phase 3 until BOTH Worker and Verifier have returned.
 
 ## Phase 3 — TEST RUN
 
-Run: `python3 ~/.claude/scripts/phase.py progress "3/4 test_run"`
+Run: `python3 ~/.claude/scripts/phase.py progress "4/5 test_run"`
 
 After both agents complete:
 
@@ -295,7 +369,7 @@ After both agents complete:
 
 ## Phase 4 — VERDICT
 
-Run: `python3 ~/.claude/scripts/phase.py progress "4/4 verdict"`
+Run: `python3 ~/.claude/scripts/phase.py progress "5/5 verdict"`
 
 ### If exit=0 (ALL PASS):
 
@@ -411,11 +485,13 @@ On retry, always include the failed agent's session context (via `session_contex
 
 ## [CRITICAL] Non-negotiable constraints
 
-1. **ALL THREE agents MUST spawn.** There is no "skip Flow Designer" path inside `/go`.
+1. **ALL FOUR roles MUST run: Flow Designer → Challenge → Worker + Verifier.** There is no "skip" path inside `/go`.
    If the task is trivial enough to skip Flow Designer, do NOT use `/go` — edit directly.
 
-2. **Flow Designer MUST complete BEFORE Worker + Verifier spawn.**
-   PFD is an INPUT to both. Spawning Worker or Verifier without a PFD = protocol violation.
+2. **Flow Designer → Challenge → Worker + Verifier is a strict order.**
+   PFD is an INPUT to the Challenge; the (possibly augmented) PFD is an INPUT to both Worker and Verifier. Spawning Worker or Verifier before the Challenge reconciles = protocol violation.
+
+   **The Challenge MUST run on a different provider than the Flow Designer.** A model cannot find its own blind spots — same-provider "review" is theater. If `get hard` returned a non-anthropic provider, the Challenge is an Opus Agent; if it returned anthropic, the Challenge runs via `codex_worker.sh gpt-5.5`. The Challenge is additive (may add failure modes / directives / assertions, never delete them) and produces NO code — so the exit-code-only PASS axiom is preserved.
 
 3. **Verifier MUST NOT see Worker's prompt or implementation approach.**
    The Verifier's prompt contains ONLY: AC fields (Objective, Artifact path, Expected observable behavior, Acceptance emphasis) + PFD sections (verifier_assertions, invariants, branching_scenarios). Nothing else.
