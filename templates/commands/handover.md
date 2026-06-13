@@ -14,7 +14,9 @@ Save `reports/handover_YYYY-MM-DD_HHMMSS.md` with the following required section
 
 **`## Session reference`** — obtain via this snippet and paste the result:
 ```bash
-ls -t "$HOME/.claude/projects/$(git rev-parse --show-toplevel 2>/dev/null | sed 's|/|-|g')"/*.jsonl 2>/dev/null | head -1
+# CC encodes the project dir by replacing EVERY non-alphanumeric char with '-'
+# (so /Users/.../Claude_Booster -> -Users-...-Claude-Booster; note '_' -> '-' too).
+ls -t "$HOME/.claude/projects/$(git rev-parse --show-toplevel 2>/dev/null | sed 's/[^a-zA-Z0-9]/-/g')"/*.jsonl 2>/dev/null | head -1
 ```
 Format as: `Session UUID: <uuid>  JSONL: <full-path>`. Add a one-line note that this JSONL can be grepped during RECON to understand what was tried and what failed in this session.
 
