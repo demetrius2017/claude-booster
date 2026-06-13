@@ -58,6 +58,32 @@ Execute the command behavior, not the literal Claude Code tool names.
 - Claude hooks are not assumed to be active in Codex. Preserve the evidence
   discipline in assistant output even when no hook enforces it.
 
+### Cross-provider stages (SHIP-1..4 in `go` and `hackathon`)
+
+The `go` pipeline (Phase 1B Challenge, Phase 2 Verifier, Phase 3B Diff-review)
+and the `hackathon` edge-test harvest require each verifying/reviewing role to
+run on a **different provider than the Worker**. The spec is written from the
+Claude-CLI viewpoint, where the native model is Claude and "the other provider"
+is Codex (`codex_sandbox_worker.sh` / `codex_worker.sh`). On Codex CLI the roles
+**mirror** — translate, do not execute literally:
+
+- The native orchestrator here is gpt-5.5, so "the other provider" is Claude;
+  reach it via a Claude subagent/CLI channel if one is available.
+- The invariant that matters is **Worker and Verifier/Challenger/Reviewer run on
+  DIFFERENT providers** — not which provider is native. Read the spec's
+  `WP=codex-cli → Verifier=Opus` / `WP=anthropic → Verifier=codex` tables as
+  "Worker on the native model → the other role on the other provider," and vice
+  versa.
+- If the other-provider channel is unavailable on this CLI, apply the spec's
+  documented DEGRADATION: run a same-provider second pass and label the result
+  `cross-provider: DEGRADED (<reason>)`. NEVER claim cross-provider when it
+  degraded. It is a quality optimization, not a safety gate — do not wedge the
+  pipeline over it.
+- `phase.py`, `model_balancer.py`, and `kpi_rework.py` (the `go` Phase 4 KPI
+  `record`/`report`) are plain `python3 ~/.claude/scripts/<name>.py ...` and run
+  identically on both CLIs — invoke them verbatim, including the auto-`record`
+  at the end of every `go` run.
+
 ## Execution Rules
 
 - Always perform RECON against current code/config before reports or opinions.

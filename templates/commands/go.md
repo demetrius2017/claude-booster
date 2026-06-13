@@ -249,6 +249,8 @@ A model verifying its own output shares its own blind spots — same-provider ve
 
 This guarantees Worker and Verifier never share a provider. The Verifier still sees ONLY the AC fields + PFD `verifier_assertions`/`invariants`/`branching_scenarios` (never the Worker's prompt or code) — cross-provider does not relax the knowledge boundary, it hardens it.
 
+(The table reads from the Claude-CLI viewpoint. The real invariant is "Worker and Verifier on DIFFERENT providers", which is provider-symmetric: on Codex CLI the native model is gpt-5.5 and "the other provider" is Claude. When this command runs under Codex via the bridge, the `booster-command` skill's "Cross-provider stages" adapter handles the mirror + the degrade-and-log fallback. The same applies to the Phase 1B Challenge and Phase 3B Diff-review.)
+
 ### Spawn mechanics by provider
 
 The Agent tool spawns Claude models only; Codex spawns via the sandbox worker, which runs in an isolated git worktree and emits a unified diff on stdout (Lead applies each changed file via Edit/Write, so `dep_guard.py` / `financial_dml_guard.py` / `verify_gate.py` fire on every write).
