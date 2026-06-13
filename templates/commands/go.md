@@ -58,9 +58,14 @@ Query the model balancer:
 python3 ~/.claude/scripts/model_balancer.py get hard
 ```
 
-Use the returned model for the Flow Designer agent. Fallback if balancer fails: `model: "opus"`.
+Use the returned provider/model for the Flow Designer. Fallback if balancer fails: provider `anthropic`, `model: "opus"`.
 
-Spawn ONE Flow Designer agent. **NOT `run_in_background`** — Lead waits for the result before Phase 2.
+### Spawn mechanics by provider
+
+| Provider from `get hard` | Flow Designer spawn path |
+|---|---|
+| `anthropic` or balancer error | Spawn ONE Flow Designer via the **Agent tool** with the returned model; fallback `model: "opus"`. **NOT `run_in_background`** — Lead waits for the result before Phase 1B. |
+| `codex-cli` | Run the Flow Designer via Bash: `~/.claude/scripts/codex_worker.sh <model> < <prompt-file>`, piping the Flow Designer prompt on stdin and capturing stdout as the YAML PFD. This is the read-only TEXT channel: the Flow Designer emits a PFD, not code. Lead waits; this is a foreground Bash call. |
 
 **Flow Designer agent prompt:**
 
