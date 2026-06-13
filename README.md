@@ -68,6 +68,50 @@ A typical тройка task spawns 1 Flow Designer on Opus (foreground, ~30-60s)
 
 ---
 
+## What's new in v1.15 — The шестёрка: cross-provider `/go`
+
+After Fable 5 was blocked, the тройка went mono-provider (Flow Designer, Worker, and Verifier all on gpt-5.5) — so the Verifier was checking the same model that wrote the code, a correlated blind spot. A consilium (`reports/consilium_2026-06-13_dual_model_rework_reduction.md`) rejected the tempting "6 parallel authors + merge their code" idea (a code merge needs LLM judgment, which violates the exit-code-only PASS axiom and reinvents `/hackathon` minus its one sound property) and instead put the idle strong model (Opus 4.8) where rework is actually born: **design and verification, on a different provider than the author**.
+
+The тройка is now a **шестёрка** — six stages, cross-provider at three of them:
+
+```
+YOUR TASK (Artifact Contract)
+        │
+  1. Flow Designer ──── designs the PFD: a map of failure modes, temporal traps,
+     (Codex gpt-5.5)    invariants — BEFORE any code. "What breaks at T+1?"
+        │
+  2. Challenge ──────── a DIFFERENT model attacks the PFD: missed failure modes,
+     (Opus, cross)      contract ambiguity, integration holes.
+        │               ← caught a real build-breaking bug pre-code on its first run
+        │
+  ┌─ 3. Worker ──────── writes the code         ┐ parallel; the Verifier
+  │     (Codex gpt-5.5)                          │ never sees the Worker's code
+  └─ 3. Verifier ────── writes an independent    ┘
+        │     (Opus, cross)  acceptance test
+        │
+  4. Test run ───────── Lead runs the Verifier's test. EXIT CODE = verdict.
+        │               Not "looks correct" — a green test.
+        │
+  5. Diff review ────── a DIFFERENT model reads the final diff: integration,
+     (Opus, cross)      minimality, security, untested branches.
+        │               HIGH → Worker fixes, test re-greens. MED/LOW → logged.
+        │
+  6. Verdict ────────── PASS → auto-record to the rework KPI → commit.
+                        FAIL → classify W/V/A/R, up to 3 retries.
+```
+
+**The principle:** the strong model (Opus) does the *thinking* (design critique, independent verification, diff review); the fast flat-fee model (Codex gpt-5.5) does the *typing*. Per the consilium, ~65% of returns-to-code are contract ambiguity + missed failure modes — caught at design time, not by a more capable typist. No model ever checks its own work.
+
+**Cross-provider invariant.** The Worker and every checker (Challenge, Verifier, Diff-review) run on different providers. The mapping is provider-symmetric: on Claude CLI the native model is Claude and "the other" is Codex; on Codex CLI it mirrors. If the other-provider channel is unavailable, the stage degrades to a same-provider second pass and logs `cross-provider: DEGRADED` — it never claims cross-provider when it didn't happen. Quality optimization, not a safety gate: it must not wedge the pipeline.
+
+**SHIP-4 — hard-task escalation.** When a task is BOTH high-blast-radius (auth, DB migration, financial, concurrency, infra) AND has genuine solution uncertainty, the Worker stage escalates to a `/hackathon` tournament (2–3 competing candidates, deterministic Judge by exit-code, winner-take-all) plus the one safe "merge" — cherry-picking the losers' *tests* into the winner's suite, never their code. Default stays a single Worker; escalation is the gated exception (the cost economics only close on genuinely failure-prone task classes).
+
+**Measured, not assumed.** Every `/go` run auto-records its outcome via `kpi_rework.py` — first-pass-clean rate, verifier-fail count, defect categories. `/start` surfaces the 30-day trend. If `contract_ambiguity` + `missed_failure_mode` fall while first-pass-clean rises, the design-time gates are working; if only `capability` moves, they aren't the lever and the design gets revisited.
+
+Built and dogfooded through the шестёрка itself: the Phase 1B challenge (Opus) read the real `_gate_common.py` and found a build-breaking contract contradiction (`append_jsonl` is `CLAUDE_HOME`-bound, so "reuse it" and "support a test override" were mutually exclusive) *before any code was written* — the SHIP-1 thesis proven live. Works identically on Claude Code CLI and Codex CLI via the Booster Codex bridge. Full spec: `templates/commands/go.md`; enforcement: `go_gate.py`.
+
+---
+
 ## What's new in v1.14 — Opus 4.8 model upgrade
 
 Claude Opus 4.8 is now available in Claude Code CLI. All references to `claude-opus-4-6` updated to `claude-opus-4-8` across templates, rules, and deployed scripts.
