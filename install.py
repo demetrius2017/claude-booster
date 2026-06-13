@@ -4,6 +4,10 @@
 Installs rules, Python hook scripts, slash commands, agent protocols, and a
 `settings.json` that wires them into Claude Code's hook system.
 
+Also installs the Codex bridge (skills, prompts, command specs into ~/.agents
+and ~/.codex) by default.  Use --no-codex-bridge to skip the bridge, or
+--codex-bridge to force it on even when it would otherwise be skipped.
+
 Contract:
   - Stdlib-only (no pip deps).
   - Atomic writes (tmp + os.replace).
@@ -16,12 +20,17 @@ Contract:
     `~/.claude/backups/booster_install_<UTC>.tar.gz` before any mutation.
   - Manifest at `~/.claude/.booster-manifest.json` records installed files +
     SHA-256 for idempotency, rollback, future uninstall.
+  - Codex bridge manifest at `~/.codex/claude-booster-bridge-manifest.json`
+    records bridge files; bridge backups under `~/.codex/backups/`.
 
 Flags:
-  --dry-run    Print planned actions + settings.json diff, write nothing.
-  --yes        Skip confirmation prompt.
-  --force      Overwrite user-modified files we manage (logged).
-  --version    Print version and exit.
+  --dry-run          Print planned actions + settings.json diff, write nothing.
+  --yes              Skip confirmation prompt.
+  --force            Overwrite user-modified files we manage (logged).
+                     Also sets CODEX_BRIDGE_OVERWRITE=1 semantics for bridge.
+  --codex-bridge     Force bridge install on (default: on).
+  --no-codex-bridge  Skip bridge install.
+  --version          Print version and exit.
 
 Supported: Linux, macOS. Native Windows is refused in v1 (use WSL2).
 
@@ -37,6 +46,7 @@ Exit codes:
   20  Backup failed
   30  Write failed (rolled back)
   40  Settings merge failed (rolled back)
+  50  Codex bridge failed (Claude install was already committed — NOT rolled back)
   130 User interrupted (Ctrl+C, rolled back)
 """
 from __future__ import annotations
@@ -745,6 +755,397 @@ def write_manifest(files: list[dict], settings_sha: str) -> None:
     )
 
 
+# ─────────────────────── Codex bridge installer ────────────────────
+
+
+def install_codex_bridge(dry_run: bool, force: bool) -> int:
+    """Install the Codex bridge (skills, prompts, command specs).
+
+    All helpers are nested inside this function to avoid shadowing the Claude-side
+    load_manifest / atomic_write / write_manifest defined at module scope above.
+
+    Paths are resolved at function-call time (not at module import), so
+    ``HOME=$(mktemp -d) python install.py`` correctly sandboxes the bridge.
+
+    Returns 0 on success or dry-run.  Raises on failure (caller maps to exit 50).
+    """
+    import ast as _ast
+    import re as _re
+
+    # ── runtime path resolution ─────────────────────────────────────────────
+    _HOME = Path.home()
+    _ROOT = Path(__file__).resolve().parent          # repo root from __file__
+
+    _BRIDGE_ID = "claude-booster-codex-bridge"
+
+    _SKILLS_SRC = _ROOT / "templates" / "codex" / "skills"
+    _PROMPTS_SRC = _ROOT / "templates" / "codex" / "prompts"
+    _COMMANDS_SRC = _ROOT / "templates" / "commands"
+
+    _SKILLS_DST = _HOME / ".agents" / "skills"
+    _PROMPTS_DST = _HOME / ".codex" / "prompts"
+    _COMMANDS_DST = _SKILLS_DST / "booster-command" / "references" / "commands"
+    _MANIFEST_PATH = _HOME / ".codex" / "claude-booster-bridge-manifest.json"
+    _BACKUP_ROOT = _HOME / ".codex" / "backups"
+
+    # ── helpers (nested — do NOT define at module scope) ───────────────────
+
+    def _bridge_fail(message: str) -> None:
+        raise RuntimeError(f"install_codex_bridge: {message}")
+
+    def _bridge_sha256(path: Path) -> str:
+        """Re-use module-level sha256 — same signature."""
+        return sha256(path)
+
+    def _home_rel(path: Path) -> str:
+        try:
+            return str(path.resolve().relative_to(_HOME.resolve()))
+        except ValueError:
+            return str(path.resolve())
+
+    def _within_managed_roots(path: Path) -> bool:
+        """True iff ``path`` resolves inside a bridge-managed destination root.
+
+        Guards stale-removal (unlink) and backup against a corrupted/hostile
+        manifest naming absolute or ``..``-traversal paths — without this,
+        ``_HOME / rel`` with an absolute ``rel`` resolves outside HOME and a
+        later ``unlink()`` could delete an arbitrary user-writable file.
+        (External-audit hardening, 2026-06-13.)
+        """
+        try:
+            rp = path.resolve()
+        except OSError:
+            return False
+        for root in (_SKILLS_DST, _PROMPTS_DST):
+            try:
+                rp.relative_to(root.resolve())
+                return True
+            except ValueError:
+                continue
+        return False
+
+    def _read_text(path: Path) -> str:
+        return path.read_text(encoding="utf-8")
+
+    def _parse_frontmatter(path: Path) -> dict:
+        text = _read_text(path)
+        lines = text.splitlines()
+        if not lines or lines[0].strip() != "---":
+            _bridge_fail(f"missing YAML frontmatter: {path}")
+
+        end = None
+        for idx, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                end = idx
+                break
+        if end is None:
+            _bridge_fail(f"unterminated YAML frontmatter: {path}")
+
+        data: dict = {}
+        for offset, raw_line in enumerate(lines[1:end], start=2):
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if raw_line[:1].isspace():
+                _bridge_fail(f"unsupported indented frontmatter line in {path}:{offset}")
+            if ":" not in line:
+                _bridge_fail(f"invalid frontmatter line in {path}:{offset}: {raw_line!r}")
+            key, value = line.split(":", 1)
+            key = key.strip()
+            value = value.strip()
+            if not _re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]*", key):
+                _bridge_fail(f"invalid frontmatter key in {path}:{offset}: {key!r}")
+            if not value:
+                _bridge_fail(f"empty frontmatter value in {path}:{offset}: {key}")
+
+            if value[0] in ("'", '"'):
+                try:
+                    parsed = _ast.literal_eval(value)
+                except (SyntaxError, ValueError) as exc:
+                    _bridge_fail(f"invalid quoted frontmatter value in {path}:{offset}: {exc}")
+                if not isinstance(parsed, str):
+                    _bridge_fail(f"frontmatter value must be a string in {path}:{offset}: {key}")
+                value = parsed
+            else:
+                if ": " in value:
+                    _bridge_fail(
+                        f"unquoted frontmatter value contains ': ' in {path}:{offset}; "
+                        "quote the value"
+                    )
+                if value[0] in "{}[]&*!|>@`":
+                    _bridge_fail(f"unsupported unquoted frontmatter value in {path}:{offset}: {value!r}")
+
+            data[key] = value
+
+        if not data.get("description"):
+            _bridge_fail(f"missing description in frontmatter: {path}")
+        if path.name == "SKILL.md":
+            expected = path.parent.name
+            if data.get("name") != expected:
+                _bridge_fail(
+                    f"skill name mismatch in {path}: expected {expected!r}, "
+                    f"got {data.get('name')!r}"
+                )
+        return data
+
+    def _validate_sources() -> None:
+        for root in (_SKILLS_SRC, _PROMPTS_SRC, _COMMANDS_SRC):
+            if not root.is_dir():
+                _bridge_fail(f"missing source directory: {root}")
+            for path in root.rglob("*"):
+                if path.is_symlink():
+                    _bridge_fail(f"refusing to install symlink from template tree: {path}")
+
+        for path in sorted(_SKILLS_SRC.glob("*/SKILL.md")):
+            _parse_frontmatter(path)
+        for path in sorted(_PROMPTS_SRC.glob("*.md")):
+            _parse_frontmatter(path)
+
+        commands = {path.stem for path in _COMMANDS_SRC.glob("*.md")}
+        skill_aliases = {path.parent.name for path in _SKILLS_SRC.glob("*/SKILL.md")}
+        skill_aliases.discard("booster-command")
+        prompt_aliases = {path.stem for path in _PROMPTS_SRC.glob("*.md")}
+        missing = sorted((skill_aliases | prompt_aliases) - commands)
+        if missing:
+            _bridge_fail(
+                "missing command specs for aliases: "
+                + ", ".join(missing)
+                + f" (checked {_COMMANDS_SRC})"
+            )
+
+    def _collect_tree(src_root: Path, dst_root: Path) -> dict:
+        planned: dict = {}
+        for src in sorted(src_root.rglob("*")):
+            if src.is_file():
+                planned[dst_root / src.relative_to(src_root)] = src
+        return planned
+
+    def _bridge_load_manifest() -> dict:
+        if not _MANIFEST_PATH.exists():
+            return {}
+        try:
+            data = json.loads(_read_text(_MANIFEST_PATH))
+        except json.JSONDecodeError as exc:
+            _bridge_fail(f"invalid existing manifest {_MANIFEST_PATH}: {exc}")
+        if data.get("bridge_id") != _BRIDGE_ID:
+            _bridge_fail(f"refusing unknown manifest format: {_MANIFEST_PATH}")
+        return data
+
+    def _manifest_paths(manifest: dict) -> set:
+        result: set = set()
+        for item in manifest.get("files", []):
+            if isinstance(item, str):
+                result.add(item)
+            elif isinstance(item, dict) and isinstance(item.get("path"), str):
+                result.add(item["path"])
+        return result
+
+    def _looks_bridge_owned(path: Path) -> bool:
+        if not path.is_file() or path.is_symlink():
+            return False
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")[:8192]
+        except OSError:
+            return False
+        markers = (
+            "Claude Booster",
+            "Booster Command",
+            "booster-command",
+            "Codex compatibility layer",
+        )
+        return any(marker in text for marker in markers)
+
+    def _bridge_atomic_write(target: Path, data: bytes, mode: int) -> None:
+        """Bridge-local atomic write — same logic as module-level atomic_write."""
+        target.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(prefix=f".{target.name}.", dir=str(target.parent))
+        try:
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.chmod(tmp, mode)
+            os.replace(tmp, target)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except FileNotFoundError:
+                pass
+            raise
+
+    def _backup_file(path: Path, backup_dir: Path) -> Path:
+        rel = _home_rel(path)
+        # Defense in depth: an absolute or ..-traversal rel would let the
+        # backup target escape backup_dir (pathlib discards backup_dir when
+        # rel is absolute). Refuse rather than write outside the backup root.
+        if os.path.isabs(rel) or ".." in Path(rel).parts:
+            _bridge_fail(f"refusing to back up path outside HOME: {path}")
+        target = backup_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target)
+        return target
+
+    def _bridge_write_manifest(planned: dict) -> None:
+        files = [
+            {
+                "path": _home_rel(dst),
+                "sha256": _bridge_sha256(dst),
+                "source": str(src.relative_to(_ROOT)),
+            }
+            for dst, src in sorted(planned.items(), key=lambda item: _home_rel(item[0]))
+        ]
+        data = {
+            "bridge_id": _BRIDGE_ID,
+            "installed_at": now_iso(),
+            "source_root": str(_ROOT),
+            "files": files,
+        }
+        _bridge_atomic_write(
+            _MANIFEST_PATH,
+            (json.dumps(data, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            0o644,
+        )
+
+    # ── dry-run: compute plan and print counts, write nothing ──────────────
+
+    _validate_sources()
+
+    planned = _collect_tree(_SKILLS_SRC, _SKILLS_DST)
+    planned.update(_collect_tree(_PROMPTS_SRC, _PROMPTS_DST))
+    for _src in sorted(_COMMANDS_SRC.glob("*.md")):
+        planned[_COMMANDS_DST / _src.name] = _src
+
+    manifest = _bridge_load_manifest()
+    owned = _manifest_paths(manifest)
+    planned_rels = {_home_rel(dst) for dst in planned}
+    stale_rels = sorted(owned - planned_rels)
+
+    skills_count = sum(1 for dst in planned if dst.name == "SKILL.md")
+    prompts_count = sum(
+        1 for dst in planned if dst.parent == _PROMPTS_DST and dst.suffix == ".md"
+    )
+    command_count = sum(
+        1 for dst in planned if dst.parent == _COMMANDS_DST and dst.suffix == ".md"
+    )
+
+    if dry_run:
+        log("=== CODEX BRIDGE DRY RUN ===")
+        log(
+            f"bridge plan = {skills_count} skills, {prompts_count} prompts, "
+            f"{command_count} command specs"
+        )
+        changed_count = sum(
+            1 for dst in planned
+            if not dst.exists() or _bridge_sha256(dst) != _bridge_sha256(planned[dst])
+        )
+        log(f"bridge changes = {changed_count} file(s) to write, {len(stale_rels)} stale to remove")
+        log(f"bridge manifest = {_MANIFEST_PATH}")
+        return 0
+
+    # ── live install ────────────────────────────────────────────────────────
+
+    # --force OR the legacy CODEX_BRIDGE_OVERWRITE=1 env var (documented escape
+    # hatch from the standalone installer — kept for back-compat with existing
+    # automation; see reports/audit_2026-06-07_codex_bridge.md).
+    overwrite = force or os.environ.get("CODEX_BRIDGE_OVERWRITE") == "1"
+
+    errors: list = []
+    for dst, src in planned.items():
+        if dst.exists() or dst.is_symlink():
+            rel = _home_rel(dst)
+            if dst.is_symlink():
+                errors.append(f"{dst} is a symlink; remove it manually before install")
+                continue
+            if dst.is_dir():
+                errors.append(f"{dst} is a directory but installer needs to write a file")
+                continue
+            if _bridge_sha256(dst) == _bridge_sha256(src):
+                continue
+            if rel in owned or _looks_bridge_owned(dst) or overwrite:
+                continue
+            errors.append(
+                f"{dst} exists and is not recorded as bridge-owned; "
+                "use --force (or CODEX_BRIDGE_OVERWRITE=1) to back it up "
+                "and replace it"
+            )
+
+    if errors:
+        _bridge_fail("preflight failed:\n  - " + "\n  - ".join(errors))
+
+    changed = [
+        (dst, src)
+        for dst, src in planned.items()
+        if not dst.exists() or _bridge_sha256(dst) != _bridge_sha256(src)
+    ]
+    stale_paths = []
+    for rel in stale_rels:
+        cand = _HOME / rel
+        if not cand.exists():
+            continue
+        if not _within_managed_roots(cand):
+            # Manifest names a path outside the bridge-managed roots — never
+            # unlink it. Corrupted/hostile manifest entry; skip + warn.
+            log(f"bridge: skipping stale path outside managed roots: {cand}", "WARN")
+            continue
+        stale_paths.append(cand)
+
+    # Lazy backup_dir — only created when ≥1 file needs backing up (F5 idempotency).
+    stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
+    backup_dir = _BACKUP_ROOT / f"claude_booster_codex_bridge_{stamp}"
+
+    backups: dict = {}
+    created: list = []
+    try:
+        for path, _src in changed:
+            if path.exists():
+                backups[path] = _backup_file(path, backup_dir)
+            else:
+                created.append(path)
+        for path in stale_paths:
+            backups[path] = _backup_file(path, backup_dir)
+
+        for dst, src in changed:
+            mode = src.stat().st_mode & 0o777
+            _bridge_atomic_write(dst, src.read_bytes(), mode or 0o644)
+
+        for path in stale_paths:
+            path.unlink()
+
+        # Post-write verification
+        for dst, src in planned.items():
+            if _bridge_sha256(dst) != _bridge_sha256(src):
+                _bridge_fail(f"destination hash mismatch after install: {dst}")
+            if dst.name == "SKILL.md" or dst.parent == _PROMPTS_DST:
+                _parse_frontmatter(dst)
+
+        # Write bridge manifest LAST (after all hashes verify)
+        _bridge_write_manifest(planned)
+
+    except Exception:
+        # Rollback: restore backups, unlink created files, re-raise
+        for path, backup in backups.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(backup, path)
+        for path in created:
+            try:
+                if path.exists():
+                    path.unlink()
+            except OSError:
+                pass
+        raise
+
+    log(f"bridge installed: {skills_count} skills, {prompts_count} prompts, "
+        f"{command_count} command specs")
+    log(f"bridge manifest = {_MANIFEST_PATH}")
+    if backups:
+        log(f"bridge backups  = {backup_dir}")
+    if stale_paths:
+        log(f"bridge stale removed: {len(stale_paths)}")
+    log("Restart Codex, then use: $consilium <topic> · $handover · "
+        "$architecture [--update] · /prompts:consilium <topic>")
+    return 0
+
+
 # ─────────────────────────── main ──────────────────────────────────
 
 
@@ -848,6 +1249,23 @@ def main() -> int:
     ap.add_argument("--name", help="git author name (skips prompt)")
     ap.add_argument("--email", help="git author email (skips prompt)")
     ap.add_argument("--version", action="store_true")
+    # Bridge flags — store_true/store_false share dest 'install_bridge' so the
+    # LAST flag on the command line wins (default on). NOT a mutually-exclusive
+    # group: the thin wrapper hardcodes --codex-bridge, so a user appending
+    # --no-codex-bridge must resolve to "skip" via last-wins, not crash.
+    ap.add_argument(
+        "--codex-bridge",
+        dest="install_bridge",
+        action="store_true",
+        default=True,
+        help="install the Codex bridge (default: on)",
+    )
+    ap.add_argument(
+        "--no-codex-bridge",
+        dest="install_bridge",
+        action="store_false",
+        help="skip Codex bridge install",
+    )
     args = ap.parse_args()
 
     if args.version:
@@ -927,6 +1345,11 @@ def main() -> int:
             print(diff)
         else:
             print("\n--- settings.json: no changes ---")
+        if args.install_bridge:
+            try:
+                install_codex_bridge(dry_run=True, force=args.force)
+            except Exception as e:
+                log(f"bridge dry-run error: {e}", "WARN")
         return 0
 
     if not args.yes:
@@ -985,6 +1408,22 @@ def main() -> int:
 
     log(f"installed {len(records)} files ({len(actions['write'])} written, {len(actions['skip'])} unchanged)")
     log("done")
+
+    # Codex bridge — runs AFTER Claude install is fully finalized and committed.
+    # OUTSIDE the Claude try/except so bridge exceptions NEVER trigger restore_backup.
+    # Bridge failure → exit 50; Claude install is intact and NOT rolled back.
+    if args.install_bridge:
+        try:
+            install_codex_bridge(dry_run=False, force=args.force)
+        except Exception as e:
+            log(f"Codex bridge install failed: {e}", "ERROR")
+            log(
+                "Claude install succeeded and was committed. "
+                "Re-run with --codex-bridge to retry the bridge only.",
+                "WARN",
+            )
+            return 50
+
     return 0
 
 
