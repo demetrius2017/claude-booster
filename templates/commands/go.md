@@ -1,5 +1,5 @@
 ---
-description: "Execute тройка (Flow Designer → Worker + Verifier) — hardcoded, non-skippable pipeline."
+description: "Execute Шестёрка (Flow Designer → Challenge → Worker + Verifier → Test → Diff-review → Verdict) — hardcoded, non-skippable cross-provider pipeline."
 argument-hint: "<Artifact Contract — structured text with Objective, Verified Facts, etc.>"
 ---
 
@@ -222,10 +222,10 @@ Before spawning the Worker, decide whether this task warrants COMPETING implemen
 
 **If both → escalate to `/hackathon`** for the implementation stage:
 - Pass the PFD-augmented Artifact Contract as the hackathon Artifact Contract.
-- Seed the Judge Mandate from the PFD `verifier_assertions` + `invariants` — the deterministic acceptance the тройка already derived.
+- Seed the Judge Mandate from the PFD `verifier_assertions` + `invariants` — the deterministic acceptance the Шестёрка already derived.
 - Spawn the 2–3 candidates ACROSS providers (e.g. one Opus Agent + one Codex `codex_sandbox_worker.sh gpt-5.5`) so the tournament tests provider diversity, not just prompt diversity.
 - The hackathon's deterministic Judge (exit-code score, winner-take-all) REPLACES the single cross-provider Verifier for this run — same no-LLM-judgment axiom, stronger evidence. It includes the SHIP-4 **edge-test harvest** (losers' test coverage unioned into the winner's suite; see `hackathon.md` Phase 4).
-- When the hackathon returns a winner, **resume the тройка at Phase 3B** (diff-review the winner) → Phase 4 verdict. Skip the standard single-Worker path below.
+- When the hackathon returns a winner, **resume the Шестёрка at Phase 3B** (diff-review the winner) → Phase 4 verdict. Skip the standard single-Worker path below.
 - Log it in the verdict: `implementation: /hackathon (N candidates, winner cN, score X/Y)`.
 
 ---
@@ -379,13 +379,18 @@ Test only. Read, run, assert, report.
 
 ---
 
-### Progress output
+### Progress output — the Шестёрка bar (6 stages, 6 segments)
 
-Output as each agent completes:
+The pipeline has SIX stages, so the status bar has six segments. Emit the matching line as each stage completes (fill one segment per phase):
 ```
-Тройка ▰▱▱ 1/2 · Flow Designer ✓
-Тройка ▰▰▱ 2/2 · Worker ✓ · Verifier ✓
+Шестёрка ▰▱▱▱▱▱ 1/6 · Flow Designer ✓
+Шестёрка ▰▰▱▱▱▱ 2/6 · Challenge ✓
+Шестёрка ▰▰▰▱▱▱ 3/6 · Worker ✓ · Verifier ✓
+Шестёрка ▰▰▰▰▱▱ 4/6 · Test ✓
+Шестёрка ▰▰▰▰▰▱ 5/6 · Diff review ✓
+Шестёрка ▰▰▰▰▰▰ 6/6 · Verdict ✓
 ```
+If a stage is skipped or degraded, annotate that segment instead of dropping it — e.g. `5/6 · Diff review SKIPPED (trivial diff)` or `3/6 · cross-provider DEGRADED`. The bar always shows all six segments so the reader sees the whole pipeline.
 
 Do NOT begin Phase 3 until BOTH Worker and Verifier have returned.
 
@@ -474,7 +479,7 @@ Run: `python3 ~/.claude/scripts/phase.py progress "6/6 verdict"`
 ### If exit=0 (ALL PASS) AND Phase 3B review cleared (CLEAN, or only MED/LOW):
 
 ```
-✓ PASS — тройка complete. Artifact at <artifact_path>.
+✓ PASS — Шестёрка ▰▰▰▰▰▰ 6/6 complete. Artifact at <artifact_path>.
 ```
 Append any of these that apply (honest status, not silent drop):
 - `diff review: <CLEAN | N MED/LOW advisory findings — list them as follow-ups | SKIPPED (trivial diff)>`
