@@ -4,10 +4,10 @@ argument-hint: "<Artifact Contract — structured text with Objective, Verified 
 ---
 
 ## Progress tracking
-Before each numbered step below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/5 <step_label>"`
+Before each numbered step below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/6 <step_label>"`
 After the final step completes, run: `python3 ~/.claude/scripts/phase.py progress clear`
 
-Steps: `1/5 flow_designer`, `2/5 challenge`, `3/5 worker_verifier`, `4/5 test_run`, `5/5 verdict`
+Steps: `1/6 flow_designer`, `2/6 challenge`, `3/6 worker_verifier`, `4/6 test_run`, `5/6 diff_review`, `6/6 verdict`
 
 ---
 
@@ -50,7 +50,7 @@ Then proceed to Phase 1.
 
 ## Phase 1 — FLOW DESIGNER
 
-Run: `python3 ~/.claude/scripts/phase.py progress "1/5 flow_designer"`
+Run: `python3 ~/.claude/scripts/phase.py progress "1/6 flow_designer"`
 
 Query the model balancer:
 ```bash
@@ -135,7 +135,7 @@ Save the full PFD text for Phase 1B.
 
 ## Phase 1B — PFD ADVERSARIAL CHALLENGE (cross-provider, Opus)
 
-Run: `python3 ~/.claude/scripts/phase.py progress "2/5 challenge"`
+Run: `python3 ~/.claude/scripts/phase.py progress "2/6 challenge"`
 
 The Flow Designer drafted the PFD on the `hard` tier. This phase has a **different-provider** reviewer attack that PFD **before any code is written** — the cheapest place to catch rework. (Consilium 2026-06-13: contract ambiguity + missed failure modes are ~65% of returns-to-code; model capability is ~5%. Design-time is where the strong model earns its keep — see `reports/consilium_2026-06-13_dual_model_rework_reduction.md`, SHIP-1.)
 
@@ -209,7 +209,7 @@ Output only the verdict block. Be ruthless but concrete — a vague critique is 
 
 ## Phase 2 — WORKER + VERIFIER (parallel, cross-provider)
 
-Run: `python3 ~/.claude/scripts/phase.py progress "3/5 worker_verifier"`
+Run: `python3 ~/.claude/scripts/phase.py progress "3/6 worker_verifier"`
 
 Query the model balancer for the coding tier:
 ```bash
@@ -370,7 +370,7 @@ Do NOT begin Phase 3 until BOTH Worker and Verifier have returned.
 
 ## Phase 3 — TEST RUN
 
-Run: `python3 ~/.claude/scripts/phase.py progress "4/5 test_run"`
+Run: `python3 ~/.claude/scripts/phase.py progress "4/6 test_run"`
 
 After both agents complete:
 
@@ -391,15 +391,71 @@ After both agents complete:
 
 ---
 
+## Phase 3B — POST-IMPLEMENTATION DIFF REVIEW (cross-provider, only on PASS)
+
+**Run only if Phase 3 returned exit=0.** If the test failed, skip straight to Phase 4 fail-classification — there is nothing to review yet.
+
+Run: `python3 ~/.claude/scripts/phase.py progress "5/6 diff_review"`
+
+The Verifier tested *observable behavior* but never saw the code. This phase gives the **diff itself** a second look by a different-provider reviewer — to catch defects that emerge at implementation time and that a behavioral test does not exercise: integration breakage, reinvented helpers, security holes, dead/over-broad churn. Per consilium 2026-06-13 (SHIP-3): design-time review cannot see these — they live in the written code.
+
+**Skip criteria (log the skip in the verdict):** the diff is trivial — docs/comments only, or < ~15 changed lines with no logic / control-flow / IO. Otherwise the review runs.
+
+**Provider rule:** the reviewer MUST run on a different provider than the Worker (it reads the Worker's code, so it must not be the author's own model). Same mapping as the Verifier:
+- `WP=codex-cli` → reviewer = Opus **Agent** (`model: "opus"`), read-only.
+- `WP=anthropic` → reviewer = `~/.claude/scripts/codex_worker.sh gpt-5.5 < review_prompt.txt` (read-only text analysis — produces findings, never code).
+
+Collect the diff first: `git -C "$(git rev-parse --show-toplevel)" diff -- <changed paths>` (or read the files the Worker wrote).
+
+**Reviewer prompt:**
+
+```
+You are a Post-Implementation Diff Reviewer. The code below already PASSED its acceptance test. Give the DIFF a different-provider second look for defects a behavioral test cannot catch. You do NOT write or rewrite code — you return structured findings only.
+
+## Artifact Contract
+<INSERT FULL ARTIFACT CONTRACT FROM PHASE 0>
+
+## Diff under review
+<INSERT git diff OF THE WORKER'S CHANGES>
+
+## Review on four axes — be concrete, cite file:line:
+1. INTEGRATION — does this break a caller, change a depended-on signature/contract, or REINVENT an existing helper/function? (The #1 emergent defect; design review can't see it.)
+2. MINIMALITY — unnecessary churn, dead code, a broad refactor where a small patch would do, unrelated formatting. Smaller diff = lower regression risk.
+3. SECURITY — injection, secrets in code, unsafe path/SQL/shell construction, missing validation at a boundary, auth/permission gaps.
+4. UNTESTED BEHAVIOR — a code path the acceptance test clearly does not exercise that could fail in production (error branch, edge input, resource cleanup, partial failure).
+
+## Output — structured, no preamble:
+VERDICT: CLEAN | FINDINGS
+FINDINGS (each):
+- severity: HIGH | MED | LOW
+- axis: integration | minimality | security | untested
+- location: <file:line>
+- issue: <what is wrong, concretely>
+- fix_directive: <imperative "MUST ..." the Worker can act on>
+
+Only HIGH findings block. A vague finding is noise — omit it.
+```
+
+**Lead reconciliation:**
+- **VERDICT CLEAN, or only MED/LOW findings** → review passes. Log MED/LOW in the Phase 4 verdict line (advisory — surface them, do not silently drop, do not auto-fix). Proceed to Phase 4 PASS.
+- **Any HIGH finding** → **R-failure**: respawn the Worker on the same provider `WP` with the HIGH `fix_directive`s appended to its prompt, plus the failed-attempt session context (`session_context.py --agent "<Worker desc>" --no-thinking`). Then **re-run Phase 3 (the SAME Verifier test — it MUST stay green)** and **re-run this Phase 3B review**. R counts toward the 3-retry cap (shared with V/W). The reviewer never edits code — only the Worker does, and the unchanged test still gates.
+
+**Why this preserves the axiom:** the reviewer produces findings, never code, and never overrides the test verdict. A HIGH finding routes to a Worker fix that must still pass the unchanged Verifier test — so PASS stays "exit code of the test", never "the reviewer approved it".
+
+---
+
 ## Phase 4 — VERDICT
 
-Run: `python3 ~/.claude/scripts/phase.py progress "5/5 verdict"`
+Run: `python3 ~/.claude/scripts/phase.py progress "6/6 verdict"`
 
-### If exit=0 (ALL PASS):
+### If exit=0 (ALL PASS) AND Phase 3B review cleared (CLEAN, or only MED/LOW):
 
 ```
 ✓ PASS — тройка complete. Artifact at <artifact_path>.
 ```
+Append any of these that apply (honest status, not silent drop):
+- `diff review: <CLEAN | N MED/LOW advisory findings — list them as follow-ups | SKIPPED (trivial diff)>`
+- `cross-provider: <OK | DEGRADED (<reason>)>` (if the Verifier or reviewer fell back to same-provider in Phase 2/3B)
 
 Run: `python3 ~/.claude/scripts/phase.py progress clear`
 
@@ -480,7 +536,7 @@ Fix the environment issue (install missing dep, correct path, fix permissions).
 Then re-run Phase 3 only — do NOT respawn Worker or Verifier.
 
 **Retry cap:**
-Hard cap: 3 retries total across all categories (V + W combined; A and E do not count as retries).
+Hard cap: 3 retries total across all categories (V + W + R combined; A and E do not count as retries). R-failures (Phase 3B review HIGH findings) share this budget — a task cannot loop forever between Worker fix and diff review.
 
 After 3 retries, STOP:
 ```
@@ -530,3 +586,6 @@ On retry, always include the failed agent's session context (via `session_contex
 5. **Lead MUST run the Verifier's test (Phase 3).**
    Do NOT skip Phase 3. Do NOT infer pass/fail from reading the code.
    The test runs, or the pipeline is incomplete.
+
+6. **Phase 3B diff review (SHIP-3) runs on PASS, on a different provider than the Worker, and produces findings — never code.**
+   It is conditional (skipped for a trivial diff, logged) and gated (only after the test is green). A HIGH finding routes to a Worker fix that must re-pass the SAME unchanged test (R-failure, counts toward the retry cap). The reviewer never edits code and never overrides the test verdict — PASS stays "test exit code", never "reviewer approved".
