@@ -513,23 +513,30 @@ RUNTAG="$(cat "$ROOT/.claude/.go_active" 2>/dev/null)"   # the tag written at Ph
 rm -f "$ROOT/.claude/.go_active"
 ```
 
-### Post-pipeline — clear THIS run's debts (scoped to the Шестёрка)
+### Post-pipeline — surface THIS run's findings (auto-fix is OPT-IN)
 
-After a clean PASS, clear only the debts **this run produced** — the `adjacent_findings` RECON logged in Phase 1 (origin `$RUNTAG`) — NOT the whole board:
-```
-/debt auto --scope "$RUNTAG"
-```
-Scoped `/debt auto` auto-fixes only the **in-radius** HIGH/MED findings (the artifact and the direct callers/helpers this task touched) and **surfaces the out-of-radius (adjacent) HIGH/MED + all LOW to you** — fixing tangential code would widen this task's blast radius beyond its scope. Pre-existing debts from other work are untouched.
+RECON-as-review already harvested this run's `adjacent_findings` into scoped debts (origin `$RUNTAG`) back in Phase 1 — that collection always happens and nothing is lost. What this step decides is whether to **auto-fix** them now.
 
-**[CRITICAL] Recursion guard — SKIP this step entirely if EITHER is true:**
-- the marker `<project>/.claude/.debt_auto_active` exists (this `/go` was itself spawned BY `/debt auto` to resolve a code debt — running it again would recurse), OR
-- env `CLAUDE_BOOSTER_NO_POST_GO_DEBT=1` is set (the user wants just this one task, no debt clearing).
+**Default — SURFACE only, do NOT auto-fix.** Auto-fixing was made opt-in deliberately: an always-on auto-fix balloons a small `/go` and the disable-flag would be forgotten. So by default, just point at the findings:
+```bash
+# count this run's scoped open debts (origin == RUNTAG); print a one-line pointer:
+echo "Шестёрка: logged <N> findings for this run [origin $RUNTAG] (<M> in-radius HIGH/MED). To auto-fix the in-radius ones now: /debt auto --scope \"$RUNTAG\"   ·   to review all: /debt list"
+```
+The findings stay in `.session_debts.json` (visible via `/debt list`), scoped to `$RUNTAG`. The user fixes them whenever they want — `/debt auto --scope "$RUNTAG"` (auto-fix in-radius HIGH/MED, surface adjacent+LOW) or `/debt work <N>` individually.
+
+**Opt-in — auto-fix in-radius now.** Run the scoped clear automatically ONLY if BOTH:
+- env `CLAUDE_BOOSTER_POST_GO_AUTOFIX=1` is set (the user opted into post-`/go` auto-fixing), AND
+- the marker `<project>/.claude/.debt_auto_active` does NOT exist (recursion guard — this `/go` was NOT spawned by `/debt auto`; otherwise auto-fixing again would recurse).
 
 ```bash
-# guard check before invoking the scoped /debt auto:
-test -f "$ROOT/.claude/.debt_auto_active" && echo "SKIP post-/go debt clear (nested under /debt auto)" || echo "RUN /debt auto --scope $RUNTAG"
+# auto-fix gate:
+if [ "${CLAUDE_BOOSTER_POST_GO_AUTOFIX:-0}" = "1" ] && [ ! -f "$ROOT/.claude/.debt_auto_active" ]; then
+  echo "RUN /debt auto --scope $RUNTAG (opt-in autofix)"
+else
+  echo "SURFACE only (default — autofix opt-in via CLAUDE_BOOSTER_POST_GO_AUTOFIX=1)"
+fi
 ```
-If the guard says RUN and `CLAUDE_BOOSTER_NO_POST_GO_DEBT` is unset → invoke `/debt auto --scope "$RUNTAG"`. Otherwise skip and finish.
+If the gate says RUN → invoke `/debt auto --scope "$RUNTAG"`. Otherwise print the one-line pointer above and finish.
 
 Done.
 

@@ -153,7 +153,7 @@ Parse: `auto [--scope <tag>]`.
   - **LOW (any)** → surface to the user.
 - **No `--scope` (manual `/debt auto`)** — operate on the whole board: every HIGH/MED auto-worked regardless of radius, LOW to the user. (`in_radius` is ignored without a scope.)
 
-**[CRITICAL] Recursion guard.** `/go` Phase 4 invokes `/debt auto` automatically after a PASS, and `/debt auto` resolves code debts BY invoking `/go` — without a guard this recurses explosively. So:
+**[CRITICAL] Recursion guard.** `/go` Phase 4 MAY invoke `/debt auto` after a PASS (opt-in via `CLAUDE_BOOSTER_POST_GO_AUTOFIX=1`; surface-only by default), and `/debt auto` resolves code debts BY invoking `/go` — without a guard this recurses explosively. So:
 ```bash
 # At the very START of auto mode, write the guard marker:
 touch "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.debt_auto_active"
