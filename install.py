@@ -1090,8 +1090,11 @@ def install_codex_bridge(dry_run: bool, force: bool) -> int:
         stale_paths.append(cand)
 
     # Lazy backup_dir — only created when ≥1 file needs backing up (F5 idempotency).
+    # PID suffix prevents collision when two installs run in the same wall-clock
+    # second (strftime granularity is 1s; two concurrent processes would otherwise
+    # share one backup_dir and interleave each other's backups).
     stamp = _dt.datetime.now(_dt.timezone.utc).strftime("%Y%m%d_%H%M%S")
-    backup_dir = _BACKUP_ROOT / f"claude_booster_codex_bridge_{stamp}"
+    backup_dir = _BACKUP_ROOT / f"claude_booster_codex_bridge_{stamp}_{os.getpid()}"
 
     backups: dict = {}
     created: list = []

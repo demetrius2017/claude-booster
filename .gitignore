@@ -78,3 +78,6 @@ id_ecdsa*
 # out of the public history.
 
 .cache/
+
+# Jupyter collaborative editing store (local artifact)
+.jupyter_ystore.db
