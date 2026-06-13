@@ -142,7 +142,17 @@ Begin implementation per the same Worker+Verifier rules as MODE: work above.
 
 **Automatically resolve every HIGH and MEDIUM debt; leave LOW debts for the user's decision.** This is the "clear the board" mode: HIGH/MED are the agent's to take without asking; LOW is a judgement call that stays with the user; `BLOCKED-EXTERNAL` is never touched.
 
-1. Run LIST mode internally to build the inventory.
+**[CRITICAL] Recursion guard.** `/go` Phase 4 invokes `/debt auto` automatically after a PASS, and `/debt auto` resolves code debts BY invoking `/go` — without a guard this recurses explosively. So:
+```bash
+# At the very START of auto mode, write the guard marker:
+touch "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.debt_auto_active"
+```
+Any `/go` spawned for a code debt below will see this marker and SKIP its own post-`/go` `/debt auto` step. **Remove the marker before returning, on EVERY exit path** (success, cap hit, error, hand-off to user):
+```bash
+rm -f "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.debt_auto_active"
+```
+
+1. Write the recursion-guard marker (above). Then run LIST mode internally to build the inventory.
 2. **If there are zero HIGH and zero MED open items** → skip straight to step 4 (nothing to auto-work).
 3. **Auto-work loop** — repeat until no HIGH or MED open items remain (hard cap: **12 iterations** to prevent runaway; if the cap is hit, stop and report what's left):
    a. Select the first HIGH item; if none, the first MED item.

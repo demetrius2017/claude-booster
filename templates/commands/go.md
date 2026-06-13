@@ -497,10 +497,24 @@ First-pass-clean run → `--worker-spawns 1 --verifier-fails 0` (no `--category`
 
 Run: `python3 ~/.claude/scripts/phase.py progress clear`
 
-Remove the .go_active marker (absolute last action):
+Remove the .go_active marker (the pipeline is now complete):
 ```bash
 rm -f "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.go_active"
 ```
+
+### Post-pipeline — auto-clear the debt board (HIGH/MED only)
+
+After a clean PASS, run `/debt auto` so every HIGH and MEDIUM debt is resolved automatically and LOW debts are handed back to the user. This keeps the board clean after each delivered artifact.
+
+**[CRITICAL] Recursion guard — SKIP this step entirely if EITHER is true:**
+- the marker `<project>/.claude/.debt_auto_active` exists (this `/go` was itself spawned BY `/debt auto` to resolve a code debt — running `/debt auto` again would recurse), OR
+- env `CLAUDE_BOOSTER_NO_POST_GO_DEBT=1` is set (the user wants just this one task, no board-clearing).
+
+```bash
+# guard check before invoking /debt auto:
+test -f "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.debt_auto_active" && echo "SKIP post-/go /debt auto (nested under /debt auto)" || echo "RUN /debt auto"
+```
+If the guard says RUN and `CLAUDE_BOOSTER_NO_POST_GO_DEBT` is unset → invoke `/debt auto`. Otherwise skip and finish.
 
 Done.
 
