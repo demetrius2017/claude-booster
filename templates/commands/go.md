@@ -211,6 +211,27 @@ Output only the verdict block. Be ruthless but concrete — a vague critique is 
 
 Run: `python3 ~/.claude/scripts/phase.py progress "3/6 worker_verifier"`
 
+### Escalation decision (SHIP-4) — single Worker vs /hackathon tournament
+
+Before spawning the Worker, decide whether this task warrants COMPETING implementations. Default is a single Worker (the standard path below). Escalate to a `/hackathon` tournament ONLY when **BOTH** conditions hold:
+
+- **A. High stakes** — the task is in a high-blast-radius class: auth / secrets, DB schema migration, financial DML, concurrency / caching, multi-service contract, or infra config. A subtle wrong choice here is expensive, so a second independent attempt pays for itself.
+- **B. Genuine solution uncertainty** — the PFD or the Phase 1B challenge surfaced ≥2 materially different viable approaches, OR ≥1 CRITICAL failure mode whose mitigation is non-obvious. If there is one obvious correct implementation, a tournament just burns 2–3× cost for identical results.
+
+**If NOT both → single Worker** (continue to the standard path below). Most tasks land here — escalation is the exception, gated to protect cost (consilium 2026-06-13, SHIP-4: do NOT escalate by default).
+
+**If both → escalate to `/hackathon`** for the implementation stage:
+- Pass the PFD-augmented Artifact Contract as the hackathon Artifact Contract.
+- Seed the Judge Mandate from the PFD `verifier_assertions` + `invariants` — the deterministic acceptance the тройка already derived.
+- Spawn the 2–3 candidates ACROSS providers (e.g. one Opus Agent + one Codex `codex_sandbox_worker.sh gpt-5.5`) so the tournament tests provider diversity, not just prompt diversity.
+- The hackathon's deterministic Judge (exit-code score, winner-take-all) REPLACES the single cross-provider Verifier for this run — same no-LLM-judgment axiom, stronger evidence. It includes the SHIP-4 **edge-test harvest** (losers' test coverage unioned into the winner's suite; see `hackathon.md` Phase 4).
+- When the hackathon returns a winner, **resume the тройка at Phase 3B** (diff-review the winner) → Phase 4 verdict. Skip the standard single-Worker path below.
+- Log it in the verdict: `implementation: /hackathon (N candidates, winner cN, score X/Y)`.
+
+---
+
+### Standard path — single Worker + cross-provider Verifier
+
 Query the model balancer for the coding tier:
 ```bash
 python3 ~/.claude/scripts/model_balancer.py get coding
@@ -567,6 +588,7 @@ On retry, always include the failed agent's session context (via `session_contex
 
 1. **ALL FOUR roles MUST run: Flow Designer → Challenge → Worker + Verifier.** There is no "skip" path inside `/go`.
    If the task is trivial enough to skip Flow Designer, do NOT use `/go` — edit directly.
+   (Under SHIP-4 escalation, the Worker+Verifier stage is REPLACED by a `/hackathon` tournament — competing candidates + a deterministic Judge — but Flow Designer and Challenge still precede it, and a test still gates the result. The roles never collapse; only the implementation stage's shape changes.)
 
 2. **Flow Designer → Challenge → Worker + Verifier is a strict order.**
    PFD is an INPUT to the Challenge; the (possibly augmented) PFD is an INPUT to both Worker and Verifier. Spawning Worker or Verifier before the Challenge reconciles = protocol violation.

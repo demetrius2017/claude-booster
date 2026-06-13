@@ -27,7 +27,7 @@ Unlike `/consilium` (opinions) and paired Worker+Verifier (one implementation), 
    - Criteria are observable-behavior assertions (exit codes, file contents, stdout patterns, curl responses)
    - No LLM judgment allowed anywhere in the Judge Mandate
 
-4. **Pick contestants** — 2–3 Workers, all at `model: "sonnet"` (equal footing). More contestants = more compute + better odds of finding optimal solution.
+4. **Pick contestants** — 2–3 Workers. Default: equal footing (all the same model) to isolate the *approach* difference. **When invoked as a /go SHIP-4 escalation:** spawn candidates ACROSS providers instead (e.g. one Opus Agent + one Codex `codex_sandbox_worker.sh gpt-5.5`) — there the goal is provider diversity, not just prompt diversity. More contestants = more compute + better odds of the optimal solution.
 
 ## Phase 2 — Competition (all Workers in ONE message, parallel)
 
@@ -67,6 +67,22 @@ Lead reads the score matrix:
 Failure classification per `paired-verification.md` §Failure classification (W/V/A/E).
 Hard cap: 3 retries per phase.
 
+### Edge-test harvest — the one safe "merge" (SHIP-4)
+
+Winner-take-all keeps a single coherent codebase — **never merge competing code** (that needs LLM judgment and manufactures integration bugs). But the LOSING candidates often cover edge cases the Judge Mandate missed, and that *test insight* is safe to import.
+
+After a clear winner is selected, spawn ONE edge-harvest agent on a **different provider than the winner's author**:
+- It reads ALL candidate implementations (winner + losers) + the Judge Mandate.
+- It identifies edge cases / branches a LOSING candidate handled that the Judge Mandate does NOT already assert.
+- It emits those as NEW executable assertions (same Test Legitimacy Standard: observable behavior, deterministic, non-zero exit on failure — NO LLM judgment).
+
+Append the new assertions to the Judge Mandate and re-run it against the WINNER only:
+- Winner passes all (including new) → done. The harvest confirmed coverage; the unioned suite is now the canonical acceptance test.
+- Winner FAILS a new assertion → a real gap a loser caught. Respawn the winner's Worker to fix it (counts toward the retry cap), re-run.
+- A new assertion is spurious (asserts a non-contract detail) → discard it (V-class). Do NOT weaken the winner to satisfy a test the contract never required.
+
+Only TEST coverage is unioned across candidates; CODE stays single-author. This captures the tournament's diversity benefit without a code merge.
+
 ## Phase 5 — External audit (recommended for critical features)
 
 After winner is selected:
@@ -82,6 +98,8 @@ After winner is selected:
 | Critical feature worth parallel effort | Opinion/analysis question → `/consilium` |
 | Optimisation problem (speed, size, correctness tradeoffs) | Pure research/exploration → Explore agents |
 | Want empirical evidence of which approach wins, not Lead's prior | One obvious implementation → paired Worker+Verifier |
+
+**Auto-invoked by `/go` (SHIP-4):** for a high-blast-radius task with genuine solution uncertainty, `/go` escalates its implementation stage to a hackathon automatically (see `go.md` Phase 2 escalation decision). The hackathon's deterministic Judge replaces the single cross-provider Verifier for that run, candidates are spawned cross-provider, and the edge-test harvest folds losers' coverage into the winner.
 
 ## Quick-start template
 
