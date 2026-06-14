@@ -473,7 +473,9 @@ def case_window_boundary_inclusive(tmp):
         make_row(boundary_ts, task="boundary", outcome="pass", vfails=0),
         make_row(outside_ts, task="outside", outcome="pass", vfails=0),
     ])
-    rc, out, err = run_kpi(["report", "--window", str(window), "--json"], env)
+    # synthetic rows use project="unknown"; report defaults to current-project scope,
+    # so this aggregation case must request the global view explicitly.
+    rc, out, err = run_kpi(["report", "--all", "--window", str(window), "--json"], env)
     if rc != 0:
         _record("boundary(VA-C): report exit 0", False, "rc=%d stderr=%r" % (rc, err[:200]))
         return
@@ -604,7 +606,8 @@ def case_malformed_line_resilience(tmp):
         fh.write("{ this is not valid json ]\n")
         fh.write(good + "\n")
     env = {"CLAUDE_BOOSTER_LOGS_DIR": logs_dir}
-    rc, out, err = run_kpi(["report", "--window", "3650", "--json"], env)
+    # synthetic project="unknown" row — aggregation case, request the global view.
+    rc, out, err = run_kpi(["report", "--all", "--window", "3650", "--json"], env)
     if rc != 0:
         _record("malformed(FM-021): report exit 0 (no crash)", False,
                 "rc=%d stderr=%r" % (rc, err[:200]))

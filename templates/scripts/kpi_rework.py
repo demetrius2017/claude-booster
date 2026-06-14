@@ -299,7 +299,16 @@ def handle_report(args: argparse.Namespace) -> int:
     """Aggregate and print KPI records."""
     now = datetime.now(timezone.utc)
     cutoff = now - timedelta(days=args.window)
-    project_filter = resolve_project_name(args.project) if args.project else None
+    # Default scope is the CURRENT project (git-toplevel/cwd), like the other
+    # Booster telemetry tools — the kpi log is global (~/.claude/logs), shared
+    # across all projects, so an unscoped report mixes projects and misleads.
+    # --all gives the cross-project view; --project <root> targets another repo.
+    if getattr(args, "all", False):
+        project_filter = None
+    elif args.project:
+        project_filter = resolve_project_name(args.project)
+    else:
+        project_filter = resolve_project_name(None)
     rows = included_rows(resolve_log_path(args.log_path), cutoff, project_filter)
     envelope = envelope_from_rows(rows)
 
@@ -330,7 +339,8 @@ def build_parser() -> argparse.ArgumentParser:
     report = subparsers.add_parser("report", help="aggregate pipeline outcomes")
     add_log_path_argument(report, default=argparse.SUPPRESS)
     report.add_argument("--window", type=positive_int, default=30)
-    report.add_argument("--project")
+    report.add_argument("--project", help="report for a specific project root (default: current project)")
+    report.add_argument("--all", action="store_true", help="report across ALL projects (the global view)")
     report.add_argument("--json", action="store_true")
     report.set_defaults(func=handle_report)
 
