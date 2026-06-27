@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Ingest consilium/audit reports into rolling_memory as searchable rows.
+"""Ingest consilium/audit/incident reports into rolling_memory as searchable rows.
 
 Purpose
 -------
-Walks ``~/Projects/*/reports/{consilium_*.md,audit_*.md}`` (and a shallow
-``audits/**`` fallback), parses YAML frontmatter, and upserts each file via
+Walks ``~/Projects/*/reports/*.md`` plus a shallow ``audits/**`` fallback,
+parses YAML frontmatter, and upserts each consilium/audit/incident file via
 ``rolling_memory.memorize(..., idempotency_key="report:<abspath>")``. Reports
 are stored as first-class memory rows so ``/start`` and ``search()`` can rank
 them alongside directives, feedback, and error lessons.
@@ -24,10 +24,12 @@ CLI
 Limitations
 -----------
 - Reports without YAML frontmatter are still indexed *if* the filename begins
-  with ``consilium_`` or ``audit_``; the memory_type is inferred from the
+  with ``consilium_``, ``audit_``, or ``incident_``; the memory_type is inferred from the
   prefix. Files that have neither valid frontmatter nor a matching prefix are
   skipped with a warning. This fallback lets us index legacy reports that
   predate the frontmatter convention.
+- Incident reports are always indexed with ``preserve=True`` and
+  ``memory_type='incident'``. They are not error lessons.
 - Bodies are truncated to 8000 chars (leaves headroom for FTS rank weights).
 - Idempotency is keyed on absolute path, so renaming a report creates a new row.
 - Report discovery is fixed-depth: ``~/Projects/*/reports/*``,
@@ -66,19 +68,21 @@ FRONTMATTER_DELIM = "---"
 
 
 def _iter_report_files() -> list[Path]:
-    """Return all consilium_/audit_ report markdown files under ~/Projects."""
+    """Return all markdown report files that may carry report frontmatter."""
     if not PROJECTS_ROOT.is_dir():
         return []
-    patterns = ["*/reports/consilium_*.md", "*/reports/audit_*.md"]
-    found: list[Path] = []
-    for pat in patterns:
-        found.extend(PROJECTS_ROOT.glob(pat))
-    # Some projects nest one level deeper (e.g. monorepo/subproject/reports).
-    nested_patterns = [
+    patterns = [
+        "*/reports/*.md",
+        "*/*/reports/*.md",
+        "*/reports/consilium_*.md",
+        "*/reports/audit_*.md",
+        "*/reports/incident_*.md",
         "*/*/reports/consilium_*.md",
         "*/*/reports/audit_*.md",
+        "*/*/reports/incident_*.md",
     ]
-    for pat in nested_patterns:
+    found: list[Path] = []
+    for pat in patterns:
         found.extend(PROJECTS_ROOT.glob(pat))
     # Some projects use audits/<topic>/audit_report.md — pick those up too.
     found.extend(PROJECTS_ROOT.glob("*/audits/*/audit_report.md"))
@@ -127,6 +131,8 @@ def _infer_type_from_name(path: Path) -> Optional[str]:
         return "consilium"
     if name.startswith("audit"):
         return "audit"
+    if name.startswith("incident"):
+        return "incident"
     return None
 
 
@@ -140,7 +146,7 @@ def _project_category(path: Path) -> str:
     the same way.
     """
     try:
-        rel = path.relative_to(PROJECTS_ROOT)
+        rel = path.resolve().relative_to(PROJECTS_ROOT.resolve())
     except ValueError:
         return ""
     parts = rel.parts
@@ -162,6 +168,22 @@ def _string_field(value: object) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _frontmatter_type(fm: dict, path: Path) -> str:
+    """Return a valid memory type from YAML frontmatter, or ``""``.
+
+    Non-string ``type`` values are rejected rather than coerced. Filename
+    fallback still handles legacy consilium/audit/incident reports.
+    """
+    if "type" not in fm:
+        return ""
+    raw_type = fm.get("type")
+    if not isinstance(raw_type, str):
+        logger.warning("malformed non-string frontmatter type in %s — ignoring", path)
+        return ""
+    ftype = raw_type.strip().lower()
+    return ftype if ftype in ("consilium", "audit", "incident") else ""
+
+
 def build_row(path: Path) -> Optional[dict]:
     """Parse a report file into the kwargs for rolling_memory.memorize()."""
     try:
@@ -178,8 +200,16 @@ def build_row(path: Path) -> Optional[dict]:
     fm_preserve: Optional[bool] = None
 
     if fm is not None:
-        ftype = _string_field(fm.get("type")).lower()
-        if ftype in ("consilium", "audit"):
+        ftype = _frontmatter_type(fm, path)
+        if inferred_type and ftype and inferred_type != ftype:
+            logger.warning(
+                "conflicting report type for %s: filename implies %r, frontmatter says %r — skipping",
+                path,
+                inferred_type,
+                ftype,
+            )
+            return None
+        if ftype:
             memory_type = ftype
         description = _string_field(fm.get("description"))
         fm_name = _string_field(fm.get("name"))
@@ -199,12 +229,24 @@ def build_row(path: Path) -> Optional[dict]:
 
     # Phase 2c: preserve defaults to True for consilium/audit even when the
     # frontmatter field is missing (e.g. legacy files, malformed YAML).
-    # Explicit `preserve: false` in frontmatter still overrides. This covers
-    # the YAML colon-quote bug class that already cost us one fix commit.
-    if fm_preserve is None:
+    # Incidents are also source-of-truth rows and are always preserved; an
+    # incident report must not be consolidated away or evicted.
+    # Explicit `preserve: false` in frontmatter still overrides consilium/audit.
+    # Incidents are always preserved because they are post-deploy production
+    # safety records. This also covers the YAML colon-quote bug class that
+    # already cost us one fix commit.
+    if memory_type == "incident":
+        preserve = True
+    elif fm_preserve is None:
         preserve = memory_type in ("consilium", "audit")
     else:
         preserve = fm_preserve
+
+    severity = ""
+    if fm is not None:
+        severity = _string_field(fm.get("severity")).lower()
+    if severity not in ("critical", "high", "medium", "low"):
+        severity = "unknown"
 
     # Build the indexed content: title line + optional description + truncated body.
     pieces: list[str] = [f"# {name}"]
@@ -218,12 +260,13 @@ def build_row(path: Path) -> Optional[dict]:
     return {
         "content": content,
         "memory_type": memory_type,
-        "priority": 70,  # above default 50, below directives 80-90
+        "priority": 95 if memory_type == "incident" else 70,
         "scope": "global",
         "category": _project_category(path),
-        "source": str(path),
-        "idempotency_key": f"report:{path}",
+        "source": str(path.resolve()),
+        "idempotency_key": f"report:{path.resolve()}",
         "preserve": preserve,
+        "metadata": {"severity": severity} if memory_type == "incident" else {},
     }
 
 

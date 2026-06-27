@@ -121,9 +121,18 @@ DEFAULT_PRIORITY = {
     "directive": 100,
     "feedback": 90,
     "session_summary": 80,
+    "incident": 95,
     "error_lesson": 70,
     "decision": 50,
     "project_context": 40,
+}
+
+INCIDENT_SEVERITY_RANK = {
+    "critical": 0,
+    "high": 1,
+    "medium": 2,
+    "low": 3,
+    "unknown": 4,
 }
 
 # Merge thresholds for compounding pattern
@@ -1789,12 +1798,142 @@ def _fetch_start_context(
     return rows, category, None
 
 
+def _row_metadata(row: dict) -> dict:
+    raw = row.get("metadata_json") or "{}"
+    if isinstance(raw, dict):
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _incident_severity(row: dict) -> str:
+    severity = str(_row_metadata(row).get("severity") or "").strip().lower()
+    return severity if severity in INCIDENT_SEVERITY_RANK else "unknown"
+
+
+def _incident_sort_key(row: dict) -> tuple[int, str, int]:
+    created_at = str(row.get("created_at") or "")
+    row_id = int(row.get("id") or 0)
+    # Negative codepoints give deterministic descending timestamp order while
+    # keeping the overall sort ascending by severity rank.
+    inverted_created_at = "".join(chr(0x10FFFF - ord(ch)) for ch in created_at)
+    return (INCIDENT_SEVERITY_RANK[_incident_severity(row)], inverted_created_at, row_id)
+
+
+def _incident_warning_bucket(
+    row: dict,
+    category: Optional[str],
+    query_match_ids: set[int],
+) -> int:
+    """Rank incident relevance buckets before severity.
+
+    Same-bucket ordering still comes from ``_incident_sort_key`` so
+    critical/high/medium/low remains stable within current-project, query-hit,
+    and unrelated buckets.
+    """
+    is_category_match = bool(category and row.get("category") == category)
+    try:
+        row_id = int(row.get("id") or 0)
+    except (TypeError, ValueError):
+        row_id = 0
+    is_query_match = bool(query_match_ids and row_id in query_match_ids)
+    if is_category_match and is_query_match:
+        return 0
+    if is_category_match:
+        return 1
+    if is_query_match:
+        return 2
+    return 3
+
+
+def _fetch_incident_warnings(
+    scope: Optional[str] = None,
+    query: Optional[str] = None,
+    limit: int = 5,
+) -> tuple[Optional[list[dict]], Optional[str]]:
+    """Fetch category-biased/query-aware incident rows without mutating the DB."""
+    category = _category_from_scope(scope)
+    try:
+        conn = get_readonly_connection()
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if "unable to open" in msg or "no such file" in msg:
+            return [], None
+        logger.exception("_fetch_incident_warnings: unexpected connect error")
+        return None, str(exc)
+    try:
+        query_match_ids: set[int] = set()
+        if query:
+            try:
+                query_match_ids = {
+                    int(r["id"])
+                    for r in conn.execute(
+                        """SELECT am.id FROM agent_memory_fts fts
+                           JOIN agent_memory am ON am.id = fts.rowid
+                           WHERE agent_memory_fts MATCH ?
+                             AND am.active = 1
+                             AND am.memory_type = 'incident'""",
+                        (query,),
+                    ).fetchall()
+                }
+            except sqlite3.OperationalError as exc:
+                msg = str(exc)
+                if "fts5" in msg.lower():
+                    logger.warning("_fetch_incident_warnings FTS5 query rejected: %s", msg)
+                    return None, f"invalid FTS5 query {query!r}: {msg}"
+                raise
+
+        rows = [
+            dict(r)
+            for r in conn.execute(
+                """SELECT * FROM agent_memory
+                   WHERE active = 1 AND memory_type = 'incident'
+                   ORDER BY created_at DESC, id ASC"""
+            ).fetchall()
+        ]
+    except sqlite3.OperationalError as exc:
+        msg = str(exc).lower()
+        if "no such table" in msg:
+            return [], None
+        logger.exception("_fetch_incident_warnings failed")
+        return None, str(exc)
+    finally:
+        conn.close()
+
+    rows.sort(
+        key=lambda r: (
+            _incident_warning_bucket(r, category, query_match_ids),
+            *_incident_sort_key(r),
+        )
+    )
+    return rows[:limit], None
+
+
+def _render_incident_warnings(rows: list[dict], header: str = "=== INCIDENT WARNINGS ===") -> str:
+    if not rows:
+        return ""
+    out_lines = [header]
+    for r in rows:
+        date = (r.get("created_at") or "")[:10]
+        severity = _incident_severity(r).upper()
+        cat = r.get("category") or "-"
+        src = r.get("source") or ""
+        title = _start_context_title(r)
+        out_lines.append(f"  ! [{severity}] [{date}] incident/{cat} — {title}")
+        if src:
+            out_lines.append(f"    {src}")
+    return "\n".join(out_lines)
+
+
 def build_start_context(
     scope: Optional[str] = None,
     query: Optional[str] = None,
     limit: int = 10,
 ) -> str:
-    """Format a markdown bullet list of relevant consilium/audit rows for /start.
+    """Format incident warnings plus relevant consilium/audit rows for /start.
 
     Replaces the legacy ``Glob("reports/consilium_*.md")+Read`` step in the
     /start workflow. Pulls from the `agent_memory` rows ingested by
@@ -1809,11 +1948,19 @@ def build_start_context(
 
     No DB writes — safe to call from rule prose, hooks, or interactive CLI.
     """
+    incident_rows, incident_err = _fetch_incident_warnings(scope=scope, query=query, limit=5)
     rows, category, err_msg = _fetch_start_context(scope, query, limit)
+    parts: list[str] = []
+    if incident_rows:
+        parts.append(_render_incident_warnings(incident_rows, header="=== INCIDENT REGISTER ==="))
+    elif incident_err:
+        parts.append(f"=== INCIDENT REGISTER — {incident_err} ===")
+
     if err_msg is not None:
-        return f"=== KNOWLEDGE BASE — {err_msg} ==="
+        parts.append(f"=== KNOWLEDGE BASE — {err_msg} ===")
+        return "\n\n".join(parts)
     if not rows:
-        return ""
+        return "\n\n".join(parts)
 
     if query:
         header = f"=== KNOWLEDGE BASE — query={query!r}"
@@ -1843,7 +1990,8 @@ def build_start_context(
         out_lines.append(f"  {marker} [{date}] {mt}/{cat} — {title}")
         if src:
             out_lines.append(f"    {src}")
-    return "\n".join(out_lines)
+    parts.append("\n".join(out_lines))
+    return "\n\n".join(parts)
 
 
 def build_context(scope: str = "global", token_budget: int = 4000) -> str:
@@ -1852,6 +2000,7 @@ def build_context(scope: str = "global", token_budget: int = 4000) -> str:
         ("DIRECTIVES", "directive", None, 10),
         ("FEEDBACK", "feedback", None, 10),
         ("RECENT SESSIONS", "session_summary", None, 5),
+        ("INCIDENT WARNINGS", "incident", None, 5),
         ("ERROR LESSONS", "error_lesson", None, 10),
         ("DECISIONS", "decision", None, 10),
     ]
@@ -1870,12 +2019,27 @@ def build_context(scope: str = "global", token_budget: int = 4000) -> str:
                 scope_clause = "(scope = 'global' OR scope = ?)"
                 params = [mtype, scope]
 
-            rows = conn.execute(
-                f"""SELECT id, content, created_at, priority, category FROM agent_memory
-                    WHERE memory_type = ? AND active = 1 AND {scope_clause}
-                    ORDER BY priority DESC, created_at DESC LIMIT ?""",
-                (*params, limit),
-            ).fetchall()
+            if mtype == "incident":
+                fetched = [
+                    dict(r)
+                    for r in conn.execute(
+                        f"""SELECT id, content, created_at, priority, category,
+                                   source, metadata_json
+                            FROM agent_memory
+                            WHERE memory_type = ? AND active = 1 AND {scope_clause}
+                            ORDER BY created_at DESC, id ASC""",
+                        tuple(params),
+                    ).fetchall()
+                ]
+                fetched.sort(key=_incident_sort_key)
+                rows = fetched[:limit]
+            else:
+                rows = conn.execute(
+                    f"""SELECT id, content, created_at, priority, category FROM agent_memory
+                        WHERE memory_type = ? AND active = 1 AND {scope_clause}
+                        ORDER BY priority DESC, created_at DESC LIMIT ?""",
+                    (*params, limit),
+                ).fetchall()
 
             if not rows:
                 continue
@@ -1891,6 +2055,11 @@ def build_context(scope: str = "global", token_budget: int = 4000) -> str:
                     # and spot `unclassified` rows that need manual triage.
                     cat = (r["category"] or "unclassified").strip() or "unclassified"
                     line = f"  * [{date_prefix}] [{cat}] {r['content']}"
+                elif mtype == "incident":
+                    severity = _incident_severity(dict(r)).upper()
+                    cat = (r.get("category") if isinstance(r, dict) else r["category"]) or "-"
+                    title_text = _start_context_title(dict(r))
+                    line = f"  ! [{severity}] [{date_prefix}] incident/{cat} — {title_text}"
                 else:
                     line = f"  * [{date_prefix}] {r['content']}"
 
@@ -2178,7 +2347,7 @@ def _cli():
 
     p_start = sub.add_parser(
         "start-context",
-        help="List relevant consilium/audit reports for /start (cross-project, category-biased)",
+        help="List incident warnings plus relevant consilium/audit reports for /start",
     )
     p_start.add_argument("--scope", default=None,
                          help="Project absolute path (defaults to cwd if omitted)")
@@ -2384,6 +2553,11 @@ def _cli():
 
         if args.json:
             rows, category, err_msg = _fetch_start_context(scope, args.query, args.limit)
+            incident_rows, incident_err = _fetch_incident_warnings(
+                scope=scope,
+                query=args.query,
+                limit=5,
+            )
             projected = []
             for r in rows or []:
                 projected.append({
@@ -2406,6 +2580,20 @@ def _cli():
                 "query": args.query,
                 "category": category,
                 "error": err_msg,
+                "incident_error": incident_err,
+                "incident_warnings": [
+                    {
+                        "id": r.get("id"),
+                        "severity": _incident_severity(r),
+                        "category": r.get("category"),
+                        "scope": r.get("scope"),
+                        "title": _start_context_title(r),
+                        "source": r.get("source"),
+                        "priority": r.get("priority"),
+                        "created_at": r.get("created_at"),
+                    }
+                    for r in (incident_rows or [])
+                ],
                 "rows": projected,
             }
             # D3 — JSON mode: add topic_timeline and stuck_loop_candidate keys.

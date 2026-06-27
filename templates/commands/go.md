@@ -47,6 +47,22 @@ printf '%s\n' "$RUNTAG" > "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.
 ```
 Remember `RUNTAG` for the rest of the pipeline (go_gate checks marker *existence*, not content — the tag is for debt scoping). Then proceed to Phase 1.
 
+### Incident warnings gate (mandatory after AC validation, before Flow Designer)
+
+Load the production incident register before any Flow Designer work:
+
+```bash
+python ~/.claude/scripts/rolling_memory.py start-context --scope "$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+```
+
+If the output contains `=== INCIDENT REGISTER ===` or `=== INCIDENT WARNINGS ===`:
+
+1. Read every listed incident source path before Phase 1.
+2. Extract production impact, trigger, mitigation, recurrence guard, and any "do not repeat" constraint.
+3. Add a compact `Incident Warnings` block to the Flow Designer prompt immediately before the Artifact Contract.
+
+Do not treat incidents as `error_lesson`, `audit`, or `consilium` rows. They are a separate high-priority memory lane for post-deploy production incidents.
+
 ---
 
 ## Phase 1 — FLOW DESIGNER

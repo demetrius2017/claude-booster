@@ -68,6 +68,24 @@ A typical тройка task spawns 1 Flow Designer on Opus (foreground, ~30-60s)
 
 ---
 
+## What's new in v1.16 — Incident Register memory lane
+
+Claude Booster now has a dedicated **Incident Register** for production failures: the post-deploy cases where code was already shipped, then broke a project in real use. These are not build-time TODOs, ordinary audit notes, or generic `error_lesson` rows. They are high-priority operational warnings: what was done wrong, what it caused, how it was fixed, and what must not be repeated.
+
+**How it works:**
+- `index_reports.py` indexes `reports/incident_*.md` and frontmatter `type: incident` as first-class `incident` memory rows.
+- Incident rows are always preserved, stored with priority `95`, and may carry `severity: critical|high|medium|low`.
+- `rolling_memory.py start-context` renders `=== INCIDENT REGISTER ===` before the normal consilium/audit knowledge base, sorted by current project relevance and severity.
+- `/start` must read every listed incident source before planning.
+- `/go` must load incident warnings after Artifact Contract validation and inject a compact `Incident Warnings` block into the Flow Designer prompt before implementation design begins.
+- `memory_post_tool.py` now auto-refreshes the report index when an `incident_*.md` report is written.
+
+The architectural point is simple: production incidents become a separate parallel memory lane, always close to the Lead at session start and before the `/go` pipeline designs new code. A past outage is treated as a hard warning label, not as background documentation that may or may not be remembered.
+
+**Testing:** `tests/test_incident_memory.py` covers incident indexing, malformed/conflicting frontmatter handling, post-tool regex detection, `/start` ordering, query relevance, and `build_context()` ordering.
+
+---
+
 ## What's new in v1.15 — The шестёрка: cross-provider `/go`
 
 After Fable 5 was blocked, the тройка went mono-provider (Flow Designer, Worker, and Verifier all on gpt-5.5) — so the Verifier was checking the same model that wrote the code, a correlated blind spot. A consilium (`reports/consilium_2026-06-13_dual_model_rework_reduction.md`) rejected the tempting "6 parallel authors + merge their code" idea (a code merge needs LLM judgment, which violates the exit-code-only PASS axiom and reinvents `/hackathon` minus its one sound property) and instead put the idle strong model (Opus 4.8) where rework is actually born: **design and verification, on a different provider than the author**.

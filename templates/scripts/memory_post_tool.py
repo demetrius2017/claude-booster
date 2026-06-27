@@ -6,7 +6,7 @@
     Записывает только значимые события (ошибки bash, git commit) в JSONL батч-файл.
     Обработка — в memory_session_end.py.
 
-    Дополнительно: при Write/Edit отчётов (``*/reports/{consilium,audit}_*.md``)
+    Дополнительно: при Write/Edit отчётов (``*/reports/{consilium,audit,incident}_*.md``)
     форкает fire-and-forget subprocess ``index_reports.py`` чтобы SQLite FTS-индекс
     оставался свежим для следующего ``/start``. Subprocess async → <5ms контракт
     хука сохраняется. Rationale: reports/audit_2026-04-13_indexing_strategy.md.
@@ -28,8 +28,8 @@
     - Matching-report-write путь форкает `index_reports.py` через subprocess
       и платит цену macOS `posix_spawn` ≈ 5 ms median / 30 ms p95. Это
       допустимо потому что:
-        * срабатывает только на Write/Edit по маске `*/reports/{consilium,audit}_*.md`
-        * ~1-2 раза за сессию (при /audit, /consilium, /handover)
+        * срабатывает только на Write/Edit по маске `*/reports/{consilium,audit,incident}_*.md`
+        * ~1-2 раза за сессию (при /audit, /consilium, /incident, /handover)
         * сам Write tool занимает на порядок больше времени
     - `_maybe_trigger_index` форкает subprocess и сразу возвращается —
       индексация происходит в отдельном процессе, hook не ждёт.
@@ -48,10 +48,10 @@ import os
 import re
 import sys
 
-# Matches ~/Projects/<any>/reports/consilium_*.md or audit_*.md (with optional
-# nesting). Compiled once per process. Case-sensitive — report filenames are
-# canonical lowercase.
-_REPORT_WRITE_PATTERN = re.compile(r"/reports/(?:consilium|audit)_[^/]*\.md$")
+# Matches ~/Projects/<any>/reports/consilium_*.md, audit_*.md, or
+# incident_*.md (with optional nesting). Compiled once per process.
+# Case-sensitive — report filenames are canonical lowercase.
+_REPORT_WRITE_PATTERN = re.compile(r"/reports/(?:consilium|audit|incident)_[^/]*\.md$")
 _INDEXER_SCRIPT = os.path.expanduser("~/.claude/scripts/index_reports.py")
 
 # Matches */memory/*.md but NOT */memory/MEMORY.md — the index file is excluded.
@@ -78,7 +78,7 @@ def _spawn(script, *extra_args):
 
 
 def _maybe_trigger_index(tool_name: str, tool_input: object) -> None:
-    """Fire-and-forget `index_reports.py` when a consilium/audit file is written.
+    """Fire-and-forget `index_reports.py` when a report file is written.
 
     Called from ``main`` right after JSON parsing. Returns in well under 1 ms
     when the tool or path doesn't match. When it does match, spawns a detached
@@ -136,7 +136,7 @@ def main() -> None:
     session_id = data.get("session_id", "unknown")
     cwd = data.get("cwd", "")
 
-    # Fire-and-forget: refresh the consilium/audit index when a report is written.
+    # Fire-and-forget: refresh the consilium/audit/incident index when a report is written.
     # This runs BEFORE the event-logging branches so that a malformed report
     # write still triggers indexing (and the error branch still fires). See
     # reports/audit_2026-04-13_indexing_strategy.md for the scoring rationale.
