@@ -1,13 +1,13 @@
 ---
-description: "Execute Шестёрка (Flow Designer → Challenge → Worker + Verifier → Test → Diff-review → Verdict) — hardcoded, non-skippable cross-provider pipeline."
+description: "Execute Шестёрка+ (Flow Designer → Challenge → Prototype Gate → Worker + Verifier → Test → Diff-review → Verdict) — hardcoded, non-skippable cross-provider pipeline."
 argument-hint: "<Artifact Contract — structured text with Objective, Verified Facts, etc.>"
 ---
 
 ## Progress tracking
-Before each numbered step below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/6 <step_label>"`
+Before each numbered step below, run: `python3 ~/.claude/scripts/phase.py progress "<N>/7 <step_label>"`
 After the final step completes, run: `python3 ~/.claude/scripts/phase.py progress clear`
 
-Steps: `1/6 flow_designer`, `2/6 challenge`, `3/6 worker_verifier`, `4/6 test_run`, `5/6 diff_review`, `6/6 verdict`
+Steps: `1/7 flow_designer`, `2/7 challenge`, `3/7 prototype_gate`, `4/7 worker_verifier`, `5/7 test_run`, `6/7 diff_review`, `7/7 verdict`
 
 ---
 
@@ -93,7 +93,7 @@ not allowed to write production code.
 
 ## Phase 1 — FLOW DESIGNER
 
-Run: `python3 ~/.claude/scripts/phase.py progress "1/6 flow_designer"`
+Run: `python3 ~/.claude/scripts/phase.py progress "1/7 flow_designer"`
 
 Query the model balancer:
 ```bash
@@ -152,7 +152,9 @@ Produce a PFD with ALL of the following sections (per flow-designer.md §4 schem
 - `temporal_gaps` — between (phases), duration (MUST be quantified), drifting_state, drift_rate, stale_after, mitigation
 - `cascade_chains` — trigger, chain, propagation_time, atomicity, current_gap
 - `worker_directives` — imperative ("MUST..."), rationale (which failure_mode/gap this prevents), enforcement type
+- `prototype_plan` — read-only executable proof plan: data sources, commands/notebook/script path, exact comparisons, invariants to prove before Worker, expected handoff artifact
 - `verifier_assertions` — assertion (what to test), type (temporal/branching/invariant/freshness/cascade), how (concrete test approach), derived_from (failure_mode ID or invariant)
+- `role_handoff_contract` — exact payload each downstream role receives from the previous role; include fields, artifact paths, allowed writes, forbidden state changes, and pass/fail criteria
 - `branch_tree.mermaid` — visual graph of operations and outcomes (all non-success terminals shown)
 - `adjacent_findings` — **RECON-as-review output.** While reading the existing code to build the PFD, do NOT just study it — REVIEW it critically, the way a code reviewer would. Every defect, inaccuracy, wrong assumption, missing guard, dead code, or risky pattern you notice in the code you read becomes an entry here. This is separate from `failure_modes` (those are about the NEW artifact); `adjacent_findings` is about the EXISTING surrounding code. Each entry: `location` (file:line), `severity` (HIGH = real bug / MED = inaccuracy or latent risk / LOW = smell or style), `in_radius` (true if it sits in the artifact being built OR a direct caller/helper this task touches; false if it is tangential code you happened to read), `issue` (one line), `fix` (one line). Empty list is allowed ONLY if the code you read was genuinely clean — say so explicitly rather than omitting the section.
 
@@ -161,6 +163,8 @@ Quality criteria — your PFD FAILS internal review if:
 - Any temporal_gap has vague duration ("some time", "eventually") — MUST be quantified
 - Any invariant is not expressible as a boolean assertion
 - Any worker_directive is advisory ("should", "consider") instead of imperative ("MUST")
+- `prototype_plan` is empty for a task touching broker sync, database producers, migrations, ledger/NAV/TWR, external APIs, concurrency/cache, or incident-driven fixes
+- `role_handoff_contract` does not specify what evidence is passed from Flow Designer → Challenge → Prototyper → Worker → Verifier → Diff Reviewer
 - The branch_tree shows no non-success terminal states
 - The failure_modes list is empty
 
@@ -173,10 +177,11 @@ Extract from the PFD:
 - Count of `failure_modes` entries → `<N>`
 - Count of `worker_directives` entries → `<M>`
 - Count of `verifier_assertions` entries → `<K>`
+- Count of `prototype_plan` checks → `<P>`
 
 Output:
 ```
-Flow Designer complete. PFD: <N> failure modes, <M> worker directives, <K> verifier assertions.
+Flow Designer complete. PFD: <N> failure modes, <M> worker directives, <K> verifier assertions, <P> prototype checks.
 ```
 
 **RECON-as-review harvest — log each `adjacent_findings` entry as a scoped debt:**
@@ -192,7 +197,7 @@ Save the full PFD text for Phase 1B.
 
 ## Phase 1B — PFD ADVERSARIAL CHALLENGE (cross-provider, Opus)
 
-Run: `python3 ~/.claude/scripts/phase.py progress "2/6 challenge"`
+Run: `python3 ~/.claude/scripts/phase.py progress "2/7 challenge"`
 
 The Flow Designer drafted the PFD on the `hard` tier. This phase has a **different-provider** reviewer attack that PFD **before any code is written** — the cheapest place to catch rework. (Consilium 2026-06-13: contract ambiguity + missed failure modes are ~65% of returns-to-code; model capability is ~5%. Design-time is where the strong model earns its keep — see `reports/consilium_2026-06-13_dual_model_rework_reduction.md`, SHIP-1.)
 
@@ -228,6 +233,7 @@ You are a PFD Challenge agent. A Flow Designer (a DIFFERENT model) produced the 
 3. INTEGRATION MISMATCH — does the task touch existing code? Which existing helper/function/invariant could this duplicate or break? (This is the #1 under-caught rework class — design review usually misses it.)
 4. WEAK INVARIANTS — is any invariant not expressible as a boolean assertion? Any temporal_gap duration vague? Any worker_directive advisory ("should") instead of imperative ("MUST")?
 5. VERIFIER BLIND SPOTS — is there a failure_mode with NO corresponding verifier_assertion? Every CRITICAL/HIGH failure mode must be testable.
+6. PROTOTYPE BLIND SPOTS — for data/external-system tasks, does `prototype_plan` prove the first lossy transform or only restate the implementation idea? It must compare source-of-truth input against current code/DB behavior before Worker writes code.
 
 ## Required output — structured, no prose preamble:
 
@@ -237,6 +243,7 @@ ADDITIONS (only if GAPS_FOUND):
 - new_failure_modes: [<id, guide_word, trigger, mitigation, category> ...]
 - new_worker_directives: [<imperative "MUST..." + rationale> ...]
 - new_verifier_assertions: [<assertion + how-to-test + derived_from> ...]
+- new_prototype_checks: [<read-only check + command/notebook/script shape + expected comparison> ...]
 - invariant_fixes: [<which invariant, how to make it boolean> ...]
 
 CONTRACT_AMBIGUITY (only if CONTRACT_AMBIGUOUS):
@@ -247,8 +254,8 @@ Output only the verdict block. Be ruthless but concrete — a vague critique is 
 
 **After Challenge returns — Lead reconciles (additive, deterministic):**
 
-- **VERDICT: SOUND** → PFD unchanged. Output `Challenge: SOUND — PFD held.` Proceed to Phase 2 with the original PFD.
-- **VERDICT: GAPS_FOUND** → APPEND the agent's `new_failure_modes`, `new_worker_directives`, `new_verifier_assertions`, and `invariant_fixes` into the PFD's corresponding sections. **Additive only** — the challenge may ADD requirements, never delete the Flow Designer's. Output `Challenge: GAPS_FOUND — +<a> failure modes, +<b> directives, +<c> assertions folded into PFD.` Proceed to Phase 2 with the **augmented PFD**.
+- **VERDICT: SOUND** → PFD unchanged. Output `Challenge: SOUND — PFD held.` Proceed to Phase 1C with the original PFD.
+- **VERDICT: GAPS_FOUND** → APPEND the agent's `new_failure_modes`, `new_worker_directives`, `new_verifier_assertions`, `new_prototype_checks`, and `invariant_fixes` into the PFD's corresponding sections. **Additive only** — the challenge may ADD requirements, never delete the Flow Designer's. Output `Challenge: GAPS_FOUND — +<a> failure modes, +<b> directives, +<c> assertions, +<d> prototype checks folded into PFD.` Proceed to Phase 1C with the **augmented PFD**.
 - **VERDICT: CONTRACT_AMBIGUOUS** → A-class signal caught at design time (far cheaper than a post-implementation A/W-failure). STOP and surface to the user:
   ```
   /go PAUSED — PFD challenge found the Artifact Contract ambiguous:
@@ -260,13 +267,139 @@ Output only the verdict block. Be ruthless but concrete — a vague critique is 
   rm -f "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.go_active"
   ```
 
-**Why additive reconciliation preserves the exit-code axiom:** the challenge never produces code and never overrides a test verdict — it only enriches the PFD with more failure modes and stricter assertions. More verifier_assertions = a stricter acceptance test, which can only make a defective Worker output more likely to FAIL, never more likely to wrongly PASS. The "PASS = test exit code only" axiom is untouched.
+**Why additive reconciliation preserves the exit-code axiom:** the challenge never produces code and never overrides a test verdict — it only enriches the PFD with more failure modes, stricter assertions, and read-only prototype checks. More verifier_assertions = a stricter acceptance test, and more prototype checks = better pre-code facts; neither can make a defective Worker output more likely to wrongly PASS. The "PASS = test exit code only" axiom is untouched.
+
+---
+
+## Phase 1C — PROTOTYPE GATE (read-only executable proof)
+
+Run: `python3 ~/.claude/scripts/phase.py progress "3/7 prototype_gate"`
+
+The Prototype Gate exists for the failure mode where RECON produces a plausible
+story, but the live data path disproves it. The Prototyper turns the PFD's
+hypothesis into a read-only executable probe before any Worker can edit the
+producer. For broker sync, NAV/TWR, ledger, migrations, external APIs,
+concurrency/cache, incident-driven fixes, or any component listed as
+`critical: true`, this gate is **mandatory**.
+
+### Prototype applicability decision
+
+Before spawning Worker, Lead classifies the task:
+
+| Task class | Prototype Gate |
+|---|---|
+| Broker/data sync, DB producer, migration/backfill, ledger/NAV/TWR, financial data, external API integration, concurrency/cache, incident-driven fix, or `critical: true` component | **MUST PASS** |
+| Pure local/static transform with no external state, no producer-owned table, no incident context, and no critical component | May be `N/A`, but Lead must print `Prototype Gate: N/A (<specific reason>)` before Phase 2 |
+
+If the gate is mandatory and the PFD lacks `prototype_plan`, pause and return to
+Phase 1B Challenge with `CONTRACT_AMBIGUOUS`: the design is not ready for code.
+
+### Prototyper role
+
+Spawn one Prototyper on the same channel selected for hard/read-only analysis
+(prefer the provider different from the Flow Designer when available). The
+Prototyper may create files only under `notebooks/`, `scripts/probes/`,
+`reports/prototypes/`, or a temp directory named in the Artifact Contract. It
+must not edit production code, migrations, configs, app modules, or producer
+tables.
+
+**Prototyper prompt:**
+
+```
+You are a Prototyper agent. Your job is to prove or falsify the PFD's data/process
+hypothesis BEFORE any Worker edits production code.
+
+You are read-only with respect to production state:
+- NO INSERT/UPDATE/DELETE/MERGE/TRUNCATE/ALTER/DROP.
+- NO deploy.
+- NO changes to production code paths.
+- NO git clean/reset --hard.
+- If a notebook is useful, create it under notebooks/ AND create a paired runnable
+  .py probe under scripts/probes/ so the proof is reviewable and repeatable.
+
+---
+
+## Artifact Contract
+<INSERT FULL ARTIFACT CONTRACT FROM PHASE 0>
+
+---
+
+## Process Flow Document
+<INSERT PHASE 1B-AUGMENTED PFD>
+
+---
+
+## Prototype plan from PFD
+<INSERT prototype_plan SECTION FROM PFD>
+
+---
+
+## Required output
+
+Produce a Prototype Handoff in markdown with these exact sections:
+
+Prototype verdict: PASS | FAIL | N/A
+Artifacts:
+- Notebook: <path or none>
+- Probe script: <path or none>
+- Output report: <path or inline summary>
+Source-of-truth inputs:
+- <broker/API/file/table + read-only command used>
+Current-system comparison:
+- <current code/DB path + read-only command used>
+First divergence:
+- <exact step/key/date/filter/account/transform where counts or values diverge>
+Counts and samples:
+- <source count, current count, lost/extra count, 3-10 representative rows/keys>
+Invariants proven:
+- <boolean invariant + evidence>
+Worker handoff:
+- Facts Worker MUST treat as true
+- Hypotheses Worker MUST NOT assume
+- Exact files/functions Worker should inspect/change
+- Regression assertions Verifier must include
+
+If verdict is FAIL, name the missing access/data/error and stop. Do not guess.
+```
+
+### Prototype pass/fail rule
+
+- **PASS** means the probe identified source-of-truth inputs, current-system
+  behavior, first divergence, counts/samples, and at least one boolean invariant
+  that the Worker can preserve. Proceed to Phase 2 and inject the Prototype
+  Handoff into the Worker prompt.
+- **FAIL** means the design is not ready for code. Stop before Worker. Output:
+  ```
+  /go PAUSED — Prototype Gate failed before code:
+    <missing data/access/divergence/evidence>
+  No Worker spawned. Fix the probe/input access or revise the Artifact Contract.
+  ```
+  Then clear progress and remove `.go_active`.
+- **N/A** is allowed only for the low-risk local/static class above. It must be
+  logged in the Phase 4 verdict.
+
+### Role handoff standard
+
+Every role hands over a concrete artifact, not a prose impression:
+
+| From | To | Required payload | Forbidden payload |
+|---|---|---|---|
+| Lead | Flow Designer | Artifact Contract + Context Receipt + Verified Facts Brief | Unchecked memory/report claims |
+| Flow Designer | Challenge | Full PFD including `prototype_plan` and `role_handoff_contract` | Implementation code |
+| Challenge | Prototyper | Augmented PFD + additive prototype checks | Deleted/overridden PFD requirements |
+| Prototyper | Worker | Prototype Handoff: verdict, artifacts, source/current counts, first divergence, invariants, worker facts | Guesswork, write queries, prod mutations |
+| Prototyper | Verifier | Regression assertions derived from proven facts and invariants | Worker's implementation approach |
+| Worker | Verifier/Test | Artifact path only; Verifier still uses AC/PFD/prototype assertions, not Worker prompt | Worker's prompt/reasoning |
+| Worker/Test | Diff Reviewer | Git diff + AC + PFD + Prototype Handoff + test output | Permission to edit code |
+
+This handoff standard is the anti-loop mechanism: a downstream role may build on
+evidence, but may not inherit an upstream role's unproven opinion.
 
 ---
 
 ## Phase 2 — WORKER + VERIFIER (parallel, cross-provider)
 
-Run: `python3 ~/.claude/scripts/phase.py progress "3/6 worker_verifier"`
+Run: `python3 ~/.claude/scripts/phase.py progress "4/7 worker_verifier"`
 
 ### Escalation decision (SHIP-4) — single Worker vs /hackathon tournament
 
@@ -278,11 +411,11 @@ Before spawning the Worker, decide whether this task warrants COMPETING implemen
 **If NOT both → single Worker** (continue to the standard path below). Most tasks land here — escalation is the exception, gated to protect cost (consilium 2026-06-13, SHIP-4: do NOT escalate by default).
 
 **If both → escalate to `/hackathon`** for the implementation stage:
-- Pass the PFD-augmented Artifact Contract as the hackathon Artifact Contract.
-- Seed the Judge Mandate from the PFD `verifier_assertions` + `invariants` — the deterministic acceptance the Шестёрка already derived.
+- Pass the PFD-augmented Artifact Contract and Prototype Handoff as the hackathon Artifact Contract.
+- Seed the Judge Mandate from the PFD `verifier_assertions` + `invariants` and Prototype Handoff regression assertions — the deterministic acceptance the Шестёрка+ already derived.
 - Spawn the 2–3 candidates ACROSS providers (e.g. one Opus Agent + one Codex `codex_sandbox_worker.sh gpt-5.5`). When `ZAI_API_KEY` is present, include GLM-5.2 via `~/.claude/scripts/zai_cli.py review` for design critique, edge harvest, or external diff review. When Grok CLI is authenticated, include Grok via `~/.claude/scripts/grok_sandbox_worker.sh grok-build` as a write-capable contestant or via `~/.claude/scripts/grok_cli.py review` as a fourth-model reviewer. Z.ai is a third-model review lane by default; Grok may be a code worker only through the sandbox worker; neither should be the deterministic Judge unless the Judge remains an executable test runner with exit-code scoring.
 - The hackathon's deterministic Judge (exit-code score, winner-take-all) REPLACES the single cross-provider Verifier for this run — same no-LLM-judgment axiom, stronger evidence. It includes the SHIP-4 **edge-test harvest** (losers' test coverage unioned into the winner's suite; see `hackathon.md` Phase 4).
-- When the hackathon returns a winner, **resume the Шестёрка at Phase 3B** (diff-review the winner) → Phase 4 verdict. Skip the standard single-Worker path below.
+- When the hackathon returns a winner, **resume the Шестёрка+ at Phase 3B** (diff-review the winner) → Phase 4 verdict. Skip the standard single-Worker path below.
 - Log it in the verdict: `implementation: /hackathon (N candidates, winner cN, score X/Y)`.
 
 ---
@@ -355,6 +488,15 @@ produce the artifact at the specified path. Do not explain plans. Do not ask for
 
 ---
 
+## Prototype Handoff
+
+<INSERT Prototype Handoff from Phase 1C, or `Prototype Gate: N/A (<reason>)`>
+
+The Prototype Handoff is executable evidence. Treat its proven facts as input
+guards. Do not re-assume a theory that the probe falsified.
+
+---
+
 ## [CRITICAL] Worker directives from PFD
 
 These are imperative requirements, not suggestions. Implement EVERY directive:
@@ -403,6 +545,9 @@ Acceptance emphasis: <INSERT Acceptance emphasis FROM AC>
 ### Verifier assertions
 <INSERT verifier_assertions SECTION FROM PFD ONLY>
 
+### Prototype regression assertions
+<INSERT regression assertions from Prototype Handoff, if any>
+
 ### Invariants (must hold after execution)
 <INSERT invariants SECTION FROM PFD ONLY>
 
@@ -418,16 +563,17 @@ Write a bash or python test script that:
 1. Tests each verifier_assertion from the PFD — one assertion = one labeled test case
 2. Checks each invariant holds after execution — assert the boolean expression or its observable proxy
 3. Covers at least one non-happy-path branch from branching_scenarios — inject the failure condition and assert correct handling
-4. Outputs clear PASS/FAIL per test case:
+4. Includes every Prototype Handoff regression assertion as a labeled test case when Phase 1C returned PASS
+5. Outputs clear PASS/FAIL per test case:
    ```
    [PASS] assertion: <description>
    [FAIL] assertion: <description> — expected <X>, got <Y>
    ```
-5. Prints a summary at the end:
+6. Prints a summary at the end:
    ```
    Results: <N> passed, <M> failed
    ```
-6. Exits with code 0 if ALL assertions pass, non-zero if ANY fail
+7. Exits with code 0 if ALL assertions pass, non-zero if ANY fail
 
 Save the test script to: `<artifact_path_dir>/test_<artifact_name>.sh`
 (or `.py` if Python is more natural for the assertion logic)
@@ -441,18 +587,19 @@ Test only. Read, run, assert, report.
 
 ---
 
-### Progress output — the Шестёрка bar (6 stages, 6 segments)
+### Progress output — the Шестёрка+ bar (7 stages, 7 segments)
 
-The pipeline has SIX stages, so the status bar has six segments. Emit the matching line as each stage completes (fill one segment per phase):
+The pipeline has SEVEN stages, so the status bar has seven segments. Emit the matching line as each stage completes (fill one segment per phase):
 ```
-Шестёрка ▰▱▱▱▱▱ 1/6 · Flow Designer ✓
-Шестёрка ▰▰▱▱▱▱ 2/6 · Challenge ✓
-Шестёрка ▰▰▰▱▱▱ 3/6 · Worker ✓ · Verifier ✓
-Шестёрка ▰▰▰▰▱▱ 4/6 · Test ✓
-Шестёрка ▰▰▰▰▰▱ 5/6 · Diff review ✓
-Шестёрка ▰▰▰▰▰▰ 6/6 · Verdict ✓
+Шестёрка+ ▰▱▱▱▱▱▱ 1/7 · Flow Designer ✓
+Шестёрка+ ▰▰▱▱▱▱▱ 2/7 · Challenge ✓
+Шестёрка+ ▰▰▰▱▱▱▱ 3/7 · Prototype Gate ✓
+Шестёрка+ ▰▰▰▰▱▱▱ 4/7 · Worker ✓ · Verifier ✓
+Шестёрка+ ▰▰▰▰▰▱▱ 5/7 · Test ✓
+Шестёрка+ ▰▰▰▰▰▰▱ 6/7 · Diff review ✓
+Шестёрка+ ▰▰▰▰▰▰▰ 7/7 · Verdict ✓
 ```
-If a stage is skipped or degraded, annotate that segment instead of dropping it — e.g. `5/6 · Diff review SKIPPED (trivial diff)` or `3/6 · cross-provider DEGRADED`. The bar always shows all six segments so the reader sees the whole pipeline.
+If a stage is skipped or degraded, annotate that segment instead of dropping it — e.g. `6/7 · Diff review SKIPPED (trivial diff)`, `3/7 · Prototype Gate N/A (local static transform)`, or `4/7 · cross-provider DEGRADED`. The bar always shows all seven segments so the reader sees the whole pipeline.
 
 Do NOT begin Phase 3 until BOTH Worker and Verifier have returned.
 
@@ -460,7 +607,7 @@ Do NOT begin Phase 3 until BOTH Worker and Verifier have returned.
 
 ## Phase 3 — TEST RUN
 
-Run: `python3 ~/.claude/scripts/phase.py progress "4/6 test_run"`
+Run: `python3 ~/.claude/scripts/phase.py progress "5/7 test_run"`
 
 After both agents complete:
 
@@ -485,7 +632,7 @@ After both agents complete:
 
 **Run only if Phase 3 returned exit=0.** If the test failed, skip straight to Phase 4 fail-classification — there is nothing to review yet.
 
-Run: `python3 ~/.claude/scripts/phase.py progress "5/6 diff_review"`
+Run: `python3 ~/.claude/scripts/phase.py progress "6/7 diff_review"`
 
 The Verifier tested *observable behavior* but never saw the code. This phase gives the **diff itself** a second look by a different-provider reviewer — to catch defects that emerge at implementation time and that a behavioral test does not exercise: integration breakage, reinvented helpers, security holes, dead/over-broad churn. Per consilium 2026-06-13 (SHIP-3): design-time review cannot see these — they live in the written code.
 
@@ -506,6 +653,9 @@ You are a Post-Implementation Diff Reviewer. The code below already PASSED its a
 
 ## Artifact Contract
 <INSERT FULL ARTIFACT CONTRACT FROM PHASE 0>
+
+## Prototype Handoff
+<INSERT Prototype Handoff from Phase 1C, or Prototype Gate N/A reason>
 
 ## Diff under review
 <INSERT git diff OF THE WORKER'S CHANGES>
@@ -538,14 +688,15 @@ Only HIGH findings block. A vague finding is noise — omit it.
 
 ## Phase 4 — VERDICT
 
-Run: `python3 ~/.claude/scripts/phase.py progress "6/6 verdict"`
+Run: `python3 ~/.claude/scripts/phase.py progress "7/7 verdict"`
 
 ### If exit=0 (ALL PASS) AND Phase 3B review cleared (CLEAN, or only MED/LOW):
 
 ```
-✓ PASS — Шестёрка ▰▰▰▰▰▰ 6/6 complete. Artifact at <artifact_path>.
+✓ PASS — Шестёрка+ ▰▰▰▰▰▰▰ 7/7 complete. Artifact at <artifact_path>.
 ```
 Append any of these that apply (honest status, not silent drop):
+- `prototype gate: <PASS | N/A (<reason>)>`
 - `diff review: <CLEAN | N MED/LOW advisory findings — list them as follow-ups | SKIPPED (trivial diff)>`
 - `cross-provider: <OK | DEGRADED (<reason>)>` (if the Verifier or reviewer fell back to same-provider in Phase 2/3B)
 
@@ -703,12 +854,13 @@ On retry, always include the failed agent's session context (via `session_contex
 
 ## [CRITICAL] Non-negotiable constraints
 
-1. **ALL FOUR roles MUST run: Flow Designer → Challenge → Worker + Verifier.** There is no "skip" path inside `/go`.
+1. **ALL FIVE role stages MUST run or explicitly gate: Flow Designer → Challenge → Prototype Gate → Worker + Verifier.** There is no silent "skip" path inside `/go`.
    If the task is trivial enough to skip Flow Designer, do NOT use `/go` — edit directly.
-   (Under SHIP-4 escalation, the Worker+Verifier stage is REPLACED by a `/hackathon` tournament — competing candidates + a deterministic Judge — but Flow Designer and Challenge still precede it, and a test still gates the result. The roles never collapse; only the implementation stage's shape changes.)
+   Prototype Gate may be `N/A` only for pure local/static tasks with no external state, no producer-owned table, no incident context, and no critical component. Broker/data/DB/financial/migration/external-system tasks require Prototype PASS before Worker.
+   (Under SHIP-4 escalation, the Worker+Verifier stage is REPLACED by a `/hackathon` tournament — competing candidates + a deterministic Judge — but Flow Designer, Challenge, and Prototype Gate still precede it, and a test still gates the result. The roles never collapse; only the implementation stage's shape changes.)
 
-2. **Flow Designer → Challenge → Worker + Verifier is a strict order.**
-   PFD is an INPUT to the Challenge; the (possibly augmented) PFD is an INPUT to both Worker and Verifier. Spawning Worker or Verifier before the Challenge reconciles = protocol violation.
+2. **Flow Designer → Challenge → Prototype Gate → Worker + Verifier is a strict order.**
+   PFD is an INPUT to the Challenge; the (possibly augmented) PFD is an INPUT to the Prototype Gate; the Prototype Handoff is an INPUT to both Worker and Verifier. Spawning Worker or Verifier before the Challenge reconciles and Prototype Gate passes/N/A logs = protocol violation.
 
    **The Challenge MUST run on a different provider than the Flow Designer.** A model cannot find its own blind spots — same-provider "review" is theater. If `get hard` returned a non-anthropic provider, the Challenge is an Opus Agent; if it returned anthropic, the Challenge runs via `codex_worker.sh gpt-5.5`. The Challenge is additive (may add failure modes / directives / assertions, never delete them) and produces NO code — so the exit-code-only PASS axiom is preserved.
 

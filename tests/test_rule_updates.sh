@@ -254,6 +254,66 @@ else
 fi
 
 # ══════════════════════════════════════════════════════════════════════════════
+# Prototype Gate / role handoff checks (24-31)
+# ══════════════════════════════════════════════════════════════════════════════
+
+if grep -q "Phase 1C — PROTOTYPE GATE" "$GO" && grep -q "Prototype Handoff" "$GO"; then
+    check 24 "go.md: inserts Prototype Gate before Worker" "ok"
+else
+    check 24 "go.md: inserts Prototype Gate before Worker" "fail"
+    echo "  Expected: 'Phase 1C — PROTOTYPE GATE' and 'Prototype Handoff' in $GO"
+fi
+
+if grep -q "prototype_plan" "$GO" && grep -q "role_handoff_contract" "$GO"; then
+    check 25 "go.md: PFD schema requires prototype plan and role handoff contract" "ok"
+else
+    check 25 "go.md: PFD schema requires prototype plan and role handoff contract" "fail"
+    echo "  Expected: 'prototype_plan' and 'role_handoff_contract' in $GO"
+fi
+
+if grep -q "NO INSERT/UPDATE/DELETE" "$GO" && grep -q "notebooks/" "$GO" && grep -q "scripts/probes/" "$GO"; then
+    check 26 "go.md: Prototyper is read-only and writes only notebook/probe artifacts" "ok"
+else
+    check 26 "go.md: Prototyper is read-only and writes only notebook/probe artifacts" "fail"
+    echo "  Expected: read-only DML ban plus notebooks/ and scripts/probes/ paths in $GO"
+fi
+
+if grep -q "broker sync" "$GO" && grep -q "Prototype PASS before Worker" "$GO"; then
+    check 27 "go.md: broker/data/DB class requires Prototype PASS before Worker" "ok"
+else
+    check 27 "go.md: broker/data/DB class requires Prototype PASS before Worker" "fail"
+    echo "  Expected: broker/data class and 'Prototype PASS before Worker' in $GO"
+fi
+
+if grep -q "Role handoff standard" "$GO" && grep -q "Prototyper | Worker" "$GO" && grep -q "Prototyper | Verifier" "$GO"; then
+    check 28 "go.md: defines role handoff payloads between Prototyper, Worker, and Verifier" "ok"
+else
+    check 28 "go.md: defines role handoff payloads between Prototyper, Worker, and Verifier" "fail"
+    echo "  Expected role handoff table rows for Prototyper -> Worker/Verifier in $GO"
+fi
+
+if grep -q "Prototype Gate:" "$PV" && grep -q "Prototype Handoff:" "$PV"; then
+    check 29 "paired-verification.md: Artifact Contract carries Prototype Gate and Handoff fields" "ok"
+else
+    check 29 "paired-verification.md: Artifact Contract carries Prototype Gate and Handoff fields" "fail"
+    echo "  Expected: 'Prototype Gate:' and 'Prototype Handoff:' in $PV"
+fi
+
+if grep -q "Role handoff standard" "$PV" && grep -q "Prototype FAIL means no Worker spawn" "$PV"; then
+    check 30 "paired-verification.md: standardizes no-loss handoff and blocks Worker on failed prototype" "ok"
+else
+    check 30 "paired-verification.md: standardizes no-loss handoff and blocks Worker on failed prototype" "fail"
+    echo "  Expected: role handoff standard and failed-prototype Worker block in $PV"
+fi
+
+if grep -q "Prototype Gate" "$BC" && grep -q "Prototype Handoff" "$BC"; then
+    check 31 "booster-command skill: Codex bridge carries Prototype Gate requirement" "ok"
+else
+    check 31 "booster-command skill: Codex bridge carries Prototype Gate requirement" "fail"
+    echo "  Expected: 'Prototype Gate' and 'Prototype Handoff' in $BC"
+fi
+
+# ══════════════════════════════════════════════════════════════════════════════
 # Summary
 # ══════════════════════════════════════════════════════════════════════════════
 

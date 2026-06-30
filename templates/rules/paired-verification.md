@@ -46,17 +46,20 @@ Before writing any Artifact Contract, Lead **MUST** read `ARCHITECTURE.md` and `
 - If `critical: true` OR `feeds` array has ≥3 entries for any touched component → mark for conditional Architecture Auditor (see §Architecture-aware verification below)
 - **[CRITICAL] Code-over-docs**: dep_manifest.json reflects state at last update, not necessarily NOW. Before populating `Architecture constraints:` and `Downstream consumers:`, Lead MUST cross-check manifest entries against actual code (grep for function, check if it's still called, verify writer is still active). When manifest says "X writes to Y" but code shows X is disabled → manifest is stale, not code is wrong. Update manifest first, then populate Artifact Contract from corrected manifest. Finding type for divergence: `architecture-docs-stale`.
 
-## Pattern A — тройка: Flow Designer → Worker + Verifier (по умолчанию)
+## Pattern A — Шестёрка+: Flow Designer → Prototype Gate → Worker + Verifier
 
-Три стадии, две из которых параллельны:
+Четыре стадии, две из которых параллельны:
 
 **Стадия 1 — Flow Designer (sequential, до Worker+Verifier):**
-Lead спавнит Flow Designer agent с Verified Facts Brief из RECON. Flow Designer анализирует задачу и производит Process Flow Document (PFD): temporal topology, branching scenarios, state dependencies, failure modes, worker directives, verifier assertions.
+Lead спавнит Flow Designer agent с Verified Facts Brief из RECON. Flow Designer анализирует задачу и производит Process Flow Document (PFD): temporal topology, branching scenarios, state dependencies, failure modes, worker directives, verifier assertions, `prototype_plan`, and `role_handoff_contract`.
 
-**Стадия 2 — Worker + Verifier (parallel, после Flow Designer):**
+**Стадия 2 — Prototype Gate (sequential, после Flow Designer/Challenge, до Worker):**
+Lead спавнит Prototyper agent для read-only executable proof. Prototyper не пишет production code и не мутирует prod/state-owned данные. Он создаёт notebook/probe только в `notebooks/`, `scripts/probes/`, `reports/prototypes/` или tempdir, запускает read-only сравнение source-of-truth входов с текущим кодом/DB поведением, находит first divergence, counts/samples, and boolean invariants. Для broker sync, DB producers, migrations/backfills, ledger/NAV/TWR, financial data, external APIs, concurrency/cache, incident-driven fixes, and `critical: true` components Prototype Gate MUST PASS before Worker. For pure local/static tasks it may be `N/A` only with a concrete reason.
+
+**Стадия 3 — Worker + Verifier (parallel, после Prototype Gate):**
 В одном сообщении — два `Agent` tool-call'а:
-1. **Worker agent** получает: goal + Verified Facts Brief + PFD + scope + Artifact Contract (enriched with PFD worker_directives and failure_modes). Делает работу, кладёт артефакт в указанный путь, возвращает ссылку на него.
-2. **Verifier agent** получает: тот же goal + ту же Verified Facts Brief + PFD (verifier_assertions, invariants, branching_scenarios) + тот же scope + тот же Artifact Contract. **Не видит prompt'а Worker'а.** Производит ОДИН executable acceptance test.
+1. **Worker agent** получает: goal + Verified Facts Brief + PFD + Prototype Handoff + scope + Artifact Contract (enriched with PFD worker_directives, failure_modes, and proven prototype facts). Делает работу, кладёт артефакт в указанный путь, возвращает ссылку на него.
+2. **Verifier agent** получает: тот же goal + ту же Verified Facts Brief + PFD (verifier_assertions, invariants, branching_scenarios) + Prototype Handoff regression assertions + тот же scope + тот же Artifact Contract. **Не видит prompt'а Worker'а.** Производит ОДИН executable acceptance test.
 
 Оба Worker и Verifier бегут конкурентно. Lead дожидается обоих, потом запускает тест.
 
@@ -85,6 +88,8 @@ Architecture map consulted: <yes/no — was ARCHITECTURE.md or dep_manifest.json
 Architecture constraints: <interfaces Worker MUST NOT break — populated from dep_manifest.json `feeds` arrays of touched components; "(no dep_manifest.json)" if manifest absent>
 Downstream consumers: <specific functions/endpoints Verifier MUST include in acceptance test — from dep_manifest.json `called_by` arrays; "(none)" if manifest absent or called_by empty>
 Process Flow Document: <path to PFD YAML or inline PFD — MANDATORY for all delegations>
+Prototype Gate: <PASS with Prototype Handoff path | N/A with reason; PASS required for broker/data/DB/financial/migration/external-system/incident/critical-component work>
+Prototype Handoff: <path or inline summary: source-of-truth inputs, current-system comparison, first divergence, counts/samples, invariants proven, Worker facts, Verifier regression assertions>
 Session context: <OPTIONAL — see §Session context injection below>
 ```
 
@@ -106,6 +111,55 @@ Session context: <OPTIONAL — see §Session context injection below>
 - «Likely solution» заметки, кроме случаев когда это реальные продуктовые ограничения.
 
 Принцип: **Verifier тестирует наблюдаемое поведение артефакта, а не выбранный Worker-ом метод реализации.**
+
+## Role handoff standard — no lossy summaries between roles
+
+Every role passes a concrete artifact, not a "looks like" conclusion. This is
+the standard interface between roles:
+
+| From | To | Required payload | Forbidden payload |
+|---|---|---|---|
+| Lead | Flow Designer | Artifact Contract + Context Receipt + Verified Facts Brief with code/data evidence | Unchecked memory/report claims |
+| Flow Designer | Challenge | Full PFD including `prototype_plan` and `role_handoff_contract` | Implementation code |
+| Challenge | Prototyper | Additive PFD changes and explicit prototype checks | Deleted/overridden PFD requirements |
+| Prototyper | Worker | Prototype Handoff: verdict, artifacts, source/current counts, first divergence, invariants, Worker facts | Guesswork, write queries, prod mutations |
+| Prototyper | Verifier | Regression assertions derived from proven facts and invariants | Worker's implementation approach |
+| Worker | Verifier | Artifact path only; Verifier still uses AC/PFD/prototype assertions | Worker's prompt, plan, reasoning, or draft code |
+| Worker/Test | Diff Reviewer | Git diff + AC + PFD + Prototype Handoff + test output | Permission to edit code |
+
+If a role cannot produce its required payload, the pipeline pauses before the
+next role. The correct response is to refine the contract/probe, not to let the
+Worker guess.
+
+## Prototype Gate — executable truth before code
+
+The Prototype Gate is mandatory for any task where the bug may live in a data
+transform rather than in a local branch of code: broker sync, DB producers,
+migrations/backfills, ledger/NAV/TWR, financial data, external APIs,
+concurrency/cache, incident-driven fixes, and `critical: true` components.
+
+The Prototyper may use a notebook for exploration, but the handoff must also
+include a repeatable probe script or command output. Notebook-only proof is too
+weak for review and replay.
+
+Required Prototype Handoff fields:
+
+```
+Prototype verdict: PASS | FAIL | N/A
+Artifacts:
+Source-of-truth inputs:
+Current-system comparison:
+First divergence:
+Counts and samples:
+Invariants proven:
+Worker handoff:
+Verifier regression assertions:
+```
+
+Prototype PASS means the probe has identified what the source of truth says,
+what the current system does, where they first diverge, and what invariant the
+Worker must preserve. Prototype FAIL means no Worker spawn; code written from an
+unproven data hypothesis is a Three Nos violation.
 
 ## Verifier mandate (точная формулировка для prompt'а)
 

@@ -1,6 +1,6 @@
 ---
 name: "go"
-description: "Run the Claude Booster go protocol in Codex: Flow Designer, Worker, Verifier, test run, and verdict from an Artifact Contract."
+description: "Run the Claude Booster go protocol in Codex: Flow Designer, Challenge, Prototype Gate, Worker, Verifier, test run, diff review, and verdict from an Artifact Contract."
 ---
 
 # Booster Go

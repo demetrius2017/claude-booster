@@ -70,11 +70,12 @@ Execute the command behavior, not the literal Claude Code tool names.
 
 ### Cross-provider stages (SHIP-1..4 in `go` and `hackathon`)
 
-The `go` pipeline (Phase 1B Challenge, Phase 2 Verifier, Phase 3B Diff-review)
-and the `hackathon` edge-test harvest require each verifying/reviewing role to
-run on a **different provider than the Worker**. The spec is written from the
-Claude-CLI viewpoint, where the native model is Claude and "the other provider"
-is Codex (`codex_sandbox_worker.sh` / `codex_worker.sh`). On Codex CLI the roles
+The `go` pipeline (Phase 1B Challenge, Phase 1C Prototype Gate, Phase 2 Verifier,
+Phase 3B Diff-review) and the `hackathon` edge-test harvest require each
+verifying/reviewing role to run on a **different provider than the Worker** when
+that provider channel exists. The spec is written from the Claude-CLI viewpoint,
+where the native model is Claude and "the other provider" is Codex
+(`codex_sandbox_worker.sh` / `codex_worker.sh`). On Codex CLI the roles
 **mirror** — translate, do not execute literally:
 
 - The native orchestrator here is gpt-5.5, so "the other provider" is Claude;
@@ -84,6 +85,12 @@ is Codex (`codex_sandbox_worker.sh` / `codex_worker.sh`). On Codex CLI the roles
   `WP=codex-cli → Verifier=Opus` / `WP=anthropic → Verifier=codex` tables as
   "Worker on the native model → the other role on the other provider," and vice
   versa.
+- The Prototype Gate is read-only executable proof, not coding. For broker/data
+  sync, DB producers, migrations/backfills, ledger/NAV/TWR, financial data,
+  external APIs, concurrency/cache, incident-driven fixes, or critical
+  components, Codex must run or request a Prototyper pass before spawning Worker.
+  A notebook is allowed only when accompanied by a repeatable probe script or
+  command output; notebook-only proof is not sufficient handoff evidence.
 - If `ZAI_API_KEY` is present, GLM-5.2 via `~/.claude/scripts/zai_cli.py` is a
   third-model read-only channel for Challenge, external audit, edge-harvest, and
   diff-review. It does not replace the exit-code Judge/Verifier unless a future
@@ -127,7 +134,11 @@ is Codex (`codex_sandbox_worker.sh` / `codex_worker.sh`). On Codex CLI the roles
   before spawning subagents.
 - For `go`, the Artifact Contract is incomplete unless it contains both
   `Architecture Context:` and `Incident Warnings:` fields populated from the
-  Context Receipt.
+  Context Receipt. For broker/data/DB/financial/migration/external-system/
+  incident/critical-component work, the `/go` run must also produce a
+  `Prototype Handoff` before Worker: source-of-truth inputs, current-system
+  comparison, first divergence, counts/samples, invariants proven, Worker facts,
+  and Verifier regression assertions.
 - Save generated reports to the same repo paths the original command specifies,
   usually `reports/`.
 - Do not invent top-level Codex slash commands. If bare `/consilium` is

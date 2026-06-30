@@ -21,17 +21,20 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 Claude Booster ships three mechanisms that address the three failure modes of LLM agents working on multi-session projects:
 
-### 1. The Тройка — Flow Designer → Worker + Verifier
+### 1. Шестёрка+ — Flow Designer → Prototype Gate → Worker + Verifier
 
-When Claude delegates a coding task, it runs a **three-agent pipeline**:
+When Claude delegates a coding task through `/go`, it runs a **gated pipeline**:
 
 1. **Flow Designer** (Opus) maps every failure mode, temporal gap, and state cascade — producing a Process Flow Document (PFD) before any code is written
-2. **Worker** (Sonnet) implements the change with PFD-derived directives as hard requirements
-3. **Verifier** (Sonnet) writes an executable acceptance test — without seeing the Worker's code or prompt
+2. **Challenge** attacks the PFD before code, adding missed failure modes and stricter assertions
+3. **Prototype Gate** proves or falsifies the data/process hypothesis with a read-only notebook/probe before Worker touches production code paths
+4. **Worker** implements the change with PFD-derived directives and prototype-proven facts as hard requirements
+5. **Verifier** writes an executable acceptance test — without seeing the Worker's code or prompt
+6. **Diff reviewer** reviews the final diff after the test is green
 
 The Lead runs the Verifier's test. Exit code = verdict. No subjective "looks good to me."
 
-**Why this matters:** Single-agent workflows suffer from two biases: self-evaluation (same model writes and reviews) and flat-snapshot thinking (no consideration of what happens at T+1, T+2, ...). The Flow Designer forces temporal/branching analysis upfront. The Verifier breaks the self-evaluation loop by testing observable behavior independently.
+**Why this matters:** Single-agent workflows suffer from three biases: self-evaluation (same model writes and reviews), flat-snapshot thinking (no consideration of what happens at T+1, T+2, ...), and plausible-but-unexecuted RECON theories. The Flow Designer forces temporal/branching analysis upfront. The Prototype Gate forces the hypothesis to meet real data in read-only mode before code. The Verifier breaks the self-evaluation loop by testing observable behavior independently.
 
 **In practice:** The `/go` command (v1.12) hardcodes this pipeline as a single invocation. `go_gate.py` enforces it — during IMPLEMENT phase, any coding Agent spawn without an active `/go` pipeline is physically blocked by the hook.
 
@@ -60,7 +63,7 @@ Claude Booster doesn't run every agent on the same model. The Lead routes each d
 
 The **Lead** (orchestrator) stays on **Opus 4.8** — strongest model for synthesis, routing, and judgment. Optionally, with `/fast` toggle, the Lead runs on **Opus 4.8 fast output** (~2.5x faster tokens). To pin the old Opus 4.6 fast mode: `CLAUDE_CODE_OPUS_4_6_FAST_MODE_OVERRIDE=1`.
 
-A typical тройка task spawns 1 Flow Designer on Opus (foreground, ~30-60s), then 2 agents (Worker + Verifier) on Sonnet in parallel (~40-60s). The Lead orchestrates on Opus. Total wall-clock: 90–120 seconds for what would take 5–8 minutes with everything on one model sequentially.
+A typical `/go` task runs Flow Designer and Challenge first, then a Prototype Gate when the task touches data producers, broker sync, migrations, ledger/NAV/TWR, external APIs, incidents, or critical components. Only after the gate passes does Worker + Verifier run. Simple local/static tasks may log `Prototype Gate: N/A`, but data-path work must prove the first divergence before code.
 
 **On Claude Max:** model routing (Haiku/Sonnet/Opus delegation) works out of the box within the subscription. **Fast mode is NOT included in the Max subscription** — it is billed as extra usage at $30/$150 per MTok from the first token, even if you have remaining plan usage. Enable with `/fast` only when speed justifies the cost.
 
@@ -876,7 +879,7 @@ All commands are on-demand — their instructions load only when you invoke them
 
 | Command | What it does |
 |---------|-------------|
-| `/go` | **The тройка pipeline in one command.** Validates Artifact Contract → spawns Flow Designer (Opus) → spawns Worker + Verifier (Sonnet, parallel) → runs test → exit code = verdict. Built-in W/V/A/E retry classification. `go_gate.py` enforces this for all coding during IMPLEMENT. |
+| `/go` | **The Шестёрка+ pipeline in one command.** Validates Artifact Contract → Flow Designer → Challenge → Prototype Gate → Worker + Verifier → executable test → diff review → verdict. Broker/data/DB/financial/external-system work requires Prototype PASS before Worker. Built-in W/V/A/R/E retry classification. `go_gate.py` enforces this for coding during IMPLEMENT. |
 | `/start` | Initialize a session: read README, last handover, knowledge base (FTS5 cross-project search), telemetry, canary check, stuck-loop detection. Ends with `EnterPlanMode`. |
 | `/handover` | End-of-session report: auto-collects git log, saves structured report with Goal+KPI, Required reading, Session reference, verify-gate evidence block. |
 | `/consilium` | Multi-agent debate: RECON first (code, not reports), spawn 3–5 bio-specific agents + GPT via PAL MCP, synthesize positions, save to `reports/`. |
