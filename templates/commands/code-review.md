@@ -1,6 +1,6 @@
 ---
 description: "Booster code review — focused post-edit review for duplication, over-engineering, integration drift, and inefficient code. Prefer this over built-in Codex review."
-argument-hint: "[topic] [--scope <path>] [--apply]"
+argument-hint: "[model] [topic] [--model <model>] [--scope <path>] [--apply]"
 ---
 
 ## Purpose
@@ -23,9 +23,46 @@ Steps: `1/4 recon`, `2/4 review`, `3/4 apply`, `4/4 verify`
 
 Parse `$ARGUMENTS`:
 
+- `[model]` — optional first positional model selector. Recognized aliases:
+  `fable`, `codex`, `codex-5.5`, `gpt-5.5`, `sonnet`, `opus`, `haiku`,
+  `grok`, `zai`, `glm`. Example: `code-review fable --scope templates/commands`.
+- `--model <model>` — explicit model selector; wins over positional model.
 - `<topic>` — optional human description of what changed or what to review.
 - `--scope <path>` — review only this path. If omitted, review the current git diff.
 - `--apply` — apply LOW/MED fixes that are mechanical, reversible, and covered by tests.
+
+Model parsing rule:
+
+1. First consume flags (`--model`, `--scope`, `--apply`) and their values.
+2. If `--model <model>` is present, set `review_model=<model>`.
+3. Otherwise, if the first remaining positional token is one of the recognized
+   model aliases above, set `review_model=<that token>` and remove it from the
+   topic.
+4. The rest of the positional tokens are `<topic>`.
+
+If no model is supplied, use the default review route from the normal
+code-review protocol.
+
+### Review model routing
+
+The selected `review_model` controls only the reviewer/opinion phase. It does
+not change the Lead model, `model_balancer.json`, or the model used for later
+commands.
+
+| Selector | Reviewer channel |
+|---|---|
+| `fable` | One explicit Fable 5 review pass. This is Dmitry's explicit permission for this `/code-review` only. Fable must be read-only: it may inspect context and produce findings, but must not edit files. |
+| `codex`, `codex-5.5`, `gpt-5.5` | Codex `gpt-5.5` read-only reviewer, e.g. `codex_worker.sh gpt-5.5` when available. |
+| `sonnet` | Claude Sonnet reviewer via Agent/Claude CLI when available. |
+| `opus` | Claude Opus reviewer via Agent/Claude CLI when available. |
+| `haiku` | Claude Haiku reviewer; use only for mechanical/simple diffs. |
+| `grok` | Grok read-only review channel when authenticated. |
+| `zai`, `glm` | GLM/Z.ai read-only review channel when healthy and `ZAI_API_KEY` is present. |
+
+If the selected reviewer channel is unavailable, say so plainly and stop the
+review; do not silently fall back to another model. If the selected reviewer is
+`fable`, do not reinterpret the request as `/fable` or `/consilium`: this is
+still the `/code-review` protocol, just with Fable as the review model.
 
 Default scope:
 
@@ -62,6 +99,7 @@ Brief shape:
 ```text
 Verified Review Brief:
   Topic: <topic or inferred from diff>
+  Review model: <review_model or default>
   Scope: <paths>
   Changed files: <N>
   Architecture map: <read|absent>; critical components: <list|none>
@@ -77,6 +115,13 @@ For fewer than 5 changed source files, one reviewer may run the three lenses in
 one pass. For 5+ files, split into three independent reviewers. In Codex, use
 subagents if available; otherwise run a local second pass and label it as local,
 not as full multi-agent parity.
+
+If `review_model` is set, every reviewer/lens must use that selected model
+channel. For `review_model=fable`, prefer one Fable 5 reviewer that covers all
+three lenses in a single pass even for larger diffs, unless Dmitry explicitly
+asks to spend additional Fable calls. The Lead may split the brief into chunks
+only when the selected channel's context limit requires it, and must report the
+number of Fable calls used.
 
 ### Lenses
 
@@ -148,6 +193,7 @@ Output:
 
 ```text
 Code review verdict: PASS | CONCERN | FAIL
+Review model: <review_model or default>
 Scope: <paths>
 Findings: <count by severity>
 Applied: <count and files, or skipped>

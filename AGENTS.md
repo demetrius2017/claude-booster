@@ -14,7 +14,7 @@ Booster command:
   `посоветуйся с Fable 5` — one read-only Fable 5 consult, not consilium
 - `consilium <topic>` or `/consilium <topic>`
 - `audit <topic>` or `/audit <topic>`
-- `code-review [topic]` or `/code-review [topic]`
+- `code-review [model] [topic]` or `/code-review [model] [topic]`
 - `architecture [--update]` or `/architecture [--update]`
 - `go <artifact contract>` or `/go <artifact contract>`
 - `debt <mode>` or `/debt <mode>`

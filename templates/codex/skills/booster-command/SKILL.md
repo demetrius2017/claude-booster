@@ -14,7 +14,7 @@ Use it when the user invokes a Booster command by name, for example:
 - `fable <question>` or natural-language "посоветуйся с Fable 5"
 - `consilium <topic>`
 - `audit <topic>`
-- `code-review [topic] [--scope <path>] [--apply]`
+- `code-review [model] [topic] [--model <model>] [--scope <path>] [--apply]`
 - `architecture [--update]`
 - `go <artifact contract>`
 - `debt <mode>`

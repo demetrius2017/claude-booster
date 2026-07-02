@@ -1,6 +1,6 @@
 ---
 name: "code-review"
-description: "Run the Claude Booster code-review protocol in Codex instead of the built-in Codex review: focused reuse/simplicity/efficiency review with optional safe fixes."
+description: "Run the Claude Booster code-review protocol in Codex instead of the built-in Codex review: focused reuse/simplicity/efficiency review with optional model selector such as `code-review fable`."
 ---
 
 # Booster Code Review
@@ -8,4 +8,5 @@ description: "Run the Claude Booster code-review protocol in Codex instead of th
 Read the sibling skill `../booster-command/SKILL.md`, then run command
 `code-review` through that runner.
 
-Treat the rest of the user message as the review topic, scope, and flags.
+Treat the rest of the user message as the optional review model, topic, scope,
+and flags. Example: `code-review fable --scope templates/commands`.
