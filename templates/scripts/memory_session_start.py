@@ -146,6 +146,13 @@ def _build_balancer_summary(data: dict | None) -> str:
             f"audit_tertiary={audit_tertiary_val}, "
             f"hackathon_coder={hackathon_coder_val}"
         )
+        provider_health = data.get("provider_health", {})
+        degraded = [
+            key for key, record in provider_health.items()
+            if isinstance(record, dict) and record.get("status") == "degraded"
+        ]
+        if degraded:
+            line = f"{line}\n  * degraded={', '.join(sorted(degraded))}"
         return f"{header}\n{line}"
     except Exception as exc:  # noqa: BLE001
         return f"{header}\n  * (error: {type(exc).__name__})"

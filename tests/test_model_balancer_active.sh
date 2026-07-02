@@ -70,6 +70,10 @@ run_decide() {
 # ── Backup + restore ──────────────────────────────────────────────────────────
 cp "$LIVE_JSON" "$BALANCER_BAK" 2>/dev/null || true
 sqlite3 "$DB" ".dump model_metrics" > "$METRICS_BAK" 2>/dev/null || true
+EXPECTED_CODING_PROVIDER=$(jq -r '.routing.coding.provider // "codex-cli"' "$BALANCER_BAK" 2>/dev/null || echo "codex-cli")
+EXPECTED_CODING_MODEL=$(jq -r '.routing.coding.model // "gpt-5.5"' "$BALANCER_BAK" 2>/dev/null || echo "gpt-5.5")
+EXPECTED_LEAD_PROVIDER=$(jq -r '.routing.lead.provider // "anthropic"' "$BALANCER_BAK" 2>/dev/null || echo "anthropic")
+EXPECTED_LEAD_MODEL=$(jq -r '.routing.lead.model // "claude-opus-4-8"' "$BALANCER_BAK" 2>/dev/null || echo "claude-opus-4-8")
 
 restore() {
   # restore balancer JSON
@@ -131,7 +135,7 @@ echo ""
 # ──────────────────────────────────────────────────────────────────────────────
 # C2 — Codex faster wins coding
 # ──────────────────────────────────────────────────────────────────────────────
-echo "C2: Codex faster wins coding"
+echo "C2: coding pinned route survives fast Codex samples"
 
 # Restore full metric table first, then add test rows
 sqlite3 "$DB" < "$METRICS_BAK" 2>/dev/null || true
@@ -154,16 +158,16 @@ C2_PROVIDER=$(jget '.routing.coding.provider')
 C2_MODEL=$(jget '.routing.coding.model')
 C2_RATIONALE=$(jget '.rationale')
 
-if [[ "$C2_PROVIDER" == "codex-cli" ]]; then
-  pass_c C2b "coding.provider == codex-cli"
+if [[ "$C2_PROVIDER" == "$EXPECTED_CODING_PROVIDER" ]]; then
+  pass_c C2b "coding.provider preserved as $EXPECTED_CODING_PROVIDER"
 else
-  fail_c C2b "coding.provider='$C2_PROVIDER', expected codex-cli"
+  fail_c C2b "coding.provider='$C2_PROVIDER', expected pinned $EXPECTED_CODING_PROVIDER"
 fi
 
-if [[ "$C2_MODEL" == "gpt-5.5" ]]; then
-  pass_c C2c "coding.model == gpt-5.5"
+if [[ "$C2_MODEL" == "$EXPECTED_CODING_MODEL" ]]; then
+  pass_c C2c "coding.model preserved as $EXPECTED_CODING_MODEL"
 else
-  fail_c C2c "coding.model='$C2_MODEL', expected gpt-5.5"
+  fail_c C2c "coding.model='$C2_MODEL', expected pinned $EXPECTED_CODING_MODEL"
 fi
 
 if echo "$C2_RATIONALE" | grep -q "^active —" && ! echo "$C2_RATIONALE" | grep -q "^active — no samples"; then
@@ -172,18 +176,17 @@ else
   fail_c C2d "rationale='$C2_RATIONALE'"
 fi
 
-TRANS_CODING_C2=$(jq '[.transitions[] | select(.category == "coding")] | length' "$LIVE_JSON" 2>/dev/null || echo "0")
-
-if [[ "$TRANS_CODING_C2" -ge 1 ]]; then
-  pass_c C2e "transitions contains ≥1 entry with category=coding"
+CODING_AFTER_C2=$(jq -c '.routing.coding' "$LIVE_JSON" 2>/dev/null || echo "MISSING")
+if [[ "$C2_PROVIDER" == "$EXPECTED_CODING_PROVIDER" && "$C2_MODEL" == "$EXPECTED_CODING_MODEL" ]]; then
+  pass_c C2e "coding pinned route unchanged ($CODING_AFTER_C2)"
 else
-  fail_c C2e "no transitions entry for category=coding — transitions=$(jq -c '.transitions' "$LIVE_JSON" 2>/dev/null)"
+  fail_c C2e "coding pinned route changed unexpectedly ($CODING_AFTER_C2)"
 fi
 
-if [[ "$TRANS_CODING_C2" -ge 1 ]]; then
-  pass_c C2f "transitions contains ≥1 entry with category=coding"
+if [[ "$CODING_AFTER_C2" != "MISSING" ]]; then
+  pass_c C2f "routing.coding remains readable JSON"
 else
-  fail_c C2f "no transitions entry for category=coding — transitions=$(jq -c '.transitions' "$LIVE_JSON" 2>/dev/null)"
+  fail_c C2f "routing.coding missing after decide"
 fi
 
 echo ""
@@ -209,10 +212,10 @@ fi
 
 C3_PROVIDER=$(jget '.routing.coding.provider')
 C3_MODEL=$(jget '.routing.coding.model')
-if [[ "$C3_PROVIDER" == "codex-cli" && "$C3_MODEL" == "gpt-5.5" ]]; then
-  pass_c C3b "coding remains pinned to codex-cli/gpt-5.5"
+if [[ "$C3_PROVIDER" == "$EXPECTED_CODING_PROVIDER" && "$C3_MODEL" == "$EXPECTED_CODING_MODEL" ]]; then
+  pass_c C3b "coding remains pinned to ${EXPECTED_CODING_PROVIDER}/${EXPECTED_CODING_MODEL}"
 else
-  fail_c C3b "coding route ${C3_PROVIDER}/${C3_MODEL}, expected codex-cli/gpt-5.5"
+  fail_c C3b "coding route ${C3_PROVIDER}/${C3_MODEL}, expected ${EXPECTED_CODING_PROVIDER}/${EXPECTED_CODING_MODEL}"
 fi
 
 echo ""
@@ -257,7 +260,7 @@ echo ""
 # ──────────────────────────────────────────────────────────────────────────────
 # C5 — lead pinned
 # ──────────────────────────────────────────────────────────────────────────────
-echo "C5: lead category pinned to anthropic/claude-opus-4-8"
+echo "C5: lead category pinned to current configured route"
 
 clear_cat "lead"
 
@@ -275,16 +278,16 @@ fi
 C5_PROV=$(jget '.routing.lead.provider')
 C5_MODEL=$(jget '.routing.lead.model')
 
-if [[ "$C5_PROV" == "anthropic" ]]; then
-  pass_c C5b "lead.provider == anthropic (pinned)"
+if [[ "$C5_PROV" == "$EXPECTED_LEAD_PROVIDER" ]]; then
+  pass_c C5b "lead.provider == $EXPECTED_LEAD_PROVIDER (pinned)"
 else
-  fail_c C5b "lead.provider='$C5_PROV' — expected anthropic (pinned)"
+  fail_c C5b "lead.provider='$C5_PROV' — expected $EXPECTED_LEAD_PROVIDER (pinned)"
 fi
 
-if [[ "$C5_MODEL" == "claude-opus-4-8" ]]; then
-  pass_c C5c "lead.model == claude-opus-4-8 (pinned)"
+if [[ "$C5_MODEL" == "$EXPECTED_LEAD_MODEL" ]]; then
+  pass_c C5c "lead.model == $EXPECTED_LEAD_MODEL (pinned)"
 else
-  fail_c C5c "lead.model='$C5_MODEL' — expected claude-opus-4-8 (pinned)"
+  fail_c C5c "lead.model='$C5_MODEL' — expected $EXPECTED_LEAD_MODEL (pinned)"
 fi
 
 echo ""

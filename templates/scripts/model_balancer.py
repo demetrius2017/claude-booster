@@ -102,6 +102,20 @@ _LOOKBACK_DAYS: int = 14
 # Pareto objective weights — must sum to 1.0
 _WEIGHTS: dict[str, float] = {"q": 0.5, "l": 0.3, "b": 0.2}
 
+# Provider health gate. A model with sustained transport/provider failures is
+# not a valid winner no matter how strong its nominal quality score is.
+try:
+    _HEALTH_MIN_SAMPLES: int = int(os.environ.get("CLAUDE_BALANCER_HEALTH_MIN_SAMPLES", "5"))
+except (TypeError, ValueError):
+    _HEALTH_MIN_SAMPLES = 5
+try:
+    _HEALTH_FAILURE_THRESHOLD: float = float(
+        os.environ.get("CLAUDE_BALANCER_HEALTH_FAILURE_THRESHOLD", "0.15")
+    )
+except (TypeError, ValueError):
+    _HEALTH_FAILURE_THRESHOLD = 0.15
+_HEALTH_LOOKBACK_HOURS: int = 24
+
 # Hardcoded intelligence scores for Anthropic models (not in openai_models.json)
 _QUALITY_SCORES_ANTHROPIC: dict[str, int] = {
     "claude-opus-4-7": 20,
@@ -172,6 +186,17 @@ DEFAULTS: dict = {
 
 # Known routing categories (for validation)
 _KNOWN_CATEGORIES = set(DEFAULTS["routing"].keys())
+
+_HEALTH_FALLBACK_ROUTES: dict[str, dict[str, str]] = {
+    "audit_secondary": {
+        "provider": PROVIDER_GROK,
+        "model": "grok-composer-2.5-fast",
+    },
+    "hackathon_external": {
+        "provider": PROVIDER_GROK,
+        "model": "grok-composer-2.5-fast",
+    },
+}
 
 # ---------------------------------------------------------------------------
 # Module-level cache (populated lazily on first get_routing / current_decision)
@@ -371,6 +396,122 @@ def _query_metrics(category: str, db_path: Path) -> list[dict[str, Any]]:
     return rows
 
 
+def _query_provider_health(db_path: Path) -> dict[tuple[str, str], dict[str, Any]]:
+    """
+    Return recent provider health keyed by (provider, model).
+
+    Health is intentionally category-agnostic: a provider returning 529 for
+    audit_secondary is not safer for hackathon_external five minutes later.
+    """
+    health: dict[tuple[str, str], dict[str, Any]] = {}
+    conn = None
+    try:
+        uri = f"file:{db_path}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=2.0)
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT provider, model,
+                   COUNT(*) AS n,
+                   SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) AS ok,
+                   SUM(CASE WHEN success = 1 THEN 0 ELSE 1 END) AS fail
+            FROM model_metrics
+            WHERE ts_utc >= datetime('now', ?)
+            GROUP BY provider, model
+            """,
+            (f"-{_HEALTH_LOOKBACK_HOURS} hours",),
+        )
+        for provider, model, n, ok, fail in cur.fetchall():
+            try:
+                n_int = int(n)
+                fail_int = int(fail or 0)
+                ok_int = int(ok or 0)
+            except (TypeError, ValueError):
+                continue
+            if n_int <= 0:
+                continue
+            failure_rate = fail_int / n_int
+            status = (
+                "degraded"
+                if n_int >= _HEALTH_MIN_SAMPLES
+                and failure_rate > _HEALTH_FAILURE_THRESHOLD
+                else "healthy"
+            )
+            health[(str(provider), str(model))] = {
+                "provider": str(provider),
+                "model": str(model),
+                "sample_count": n_int,
+                "success_count": ok_int,
+                "failure_count": fail_int,
+                "failure_rate": failure_rate,
+                "status": status,
+                "lookback_hours": _HEALTH_LOOKBACK_HOURS,
+                "threshold": _HEALTH_FAILURE_THRESHOLD,
+            }
+    finally:
+        if conn is not None:
+            conn.close()
+    return health
+
+
+def _health_key(provider: str, model: str) -> str:
+    """Return a stable JSON key for provider-health metadata."""
+    return f"{provider}:{model}"
+
+
+def _route_health(route: dict, health: dict[tuple[str, str], dict[str, Any]]) -> dict[str, Any] | None:
+    """Return health record for a route, if enough recent telemetry exists."""
+    provider = str(route.get("provider", ""))
+    model = str(route.get("model", ""))
+    if not provider or not model:
+        return None
+    return health.get((provider, model))
+
+
+def _is_degraded(route: dict, health: dict[tuple[str, str], dict[str, Any]]) -> bool:
+    """Return True when recent telemetry says a route should not be selected."""
+    record = _route_health(route, health)
+    return bool(record and record.get("status") == "degraded")
+
+
+def _apply_provider_health_fallbacks(
+    routing: dict[str, dict],
+    health: dict[tuple[str, str], dict[str, Any]],
+    transitions: list[dict],
+) -> int:
+    """Demote degraded routes with explicit per-category fallbacks."""
+    changed = 0
+    for category, route in list(routing.items()):
+        if not _is_degraded(route, health):
+            continue
+
+        fallback = _HEALTH_FALLBACK_ROUTES.get(category)
+        if not fallback or _is_degraded(fallback, health):
+            continue
+
+        old = copy.deepcopy(route)
+        merged = dict(route)
+        merged.update(fallback)
+        routing[category] = merged
+        record = _route_health(old, health) or {}
+        transitions.append({
+            "category": category,
+            "old": {"provider": old.get("provider"), "model": old.get("model")},
+            "new": copy.deepcopy(fallback),
+            "computed_at": _now_iso8601(),
+            "n_samples_winner": 0,
+            "p50_ms_winner": 0,
+            "note": (
+                "provider health fallback: "
+                f"{_health_key(str(old.get('provider', '')), str(old.get('model', '')))} "
+                f"failure_rate={record.get('failure_rate', 0.0):.2f} "
+                f"n={record.get('sample_count', 0)}"
+            ),
+        })
+        changed += 1
+    return changed
+
+
 def _score_candidate(
     provider: str,
     model: str,
@@ -494,10 +635,17 @@ def _active_decide(prior: dict) -> dict:
         return refreshed
 
     transitions: list[dict] = list(prior.get("transitions", []))
+    provider_health = _query_provider_health(db_path)
+    degraded_health = {
+        _health_key(provider, model): record
+        for (provider, model), record in provider_health.items()
+        if record.get("status") == "degraded"
+    }
 
     categories = [c for c in prior_routing if c not in _PINNED_CATEGORIES]
     total_samples_seen = 0
     categories_updated = 0
+    health_fallbacks_applied = 0
     max_n_any_category = 0
 
     for category in categories:
@@ -523,13 +671,16 @@ def _active_decide(prior: dict) -> dict:
                 continue
             p50 = statistics.median(r["per_turn_ms"] for r in group_rows)
             success_rate = statistics.mean(r["success"] for r in group_rows)
-            candidates.append({
+            candidate = {
                 "provider": prov,
                 "model": mdl,
                 "n_samples": n,
                 "p50": p50,
                 "success_rate": success_rate,
-            })
+            }
+            if _is_degraded(candidate, provider_health):
+                continue
+            candidates.append(candidate)
 
         if not candidates:
             continue
@@ -576,14 +727,21 @@ def _active_decide(prior: dict) -> dict:
     for cat, pinned_val in pinned.items():
         new_routing[cat] = pinned_val
 
+    health_fallbacks_applied = _apply_provider_health_fallbacks(
+        new_routing,
+        provider_health,
+        transitions,
+    )
+
     # Cap transitions ring buffer
     transitions = transitions[-_MAX_TRANSITIONS:]
 
     # Build rationale
-    if categories_updated > 0:
+    if categories_updated > 0 or health_fallbacks_applied > 0:
         rationale = (
             f"active — {categories_updated}/{len(categories)} categories updated "
-            f"based on {total_samples_seen} total samples (last 14d)"
+            f"based on {total_samples_seen} total samples (last 14d); "
+            f"health_fallbacks={health_fallbacks_applied}"
         )
     elif total_samples_seen > 0:
         rationale = (
@@ -596,6 +754,7 @@ def _active_decide(prior: dict) -> dict:
     decision["routing"] = new_routing
     decision["rationale"] = rationale
     decision["transitions"] = transitions
+    decision["provider_health"] = degraded_health
 
     _set_codex_snapshot(decision, codex_pct)
 
@@ -776,6 +935,7 @@ def _cmd_show(_args: argparse.Namespace) -> int:
         "valid_until": decision.get("valid_until"),
         "weight_profile": decision.get("weight_profile"),
         "routing": decision.get("routing", {}),
+        "provider_health": decision.get("provider_health", {}),
         "rationale": decision.get("rationale", ""),
     }
     print(json.dumps(out, indent=2))
@@ -809,6 +969,13 @@ def _cmd_status(_args: argparse.Namespace) -> int:
         print(f"codex_pro_quota: {codex_pct_val * 100:.0f}%")
     else:
         print("codex_pro_quota: (no source — wire codex_pro_weekly_tokens_cap in model_balancer.json)")
+    provider_health = decision.get("provider_health", {})
+    degraded = [
+        key for key, record in provider_health.items()
+        if isinstance(record, dict) and record.get("status") == "degraded"
+    ]
+    if degraded:
+        print(f"degraded_providers: {', '.join(sorted(degraded))}")
     return 0
 
 

@@ -7,6 +7,7 @@ monkeypatch subprocess execution so no real Claude/Z.ai request is made.
 from __future__ import annotations
 
 import importlib
+import json
 import os
 import subprocess
 import sqlite3
@@ -196,3 +197,53 @@ def test_model_balancer_persists_merged_routes_for_fresh_file(monkeypatch, tmp_p
     assert decision["routing"]["audit_secondary"]["provider"] == "zai-cli"
     assert '"audit_secondary"' in persisted
     assert '"hackathon_external"' in persisted
+
+
+def test_model_balancer_demotes_unhealthy_zai_external_routes(monkeypatch, tmp_path) -> None:
+    db_path = tmp_path / "metrics.db"
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            """
+            CREATE TABLE model_metrics (
+                ts_utc TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                task_category TEXT,
+                per_turn_ms INTEGER,
+                success INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+        for _ in range(5):
+            conn.execute(
+                """
+                INSERT INTO model_metrics
+                    (ts_utc, provider, model, task_category, per_turn_ms, success)
+                VALUES
+                    (datetime('now'), 'zai-cli', 'glm-5.2[1m]', 'audit_secondary', 200000, 0)
+                """
+            )
+
+    monkeypatch.setenv("CLAUDE_MODEL_BALANCER_PATH", str(tmp_path / "balancer.json"))
+    model_balancer = _import_script("model_balancer")
+    monkeypatch.setattr(model_balancer, "_DB_PATH", db_path)
+
+    prior = json.loads(json.dumps(model_balancer.DEFAULTS))
+    prior["decision_date"] = "2000-01-01"
+    prior["valid_until"] = "2000-01-02T00:00:00Z"
+
+    decision = model_balancer._active_decide(prior)
+
+    assert decision["routing"]["audit_secondary"] == {
+        "provider": "grok-cli",
+        "model": "grok-composer-2.5-fast",
+    }
+    assert decision["routing"]["hackathon_external"] == {
+        "provider": "grok-cli",
+        "model": "grok-composer-2.5-fast",
+    }
+    health = decision["provider_health"]["zai-cli:glm-5.2[1m]"]
+    assert health["status"] == "degraded"
+    assert health["sample_count"] == 5
+    assert health["failure_count"] == 5
+    assert "health_fallbacks=2" in decision["rationale"]

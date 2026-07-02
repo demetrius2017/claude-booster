@@ -71,6 +71,32 @@ A typical `/go` task runs Flow Designer and Challenge first, then a Prototype Ga
 
 ---
 
+## What's new in v1.17 — Provider health-aware external review routing
+
+Claude Booster now treats external-review providers as live operational lanes,
+not just model names with quality scores. `model_balancer.py` reads recent
+`model_metrics` telemetry and marks a provider/model pair as degraded when its
+24-hour failure rate exceeds the configured threshold. Degraded routes are
+excluded from active scoring and can be demoted through explicit fallback routes.
+
+**Why this matters:** a strong reviewer model is useless when its provider is
+overloaded. On 2026-07-02, Z.ai / GLM-5.2 returned repeated provider failures
+during the day. The balancer now records that as `provider_health` and routes
+`audit_secondary` / `hackathon_external` away from GLM while the lane is
+unhealthy, instead of letting the model's nominal intelligence score keep it in
+the critical review path.
+
+**In practice:** `/start` shows degraded lanes directly in the
+`=== MODEL BALANCER ===` block, for example
+`degraded=zai-cli:glm-5.2[1m]`. `model_balancer.py status` also prints
+`degraded_providers` so the Lead can see the operational reason behind a route
+change before planning.
+
+**Testing:** `tests/test_zai_integration.py` covers Z.ai demotion on sustained
+failures; `tests/test_model_balancer_all.sh` covers the full balancer suite.
+
+---
+
 ## What's new in v1.16 — Incident Register memory lane
 
 Claude Booster now has a dedicated **Incident Register** for production failures: the post-deploy cases where code was already shipped, then broke a project in real use. These are not build-time TODOs, ordinary audit notes, or generic `error_lesson` rows. They are high-priority operational warnings: what was done wrong, what it caused, how it was fixed, and what must not be repeated.
