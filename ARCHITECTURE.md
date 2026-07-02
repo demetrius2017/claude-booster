@@ -332,7 +332,7 @@ flowchart TD
 | INV-17 | QuotaTracker reserves 15% for supervisor control traffic | reserve_pct=0.15, thresholds 50%/85% | Circuit opens at 85% — worker cancelled |
 | INV-18 | /go verdict is **exit-code-only**: Verifier test exit code is PASS/FAIL, never LLM judgment | go.md Stage 4 + paired-verification contract | FAIL → classify W/V/A/E, re-spawn, hard cap 3 |
 | INV-19 | Cross-provider independence: Worker, Verifier, and diff-reviewer must not be the same provider/model | go.md Stage 3/5 routing | Same-provider pairing is a contract defect |
-| INV-20 | model_balancer pinned categories {lead, high_blast_radius, coding, hard} never overwritten by active scorer | decide() _PINNED_CATEGORIES guard | Pin upgrade requires editing runtime JSON too (silent no-op otherwise) |
+| INV-20 | model_balancer pinned categories {lead, recon, medium, coding, hard, high_blast_radius} never overwritten by active scorer | decide() _PINNED_CATEGORIES guard | Pin upgrade requires editing runtime JSON too (silent no-op otherwise) |
 | INV-21 | Codex bridge failure is isolated (exit 50) — never rolls back the committed Claude install | install.py::main() exit-50 mapping | Bridge logs error; Claude artifacts remain |
 | INV-22 | JSONL logs are append-only — never UPDATE/DELETE | append_jsonl() write path (no mutators in code) | N/A — enforced by absence of mutators |
 

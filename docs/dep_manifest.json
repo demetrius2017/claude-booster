@@ -147,7 +147,7 @@
       "writes_to": ["external:~/.claude/model_balancer.json", "external:~/.claude/model_balancer.json.bak.<date>"],
       "called_by": ["hook:SessionStart", "cli:model_balancer.py decide"],
       "critical": true,
-      "notes": "Idempotent per UTC day. Pareto scoring q=0.5/l=0.3/b=0.2 over (provider,model) per task_category using 14-day p50 latency from model_metrics. PINNED categories {lead, high_blast_radius, coding, hard} never overwritten by active scorer. Falls back to prior routing below MIN_SAMPLES (passive). scheduled_changes apply once (applied_on)."
+      "notes": "Idempotent per UTC day. Pareto scoring q=0.5/l=0.3/b=0.2 over (provider,model) per task_category using 14-day p50 latency from model_metrics. PINNED categories {lead, recon, medium, coding, hard, high_blast_radius} never overwritten by active scorer. Falls back to prior routing below MIN_SAMPLES (passive). scheduled_changes apply once (applied_on)."
     },
     "model_balancer_get_routing": {
       "file": "templates/scripts/model_balancer.py::get_routing",
@@ -411,7 +411,7 @@
   "append_only_tables": [],
   "_append_only_note": "This project has NO DB-enforced append-only table. The real append-only contract lives in the JSONL logs under ~/.claude/logs/ (written only via _gate_common.append_jsonl, never UPDATE/DELETE): go_gate_decisions, delegate_gate_decisions, ask_gate_decisions, gate_bypass_attempts, financial_dml_guard_decisions, model_metric_capture_sample, compact_advisor, kpi_rework. supervisor_decisions is append-only by convention (no mutators in code) but not constraint-enforced.",
 
-  "pinned_routing_categories": ["lead", "high_blast_radius", "coding", "hard"],
+  "pinned_routing_categories": ["lead", "recon", "medium", "coding", "hard", "high_blast_radius"],
   "_pinned_routing_note": "model_balancer.json categories the active Pareto scorer never overwrites. high_blast_radius stays on Anthropic (Sonnet) via Agent tool so PreToolUse guards fire (Codex subprocess is opaque). Editing model_balancer.py DEFAULT pins is a silent no-op on existing installs — sync runtime model_balancer.json in the same change.",
 
   "invariants": {
@@ -531,7 +531,7 @@
     },
     "INV-20": {
       "description": "model_balancer pinned categories never overwritten by active scorer",
-      "formula": "category IN {lead, high_blast_radius, coding, hard} -> retain prior routing",
+      "formula": "category IN {lead, recon, medium, coding, hard, high_blast_radius} -> retain prior routing",
       "enforced_in": "templates/scripts/model_balancer.py::decide (_PINNED_CATEGORIES)",
       "on_violation": "Pin change in DEFAULT is a silent no-op unless runtime model_balancer.json edited too"
     },

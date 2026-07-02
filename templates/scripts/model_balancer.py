@@ -144,7 +144,7 @@ _QUALITY_SCORES_GROK: dict[str, int] = {
 # Anthropic samples and would flip these back daily. Unpin once Codex
 # telemetry capture (retry/re-spawn metrics) lands.
 _PINNED_CATEGORIES: frozenset[str] = frozenset(
-    {"lead", "high_blast_radius", "coding", "hard"}
+    {"lead", "high_blast_radius", "coding", "hard", "recon", "medium"}
 )
 
 # Transitions ring-buffer cap
@@ -162,8 +162,8 @@ DEFAULTS: dict = {
     "codex_pro_weekly_tokens_cap": 0,
     "routing": {
         "trivial":        {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
-        "recon":          {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
-        "medium":         {"provider": PROVIDER_ANTHROPIC, "model": "claude-sonnet-4-6"},
+        "recon":          {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
+        "medium":         {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
         "coding":         {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
         "hard":           {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
         "consilium_bio":  {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-8"},
@@ -172,7 +172,7 @@ DEFAULTS: dict = {
         "audit_tertiary": {"provider": PROVIDER_GROK,      "model": "grok-composer-2.5-fast"},
         "hackathon_external": {"provider": PROVIDER_ZAI,   "model": "glm-5.2[1m]"},
         "hackathon_coder": {"provider": PROVIDER_GROK,     "model": "grok-build"},
-        "lead":           {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-8"},
+        "lead":           {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
         "high_blast_radius": {
             "provider": PROVIDER_ANTHROPIC,
             "model": "claude-sonnet-4-6",
