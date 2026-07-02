@@ -10,6 +10,8 @@ Booster command:
 
 - `start` or `/start`
 - `handover` or `/handover`
+- `fable <question>`, `/fable <question>`, or natural-language
+  `посоветуйся с Fable 5` — one read-only Fable 5 consult, not consilium
 - `consilium <topic>` or `/consilium <topic>`
 - `audit <topic>` or `/audit <topic>`
 - `code-review [topic]` or `/code-review [topic]`
