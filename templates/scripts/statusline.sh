@@ -70,9 +70,9 @@ if command -v jq >/dev/null 2>&1 && [ -n "$input" ]; then
         fi
 
         if [ -n "$raw_model" ]; then
-            model_info=" ${raw_model} ${ctx_str}${rl_str}"
+            model_info=" ${raw_model} ${ctx_str}"
         else
-            model_info=" ${ctx_str}${rl_str}"
+            model_info=" ${ctx_str}"
         fi
     elif [ -n "$raw_model" ]; then
         model_info=" ${raw_model}"
@@ -172,9 +172,15 @@ if [ -n "$current_session" ] && command -v jq >/dev/null 2>&1 && command -v pyth
     fi
 fi
 
+# Row 1: phase + progress + model/context. Row 2: rate limits + Fable spend on
+# their own line so a narrow terminal does not clip them — Claude Code renders
+# each printed line as a separate status row. Row 2 is omitted when empty.
 if [ -n "$progress" ]; then
-    printf '[%s] %s%s%s\n' "$phase" "$progress" "$model_info" "$fable_info"
+    printf '[%s] %s%s\n' "$phase" "$progress" "$model_info"
 else
-    printf '[%s]%s%s\n' "$phase" "$model_info" "$fable_info"
+    printf '[%s]%s\n' "$phase" "$model_info"
 fi
+line2="${rl_str}${fable_info}"
+line2="${line2# | }"
+[ -n "$line2" ] && printf '%s\n' "$line2"
 exit 0
