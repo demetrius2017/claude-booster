@@ -31,6 +31,7 @@ ENV/Files:
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 import sqlite3
@@ -43,6 +44,7 @@ from typing import Any, Iterable
 
 DB_PATH = Path.home() / ".claude" / "rolling_memory.db"
 SUMMARY_CACHE_PATH = Path.home() / ".claude" / "fable_usage_summary.json"
+REFRESH_LOCK_PATH = Path.home() / ".claude" / ".fable_refresh.lock"
 
 MODEL_MAP = {
     "claude-fable-5": "fable-5",
@@ -428,7 +430,7 @@ def _current_month_utc() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m")
 
 
-def build_summary(*, create_db: bool = False) -> dict[str, Any]:
+def build_summary(*, create_db: bool = False, session_id: str | None = None) -> dict[str, Any]:
     conn = _connect(create=create_db)
     if conn is None:
         return {"display_enabled": False}
@@ -464,10 +466,37 @@ def build_summary(*, create_db: bool = False) -> dict[str, Any]:
             LIMIT 1
             """
         ).fetchone()
+        # Local (Dubai UTC+4) day bucket. Strip the trailing 'Z' before date()
+        # because older SQLite rejects the 'Z' suffix; MTD stays on the UTC month.
+        today = conn.execute(
+            """
+            SELECT COUNT(*) AS events, COALESCE(SUM(cost_usd_nanos), 0) AS cost
+            FROM fable_usage_events
+            WHERE date(replace(ts_utc, 'Z', ''), '+4 hours') = date('now', '+4 hours')
+            """
+        ).fetchone()
+        sid = session_id or ""
+        if sid:
+            # True per-session sum: session_id only, NO source_path grouping, so a
+            # session spanning main + subagents/*.jsonl is fully counted.
+            session_row = conn.execute(
+                """
+                SELECT COUNT(*) AS events, COALESCE(SUM(cost_usd_nanos), 0) AS cost
+                FROM fable_usage_events
+                WHERE session_id = ?
+                """,
+                (sid,),
+            ).fetchone()
+            session_events = int(session_row["events"] if session_row else 0)
+            session_cost = int(session_row["cost"] if session_row else 0)
+        else:
+            session_events = 0
+            session_cost = 0
         mtd_cost = int(mtd["cost"] if mtd else 0)
         last_cost = int(last["cost"] if last else 0)
+        today_cost = int(today["cost"] if today else 0)
         summary: dict[str, Any] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "display_enabled": bool(mtd_cost or last_cost),
             "basis": "API-equivalent / credit-rate estimate; not an actual billing ledger",
             "updated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -476,6 +505,17 @@ def build_summary(*, create_db: bool = False) -> dict[str, Any]:
                 "events": int(mtd["events"] if mtd else 0),
                 "cost_usd_nanos": mtd_cost,
                 "cost_usd": _usd(mtd_cost),
+            },
+            "today": {
+                "events": int(today["events"] if today else 0),
+                "cost_usd_nanos": today_cost,
+                "cost_usd": _usd(today_cost),
+            },
+            "session": {
+                "session_id": sid,
+                "events": session_events,
+                "cost_usd_nanos": session_cost,
+                "cost_usd": _usd(session_cost),
             },
             "last_event": None,
             "last_task": None,
@@ -516,10 +556,20 @@ def build_summary(*, create_db: bool = False) -> dict[str, Any]:
 
 
 def write_summary_cache(summary: dict[str, Any]) -> None:
-    SUMMARY_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    tmp = SUMMARY_CACHE_PATH.with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
-    os.replace(tmp, SUMMARY_CACHE_PATH)
+    # Per-process-unique tmp name so concurrent writers (Stop hook + backgrounded
+    # refresh) never clobber a shared tmp before os.replace promotes it.
+    tmp = SUMMARY_CACHE_PATH.with_suffix(f".{os.getpid()}.json.tmp")
+    try:
+        SUMMARY_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
+        os.replace(tmp, SUMMARY_CACHE_PATH)
+    except OSError:
+        # Fail-open: keep the previous valid cache; drop any half-written tmp.
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        return
 
 
 def brief_lines(summary: dict[str, Any]) -> list[str]:
@@ -620,8 +670,66 @@ def cmd_refresh_display(args: argparse.Namespace) -> int:
     return 0
 
 
+def _acquire_refresh_lock() -> int | None:
+    """Non-blocking exclusive lock via fcntl.flock (portable: macOS + Linux).
+
+    Returns an open fd on success, or None if another refresh holds the lock (or
+    the lock file cannot be opened). fcntl.flock auto-releases on process death,
+    so there is no stale-lock hazard.
+    """
+    try:
+        REFRESH_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(str(REFRESH_LOCK_PATH), os.O_CREAT | os.O_RDWR, 0o644)
+    except OSError:
+        return None
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        return None
+    return fd
+
+
+def _release_refresh_lock(fd: int) -> None:
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass
+    try:
+        os.close(fd)
+    except OSError:
+        pass
+
+
+def cmd_refresh_session(args: argparse.Namespace) -> int:
+    # Stampede guard: if another refresh is running, exit 0 immediately.
+    fd = _acquire_refresh_lock()
+    if fd is None:
+        return 0
+    try:
+        session_id = args.session or ""
+        transcript = Path(args.transcript).expanduser()
+        paths = _iter_transcript_paths(transcript)
+        events = parse_transcripts(paths, session_id=session_id, project_root=args.project_root)
+        # create_db=True bootstraps schema on a fresh install so events are not
+        # silently dropped into a $0 cache.
+        persist_events(events, create_db=True)
+        # If build_summary raises, we skip write_summary_cache entirely and keep
+        # the prior valid cache (never write a half-populated file).
+        summary = build_summary(create_db=True, session_id=session_id)
+        write_summary_cache(summary)
+    except Exception:
+        return 0
+    finally:
+        _release_refresh_lock(fd)
+    return 0
+
+
 def cmd_summary(args: argparse.Namespace) -> int:
-    summary = build_summary(create_db=False)
+    summary = build_summary(create_db=False, session_id=(getattr(args, "session", "") or None))
     if args.json:
         print(json.dumps(summary, indent=2, sort_keys=True))
     elif args.brief:
@@ -665,7 +773,7 @@ def hook_main() -> int:
         events = parse_transcripts(paths, session_id=session_id, project_root=cwd)
         db_exists = DB_PATH.exists()
         persist_events(events, create_db=db_exists)
-        summary = build_summary(create_db=db_exists)
+        summary = build_summary(create_db=db_exists, session_id=session_id)
         if summary.get("display_enabled"):
             write_summary_cache(summary)
         return 0
@@ -701,7 +809,17 @@ def build_parser() -> argparse.ArgumentParser:
     refresh.add_argument("--project-root")
     refresh.set_defaults(func=cmd_refresh_display)
 
+    refresh_session = sub.add_parser(
+        "refresh-session",
+        help="re-ingest one session transcript (locked, idempotent) then rewrite cache",
+    )
+    refresh_session.add_argument("--session", default="")
+    refresh_session.add_argument("--transcript", required=True)
+    refresh_session.add_argument("--project-root")
+    refresh_session.set_defaults(func=cmd_refresh_session)
+
     summary = sub.add_parser("summary", help="print recomputed ledger summary")
+    summary.add_argument("--session", default="")
     group = summary.add_mutually_exclusive_group()
     group.add_argument("--json", action="store_true")
     group.add_argument("--brief", action="store_true")
