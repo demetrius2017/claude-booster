@@ -17,6 +17,78 @@ Claude Booster turns those sessions into a compounding asset. One `python instal
 
 ---
 
+## 🚀 Start here (newcomer's guide)
+
+New to Claude Booster? You don't need to read the whole changelog below. Here's the 5-minute version.
+
+### 1. Install (one command)
+
+```bash
+git clone https://github.com/demetrius2017/claude-booster.git
+cd claude-booster && python install.py
+```
+
+That's it. Booster installs a set of rules, hooks, and slash commands into `~/.claude/`. Your next Claude Code session already behaves differently — it reads its own memory at startup and enforces a quality pipeline on itself.
+
+### 2. Your first session
+
+| Step | Type this | What happens |
+|------|-----------|--------------|
+| Open a session | `/start` | Claude reads yesterday's handover, the knowledge base, and health telemetry, then proposes a plan. **No more re-explaining your stack every morning.** |
+| Do coding work | `/go <what you want built>` | The task runs through a gated, cross-provider pipeline (design → challenge → build → independent test → diff review). The **exit code** is the verdict — not "looks good to me." |
+| Close the session | `/handover` | A structured report is saved so tomorrow's `/start` picks up exactly where you left off. |
+
+### 3. The command catalog — what each does & the problem it solves
+
+**Daily loop — memory across sessions**
+
+| Command | What it does | The problem it kills |
+|---------|--------------|----------------------|
+| `/start` | Rehydrates context: README, latest handover, cross-project knowledge base, telemetry, then plans | Claude starts every session blind — no memory of what you did yesterday |
+| `/handover` | End-of-session structured report (git log, Goal+KPI, required reading, evidence) | Session ends → open threads and hard-won context evaporate |
+| `/debt` | Tracks & resolves "identified-but-unfinished" work items that survive session resets | "I'll fix that later" is forgotten the moment the session closes |
+
+**Quality pipeline — the core value: no model ever checks its own work**
+
+| Command | What it does | The problem it kills |
+|---------|--------------|----------------------|
+| `/go` | The **шестёрка+**: Flow Designer → Challenge → Prototype Gate → Worker + Verifier → Test → Diff-review → Verdict. Cross-provider, non-skippable, exit-code verdict | Single-agent coding grades its own homework and thinks in flat snapshots (correct at T=0, wrong at T+1) |
+| `/audit` | Six parallel lens agents (correctness, security, performance, architecture, data-integrity, operational) + external review | One reviewer misses what six specialists catch independently |
+| `/code-review` | Focused post-edit pass for duplication, over-engineering, integration drift, inefficiency | Fast reviews miss the "you already wrote this helper" class of waste |
+| `/consilium` | Multi-agent debate (3–5 role-specific agents + external models), synthesized into a report | High-risk architecture decisions need adversarial perspectives, not one opinion |
+| `/hackathon` | N workers build the same feature in isolation; a Judge tests all with one acceptance suite; highest score wins | For genuinely uncertain solutions, a single attempt is a coin flip |
+
+**Verification — prove it works, don't assume**
+
+| Command | What it does | The problem it kills |
+|---------|--------------|----------------------|
+| `/verify-after-edit` | Post-edit UI verification (drives the real flow, not just tests) | "It compiles" ≠ "it works" |
+| `/verify-flow` | Verifies a full UI flow end-to-end | Individual fixes pass while the flow they live in is broken |
+| `/audit-trace` | Data-continuity audit — traces one concept through every computation path; divergence = defect | Silent data corruption where two code paths compute the "same" value differently |
+
+**Systemic thinking & infra — understand blast radius before you edit**
+
+| Command | What it does | The problem it kills |
+|---------|--------------|----------------------|
+| `/architecture` | Generates `ARCHITECTURE.md` + `dep_manifest.json` — the "circuit board" of what connects to what | Claude edits function A and silently breaks B, C, D that depended on it |
+| `/phase` | Shows/sets the workflow phase (RECON → PLAN → IMPLEMENT → AUDIT → VERIFY → MERGE) | Editing before understanding; the phase gate enforces "diagnose before fixing" |
+| `/delegate` | Inspects/controls the delegate gate (the Lead must delegate coding, not do it inline) | The orchestrator quietly doing the work itself instead of using the right model |
+| `/lead` | Runs a supervised worker session (quota + silence detection) | Long autonomous tasks drifting or stalling with no oversight |
+| `/fable` | A one-off, read-only second opinion from Fable 5 (not a full consilium) | You want one advisory sanity-check, not five agents and a report |
+| `/update` | Auto-updates Booster from GitHub without leaving the session | Falling behind on fixes because upgrading is friction |
+
+### 4. Why it's different, in one breath
+
+Three mechanisms, each targeting a distinct way LLM agents fail on multi-session projects:
+
+1. **Temporal-causal memory** — stores *causal chains* (tried → happened → concluded → still-open), not just facts. Kills the "re-discover the same bug every week" loop.
+2. **The шестёрка pipeline (`/go`)** — the strong model *thinks* (design critique, independent verification, diff review) while the fast flat-fee model *types*. **No model ever reviews its own code**, and the verdict is a green test's exit code — not a vibe.
+3. **Smart model routing** — Haiku for lookups, Sonnet for coding, Opus for hard reasoning, flat-fee Codex where it's equivalent. Right model, right task, right cost.
+
+> **New here?** Run `python install.py`, open a session with `/start`, build something with `/go`, and close with `/handover`. Everything else is depth you'll reach for when you need it.
+
+---
+
 ## Three quality innovations
 
 Claude Booster ships three mechanisms that address the three failure modes of LLM agents working on multi-session projects:
