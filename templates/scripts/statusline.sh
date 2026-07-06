@@ -58,6 +58,17 @@ if command -v jq >/dev/null 2>&1 && [ -n "$input" ]; then
             rl_str="${rl_str} | 7d: $(_color "$d7_pct")$((100 - d7_pct))%${RST}"
         fi
 
+        # Persist remaining rate-limit budget for the tmux widget, which has no
+        # access to Claude Code's stdin. Tiny atomic write; fail-open.
+        if [ -n "$raw_rl" ] || [ -n "$raw_7d" ]; then
+            rl_cache="${HOME}/.claude/.rate_limits_cache.json"
+            rl_json="{"
+            [ -n "$raw_rl" ] && rl_json="${rl_json}\"five_hour_remaining\":$((100 - rl_pct)),"
+            [ -n "$raw_7d" ] && rl_json="${rl_json}\"seven_day_remaining\":$((100 - d7_pct)),"
+            rl_json="${rl_json}\"updated_at\":$(date +%s 2>/dev/null || echo 0)}"
+            printf '%s' "$rl_json" > "${rl_cache}.$$.tmp" 2>/dev/null && mv -f "${rl_cache}.$$.tmp" "$rl_cache" 2>/dev/null
+        fi
+
         if [ -n "$raw_model" ]; then
             model_info=" ${raw_model} ${ctx_str}${rl_str}"
         else
