@@ -120,18 +120,23 @@ fi
 # Anything carrying shell/glob metacharacters is dropped (session ids are UUIDs).
 case "$current_session" in *[!A-Za-z0-9_-]*) current_session="" ;; esac
 
-# Render the CURRENT session's own live sum + local-day total from the cache.
-# No last_task.session_id gate: the backgrounded refresh keeps the cache in sync
-# with whatever session is rendering. Every read is // empty guarded.
+# Render last-task cost + month-to-date from the cache. session/today both
+# legitimately read $0 (fresh session in another project, or just past the
+# Dubai-midnight rollover) and look broken; last_task + mtd are always populated
+# once any Fable spend exists. Every read is // empty guarded.
 if [ -f "$fable_cache" ] && command -v jq >/dev/null 2>&1; then
     fable_enabled=$(jq -r 'select(.display_enabled == true) | .display_enabled // empty' "$fable_cache" 2>/dev/null)
     if [ "$fable_enabled" = "true" ]; then
-        fable_sess=$(jq -r '.session.cost_usd // empty' "$fable_cache" 2>/dev/null)
-        fable_today=$(jq -r '.today.cost_usd // empty' "$fable_cache" 2>/dev/null)
-        if [ -n "$fable_sess" ] || [ -n "$fable_today" ]; then
-            [ -n "$fable_sess" ] || fable_sess="0.0000"
-            [ -n "$fable_today" ] || fable_today="0.0000"
-            fable_info=" | Fable: sess \$${fable_sess} · today \$${fable_today}"
+        # Format inside jq (always '.' decimal, locale-independent + always 2dp).
+        # printf '%.2f' honours LC_NUMERIC ("0,15" / thousands-grouped garbage on
+        # comma-locale hosts); plain jq division drops the decimal on whole values
+        # ("$1" not "$1.00"). Build cents as an integer, then pad to D.CC.
+        fable_last=$(jq -r 'if (.last_task.cost_usd_nanos // 0) > 0 then (.last_task.cost_usd_nanos / 1e7 | round) as $c | "\(($c / 100) | floor).\(($c % 100 | tostring) | if length < 2 then "0" + . else . end)" else empty end' "$fable_cache" 2>/dev/null)
+        fable_mtd=$(jq -r 'if (.mtd.cost_usd_nanos // 0) > 0 then (.mtd.cost_usd_nanos / 1e9 | round) else empty end' "$fable_cache" 2>/dev/null)
+        if [ -n "$fable_last" ] || [ -n "$fable_mtd" ]; then
+            [ -n "$fable_last" ] || fable_last="0"
+            [ -n "$fable_mtd" ] || fable_mtd="0"
+            fable_info=" | Fable: last \$${fable_last} · m\$${fable_mtd}"
         fi
     fi
 fi

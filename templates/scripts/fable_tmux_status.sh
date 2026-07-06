@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # fable_tmux_status.sh — compact tmux status widget.
-# Shows remaining Max rate-limit windows (5h/7d) and Fable spend (today + live
-# session). Rate limits come from ~/.claude/.rate_limits_cache.json, which the
+# Shows remaining Max rate-limit windows (5h/7d) and Fable spend (last task +
+# month-to-date). Rate limits come from ~/.claude/.rate_limits_cache.json, which the
 # Claude Code statusline (statusline.sh) refreshes from its stdin while a session
 # is active; Fable spend comes from the fable_usage.py summary cache. Both are
 # best-effort — the widget exits 0 on every failure and simply omits a segment
@@ -28,18 +28,27 @@ if [ -f "$rlcache" ]; then
     fi
 fi
 
-# --- Fable spend (today + live session) ---
+# --- Fable spend (last task + month-to-date) ---
+# session/today both legitimately go $0 (fresh session in another project, or
+# just past the Dubai-midnight rollover) and read as "broken". last_task + mtd
+# are always populated once any Fable spend exists, so the widget stays useful.
 if [ -f "$summary" ]; then
     enabled=$(jq -r 'select(.display_enabled == true) | .display_enabled // empty' "$summary" 2>/dev/null)
     if [ "$enabled" = "true" ]; then
-        today=$(jq -r '.today.cost_usd // .last_task.cost_usd // empty' "$summary" 2>/dev/null)
-        sess=$(jq -r '.session.cost_usd // empty' "$summary" 2>/dev/null)
-        [ -n "$parts" ] && parts="${parts}· "
-        [ -n "$today" ] && parts="${parts}F d\$${today}"
-        # Show the live session only when it has non-zero spend (avoids a noisy
-        # "s$0.00" on every session that never called Fable).
-        if [ -n "$sess" ] && [ "$sess" != "0.0000" ] && [ "$sess" != "0.00" ]; then
-            parts="${parts} s\$${sess}"
+        # Format inside jq (always '.' decimal, locale-independent + always 2dp).
+        # printf '%.2f' honours LC_NUMERIC ("0,15" / thousands-grouped garbage on
+        # comma-locale hosts); plain jq division drops the decimal on whole values
+        # ("$1" not "$1.00"). Build cents as an integer, then pad to D.CC.
+        last=$(jq -r 'if (.last_task.cost_usd_nanos // 0) > 0 then (.last_task.cost_usd_nanos / 1e7 | round) as $c | "\(($c / 100) | floor).\(($c % 100 | tostring) | if length < 2 then "0" + . else . end)" else empty end' "$summary" 2>/dev/null)
+        mtd=$(jq -r 'if (.mtd.cost_usd_nanos // 0) > 0 then (.mtd.cost_usd_nanos / 1e9 | round) else empty end' "$summary" 2>/dev/null)
+        seg=""
+        [ -n "$last" ] && seg="F last\$${last}"
+        if [ -n "$mtd" ]; then
+            if [ -n "$seg" ]; then seg="${seg} · m\$${mtd}"; else seg="F m\$${mtd}"; fi
+        fi
+        if [ -n "$seg" ]; then
+            [ -n "$parts" ] && parts="${parts}· "
+            parts="${parts}${seg}"
         fi
     fi
 fi
