@@ -46,7 +46,7 @@ Before writing any Artifact Contract, Lead **MUST** read `ARCHITECTURE.md` and `
 - If `critical: true` OR `feeds` array has ≥3 entries for any touched component → mark for conditional Architecture Auditor (see §Architecture-aware verification below)
 - **[CRITICAL] Code-over-docs**: dep_manifest.json reflects state at last update, not necessarily NOW. Before populating `Architecture constraints:` and `Downstream consumers:`, Lead MUST cross-check manifest entries against actual code (grep for function, check if it's still called, verify writer is still active). When manifest says "X writes to Y" but code shows X is disabled → manifest is stale, not code is wrong. Update manifest first, then populate Artifact Contract from corrected manifest. Finding type for divergence: `architecture-docs-stale`.
 
-## Pattern A — Шестёрка+: Flow Designer → Prototype Gate → Worker + Verifier
+## Pattern A — Семёрка: Flow Designer → Prototype Gate → Worker + Verifier
 
 Четыре стадии, две из которых параллельны:
 

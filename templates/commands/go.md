@@ -1,5 +1,5 @@
 ---
-description: "Execute Шестёрка+ / Семёрка-F when opt-in (Flow Designer → Challenge → Prototype Gate → Worker + Verifier → Test → Diff-review → Verdict) — hardcoded, non-skippable cross-provider pipeline."
+description: "Execute Семёрка / Семёрка-F when opt-in (Flow Designer → Challenge → Prototype Gate → Worker + Verifier → Test → Diff-review → Verdict) — hardcoded, non-skippable cross-provider pipeline."
 argument-hint: "[fable] <Artifact Contract — structured text with Objective, Verified Facts, etc.>"
 ---
 
@@ -536,10 +536,10 @@ Before spawning the Worker, decide whether this task warrants COMPETING implemen
 
 **If both → escalate to `/hackathon`** for the implementation stage:
 - Pass the PFD-augmented Artifact Contract and Prototype Handoff as the hackathon Artifact Contract.
-- Seed the Judge Mandate from the PFD `verifier_assertions` + `invariants` and Prototype Handoff regression assertions — the deterministic acceptance the Шестёрка+ already derived.
+- Seed the Judge Mandate from the PFD `verifier_assertions` + `invariants` and Prototype Handoff regression assertions — the deterministic acceptance the Семёрка already derived.
 - Spawn the 2–3 candidates ACROSS providers (e.g. one Opus Agent + one Codex `codex_sandbox_worker.sh gpt-5.5`). When `ZAI_API_KEY` is present, include GLM-5.2 via `~/.claude/scripts/zai_cli.py review` for design critique, edge harvest, or external diff review. When Grok CLI is authenticated, include Grok via `~/.claude/scripts/grok_sandbox_worker.sh grok-build` as a write-capable contestant or via `~/.claude/scripts/grok_cli.py review` as a fourth-model reviewer. Z.ai is a third-model review lane by default; Grok may be a code worker only through the sandbox worker; neither should be the deterministic Judge unless the Judge remains an executable test runner with exit-code scoring.
 - The hackathon's deterministic Judge (exit-code score, winner-take-all) REPLACES the single cross-provider Verifier for this run — same no-LLM-judgment axiom, stronger evidence. It includes the SHIP-4 **edge-test harvest** (losers' test coverage unioned into the winner's suite; see `hackathon.md` Phase 4).
-- When the hackathon returns a winner, **resume the Шестёрка+ at Phase 3B** (diff-review the winner) → Phase 4 verdict. Skip the standard single-Worker path below.
+- When the hackathon returns a winner, **resume the Семёрка at Phase 3B** (diff-review the winner) → Phase 4 verdict. Skip the standard single-Worker path below.
 - Log it in the verdict: `implementation: /hackathon (N candidates, winner cN, score X/Y)`.
 
 ---
@@ -718,17 +718,17 @@ Test only. Read, run, assert, report.
 
 ---
 
-### Progress output — the Шестёрка+ bar (7 stages, 7 segments)
+### Progress output — the Семёрка bar (7 stages, 7 segments)
 
 The pipeline has SEVEN stages, so the status bar has seven segments. Emit the matching line as each stage completes (fill one segment per phase):
 ```
-Шестёрка+ ▰▱▱▱▱▱▱ 1/7 · Flow Designer ✓
-Шестёрка+ ▰▰▱▱▱▱▱ 2/7 · Challenge ✓
-Шестёрка+ ▰▰▰▱▱▱▱ 3/7 · Prototype Gate ✓
-Шестёрка+ ▰▰▰▰▱▱▱ 4/7 · Worker ✓ · Verifier ✓
-Шестёрка+ ▰▰▰▰▰▱▱ 5/7 · Test ✓
-Шестёрка+ ▰▰▰▰▰▰▱ 6/7 · Diff review ✓
-Шестёрка+ ▰▰▰▰▰▰▰ 7/7 · Verdict ✓
+Семёрка ▰▱▱▱▱▱▱ 1/7 · Flow Designer ✓
+Семёрка ▰▰▱▱▱▱▱ 2/7 · Challenge ✓
+Семёрка ▰▰▰▱▱▱▱ 3/7 · Prototype Gate ✓
+Семёрка ▰▰▰▰▱▱▱ 4/7 · Worker ✓ · Verifier ✓
+Семёрка ▰▰▰▰▰▱▱ 5/7 · Test ✓
+Семёрка ▰▰▰▰▰▰▱ 6/7 · Diff review ✓
+Семёрка ▰▰▰▰▰▰▰ 7/7 · Verdict ✓
 ```
 If a stage is skipped or degraded, annotate that segment instead of dropping it — e.g. `6/7 · Diff review SKIPPED (trivial diff)`, `3/7 · Prototype Gate N/A (local static transform)`, or `4/7 · cross-provider DEGRADED`. The bar always shows all seven segments so the reader sees the whole pipeline.
 
@@ -876,7 +876,7 @@ Run: `python3 ~/.claude/scripts/phase.py progress "7/7 verdict"`
 ### If exit=0 (ALL PASS) AND Phase 3B review cleared (CLEAN, or only MED/LOW):
 
 ```
-✓ PASS — Шестёрка+ ▰▰▰▰▰▰▰ 7/7 complete. Artifact at <artifact_path>.
+✓ PASS — Семёрка ▰▰▰▰▰▰▰ 7/7 complete. Artifact at <artifact_path>.
 ```
 Append any of these that apply (honest status, not silent drop):
 - `prototype gate: <PASS | N/A (<reason>)>`
@@ -910,7 +910,7 @@ RECON-as-review already harvested this run's `adjacent_findings` into scoped deb
 **Default — SURFACE only, do NOT auto-fix.** Auto-fixing was made opt-in deliberately: an always-on auto-fix balloons a small `/go` and the disable-flag would be forgotten. So by default, just point at the findings:
 ```bash
 # count this run's scoped open debts (origin == RUNTAG); print a one-line pointer:
-echo "Шестёрка: logged <N> findings for this run [origin $RUNTAG] (<M> in-radius HIGH/MED). To auto-fix the in-radius ones now: /debt auto --scope \"$RUNTAG\"   ·   to review all: /debt list"
+echo "Семёрка: logged <N> findings for this run [origin $RUNTAG] (<M> in-radius HIGH/MED). To auto-fix the in-radius ones now: /debt auto --scope \"$RUNTAG\"   ·   to review all: /debt list"
 ```
 The findings stay in `.session_debts.json` (visible via `/debt list`), scoped to `$RUNTAG`. The user fixes them whenever they want — `/debt auto --scope "$RUNTAG"` (auto-fix in-radius HIGH/MED, surface adjacent+LOW) or `/debt work <N>` individually.
 

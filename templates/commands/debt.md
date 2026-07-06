@@ -148,7 +148,7 @@ Parse: `auto [--scope <tag>]`.
 **Automatically resolve HIGH and MEDIUM debts; leave LOW debts for the user's decision; never touch `BLOCKED-EXTERNAL`.**
 
 - **`--scope <tag>` (used by `/go`)** — operate ONLY on debts whose `origin == <tag>` (this one pipeline run's findings), not the whole board. Within scope, the in-radius/adjacent split applies:
-  - **in-radius HIGH/MED** (`in_radius: true` — the artifact or a direct caller/helper the task touched) → **auto-fix** (this is the whole point of clearing within the Шестёрка).
+  - **in-radius HIGH/MED** (`in_radius: true` — the artifact or a direct caller/helper the task touched) → **auto-fix** (this is the whole point of clearing within the Семёрка).
   - **out-of-radius / adjacent HIGH/MED** (`in_radius: false` — tangential findings RECON noticed in surrounding code) → **do NOT auto-fix; surface them to the user as a review block** (they may be real, but fixing them would expand this task's blast radius beyond its scope).
   - **LOW (any)** → surface to the user.
 - **No `--scope` (manual `/debt auto`)** — operate on the whole board: every HIGH/MED auto-worked regardless of radius, LOW to the user. (`in_radius` is ignored without a scope.)
@@ -172,7 +172,7 @@ rm -f "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.debt_auto_ac
    a. Select the first HIGH item in the auto-work set; if none, the first MED item in it.
    b. Print: `Auto-working debt [<N>] <priority>: <description>`
    c. Resolve it by its nature:
-      - **Substantial code** (≥20 lines / any behaviour change / ≥2 files) → run it through **`/go`** (the Шестёрка) so it is designed, cross-provider verified, and KPI-recorded. Do NOT hand-write it inline.
+      - **Substantial code** (≥20 lines / any behaviour change / ≥2 files) → run it through **`/go`** (the Семёрка) so it is designed, cross-provider verified, and KPI-recorded. Do NOT hand-write it inline.
       - **Trivial** (config/doc/<20 lines, formatting, typo) → Lead edits directly.
       - **Uncommitted-change debt** → commit it (with a real message). **Failing-test debt** → fix + re-run until green.
    d. On success → `/debt resolve <N>` and commit. Re-run LIST (a fix may surface a NEW HIGH/MED follow-up, or close several at once).
@@ -199,7 +199,7 @@ rm -f "$(git rev-parse --show-toplevel 2>/dev/null || pwd)/.claude/.debt_auto_ac
 **[CRITICAL] Guardrails (auto mode is powerful — these are non-negotiable):**
 - NEVER auto-work a `LOW` item or a `BLOCKED-EXTERNAL` item — both require the user. LOW is explicitly the user's decision boundary.
 - NEVER invent debts to keep the loop running (`goal-loop-discipline.md` §3). The loop ends when the real HIGH/MED inventory is empty, not when you run out of obvious work.
-- Each auto-worked code debt MUST pass its own verification (the Шестёрка's exit-code test gate, or a real command for non-`/go` debts). "Looks done" is not resolved.
+- Each auto-worked code debt MUST pass its own verification (the Семёрка's exit-code test gate, or a real command for non-`/go` debts). "Looks done" is not resolved.
 - Re-run LIST every iteration — operate on the live inventory, not a stale snapshot.
 
 ---

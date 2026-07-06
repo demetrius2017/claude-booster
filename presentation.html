@@ -279,8 +279,8 @@
       </div>
       <div class="pillar reveal">
         <div class="n">02 · пайплайн</div>
-        <h3>Шестёрка — /go</h3>
-        <p>Шесть гейтов, кросс-провайдер. <b>Сильная модель думает</b> (критика дизайна, независимая верификация, ревью диффа); <b>быстрая flat-fee модель печатает</b>. Ни одна модель не ревьюит свой код, а вердикт — exit code теста.</p>
+        <h3>Семёрка — /go</h3>
+        <p>Семь гейтов, кросс-провайдер. <b>Сильная модель думает</b> (критика дизайна, независимая верификация, ревью диффа); <b>быстрая flat-fee модель печатает</b>. Ни одна модель не ревьюит свой код, а вердикт — exit code теста.</p>
         <span class="tag">убивает самопроверку и баги «плоского снимка»</span>
       </div>
       <div class="pillar reveal">
@@ -297,7 +297,7 @@
   <div class="wrap">
     <div class="sec-head reveal">
       <div class="eyebrow">/go &nbsp;·&nbsp; пайплайн, который нельзя обмануть</div>
-      <h2>Одна команда. Шесть стадий. Ни одна модель не проверяет свою работу.</h2>
+      <h2>Одна команда. Семь стадий. Ни одна модель не проверяет свою работу.</h2>
       <p>Когда делегируешь код через <code>/go</code>, хук физически блокирует любой обход. Стадии, отмеченные <span style="color:var(--accent)">янтарём</span>, идут на <b>другом провайдере</b>, чем автор — встроенная вторая пара глаз.</p>
     </div>
     <div class="flow reveal">
@@ -306,8 +306,9 @@
         <div class="stage"><div class="s-n">СТАДИЯ 2</div><h4>Challenge</h4><div class="who x">✗ атакует план · кросс-провайдер</div></div>
         <div class="stage"><div class="s-n">СТАДИЯ 3</div><h4>Prototype Gate</h4><div class="who">проверяет гипотезу о данных в read-only</div></div>
         <div class="stage"><div class="s-n">СТАДИЯ 4</div><h4>Worker ‖ Verifier</h4><div class="who x">верификатор не видит код воркера</div></div>
-        <div class="stage verdict"><div class="s-n">СТАДИЯ 5</div><h4>Прогон теста</h4><div class="who">exit code = вердикт</div></div>
+        <div class="stage"><div class="s-n">СТАДИЯ 5</div><h4>Прогон теста</h4><div class="who">exit code теста воркера</div></div>
         <div class="stage"><div class="s-n">СТАДИЯ 6</div><h4>Ревью диффа</h4><div class="who x">✗ читает финальный дифф · кросс-провайдер</div></div>
+        <div class="stage verdict"><div class="s-n">СТАДИЯ 7</div><h4>Вердикт</h4><div class="who">exit code = вердикт → коммит</div></div>
       </div>
       <div class="flow-note">
         <p><b>Почему это лучше одного умного агента:</b> ~65% возвратов-к-коду — это неоднозначность контракта + пропущенные режимы отказа. Их ловят на <b>этапе дизайна</b>, а не более способным «печатником». Каждый запуск <code>/go</code> автоматически пишет исход в rework-KPI, поэтому эффективность пайплайна <b>измеряется, а не предполагается</b>.</p>
@@ -336,7 +337,7 @@
     <div class="cluster reveal">
       <h3>Пайплайн качества <span>— ни одна модель не ставит себе зачёт</span></h3>
       <div class="grid">
-        <div class="cmd"><div class="name">/go</div><div class="does">Шестистадийный кросс-провайдер пайплайн. Вердикт по exit code, без обхода.</div><div class="kills">Самопроверку и код, верный лишь в T=0.</div></div>
+        <div class="cmd"><div class="name">/go</div><div class="does">Семистадийный кросс-провайдер пайплайн. Вердикт по exit code, без обхода.</div><div class="kills">Самопроверку и код, верный лишь в T=0.</div></div>
         <div class="cmd"><div class="name">/audit</div><div class="does">Шесть параллельных агентов-линз + внешнее ревью, структурные вердикты.</div><div class="kills">Один ревьюер упускает то, что ловят шесть.</div></div>
         <div class="cmd"><div class="name">/code-review</div><div class="does">Точечный проход после правки: дубли, оверинжиниринг, дрейф.</div><div class="kills">Переписывание хелпера, который уже есть.</div></div>
         <div class="cmd"><div class="name">/consilium</div><div class="does">Дебаты 3–5 агентов + внешние модели, синтез в отчёт.</div><div class="kills">Одно мнение по рискованному решению.</div></div>

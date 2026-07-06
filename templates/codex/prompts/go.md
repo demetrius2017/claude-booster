@@ -1,5 +1,5 @@
 ---
-description: "Run Claude Booster Шестёрка+ pipeline in Codex"
+description: "Run Claude Booster Семёрка pipeline in Codex"
 argument-hint: '[fable] <Artifact Contract>'
 ---
 

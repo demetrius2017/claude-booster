@@ -52,7 +52,7 @@ That's it. Booster installs a set of rules, hooks, and slash commands into `~/.c
 
 | Command | What it does | The problem it kills |
 |---------|--------------|----------------------|
-| `/go` | The **шестёрка+**: Flow Designer → Challenge → Prototype Gate → Worker + Verifier → Test → Diff-review → Verdict. Cross-provider, non-skippable, exit-code verdict | Single-agent coding grades its own homework and thinks in flat snapshots (correct at T=0, wrong at T+1) |
+| `/go` | The **семёрка** (7 stages): Flow Designer → Challenge → Prototype Gate → Worker + Verifier → Test → Diff-review → Verdict. Cross-provider, non-skippable, exit-code verdict | Single-agent coding grades its own homework and thinks in flat snapshots (correct at T=0, wrong at T+1) |
 | `/audit` | Six parallel lens agents (correctness, security, performance, architecture, data-integrity, operational) + external review | One reviewer misses what six specialists catch independently |
 | `/code-review` | Focused post-edit pass for duplication, over-engineering, integration drift, inefficiency | Fast reviews miss the "you already wrote this helper" class of waste |
 | `/consilium` | Multi-agent debate (3–5 role-specific agents + external models), synthesized into a report | High-risk architecture decisions need adversarial perspectives, not one opinion |
@@ -82,7 +82,7 @@ That's it. Booster installs a set of rules, hooks, and slash commands into `~/.c
 Three mechanisms, each targeting a distinct way LLM agents fail on multi-session projects:
 
 1. **Temporal-causal memory** — stores *causal chains* (tried → happened → concluded → still-open), not just facts. Kills the "re-discover the same bug every week" loop.
-2. **The шестёрка pipeline (`/go`)** — the strong model *thinks* (design critique, independent verification, diff review) while the fast flat-fee model *types*. **No model ever reviews its own code**, and the verdict is a green test's exit code — not a vibe.
+2. **The семёрка pipeline (`/go`)** — the strong model *thinks* (design critique, independent verification, diff review) while the fast flat-fee model *types*. **No model ever reviews its own code**, and the verdict is a green test's exit code — not a vibe.
 3. **Smart model routing** — Haiku for lookups, Sonnet for coding, Opus for hard reasoning, flat-fee Codex where it's equivalent. Right model, right task, right cost.
 
 > **New here?** Run `python install.py`, open a session with `/start`, build something with `/go`, and close with `/handover`. Everything else is depth you'll reach for when you need it.
@@ -93,18 +93,19 @@ Three mechanisms, each targeting a distinct way LLM agents fail on multi-session
 
 Claude Booster ships three mechanisms that address the three failure modes of LLM agents working on multi-session projects:
 
-### 1. Шестёрка+ — Flow Designer → Prototype Gate → Worker + Verifier
+### 1. Семёрка — Flow Designer → Challenge → Prototype Gate → Worker + Verifier → Test → Diff-review → Verdict
 
-When Claude delegates a coding task through `/go`, it runs a **gated pipeline**:
+When Claude delegates a coding task through `/go`, it runs a **seven-stage gated pipeline**:
 
 1. **Flow Designer** (Opus) maps every failure mode, temporal gap, and state cascade — producing a Process Flow Document (PFD) before any code is written
-2. **Challenge** attacks the PFD before code, adding missed failure modes and stricter assertions
+2. **Challenge** — a different-provider model attacks the PFD before code, adding missed failure modes and stricter assertions
 3. **Prototype Gate** proves or falsifies the data/process hypothesis with a read-only notebook/probe before Worker touches production code paths
-4. **Worker** implements the change with PFD-derived directives and prototype-proven facts as hard requirements
-5. **Verifier** writes an executable acceptance test — without seeing the Worker's code or prompt
-6. **Diff reviewer** reviews the final diff after the test is green
+4. **Worker + Verifier** (parallel) — the Worker implements with PFD-derived directives as hard requirements; the Verifier writes an executable acceptance test **without seeing the Worker's code or prompt**
+5. **Test run** — the Lead runs the Verifier's test; the exit code is the raw verdict
+6. **Diff review** — a different-provider model reads the final diff for integration, minimality, and untested branches
+7. **Verdict** — PASS → record to the rework KPI → commit; FAIL → classify and retry
 
-The Lead runs the Verifier's test. Exit code = verdict. No subjective "looks good to me."
+The exit code is the verdict. No subjective "looks good to me."
 
 **Why this matters:** Single-agent workflows suffer from three biases: self-evaluation (same model writes and reviews), flat-snapshot thinking (no consideration of what happens at T+1, T+2, ...), and plausible-but-unexecuted RECON theories. The Flow Designer forces temporal/branching analysis upfront. The Prototype Gate forces the hypothesis to meet real data in read-only mode before code. The Verifier breaks the self-evaluation loop by testing observable behavior independently.
 
