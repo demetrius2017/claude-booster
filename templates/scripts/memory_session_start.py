@@ -320,7 +320,9 @@ def main() -> None:
     except Exception:
         data = {}
 
-    session_id = data.get("session_id", "")
+    session_id = data.get("session_id")
+    if session_id is not None:
+        session_id = str(session_id)
     cwd = data.get("cwd", os.getcwd())
 
     # Reset delegate counter first — before any DB work — so each new session
@@ -337,7 +339,7 @@ def main() -> None:
         # Determine scope from cwd
         scope = cwd if cwd and cwd != "/" else "global"
 
-        context = rolling_memory.build_context(scope=scope, token_budget=4000)
+        context = rolling_memory.build_context(scope=scope, token_budget=4000, session_id=session_id)
 
         if context:
             header = "=== Rolling Memory ==="

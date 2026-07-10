@@ -1977,10 +1977,54 @@ def _render_incident_warnings(rows: list[dict], header: str = "=== INCIDENT WARN
     return "\n".join(out_lines)
 
 
+def _emit_injection_telemetry(
+    source: str,
+    memory_ids: list[int],
+    memory_types: dict[str, int],
+    text: str,
+    session_id: Optional[str] = None,
+    project_root: Optional[str] = None,
+) -> None:
+    """Best-effort telemetry for memory strings surfaced to the agent."""
+    try:
+        from memory_telemetry import emit_injection
+    except Exception:
+        return
+
+    try:
+        emit_injection(
+            log_path=LOG_DIR / "memory_injection.jsonl",
+            project_root=project_root,
+            source=source,
+            memory_ids=memory_ids,
+            memory_types=memory_types,
+            char_count=len(text),
+            token_estimate=_estimate_tokens(text),
+            session_id=session_id,
+        )
+    except Exception:
+        return
+
+
+def _telemetry_rows(rows: list[dict], memory_type: Optional[str] = None) -> tuple[list[int], dict[str, int]]:
+    ids: list[int] = []
+    types: dict[str, int] = {}
+    for row in rows:
+        try:
+            row_id = int(row.get("id"))
+        except (TypeError, ValueError):
+            continue
+        row_type = str(memory_type or row.get("memory_type") or "unknown")
+        ids.append(row_id)
+        types[row_type] = types.get(row_type, 0) + 1
+    return ids, types
+
+
 def build_start_context(
     scope: Optional[str] = None,
     query: Optional[str] = None,
     limit: int = 10,
+    session_id: Optional[str] = None,
 ) -> str:
     """Format incident warnings plus relevant consilium/audit rows for /start.
 
@@ -2005,11 +2049,21 @@ def build_start_context(
     elif incident_err:
         parts.append(f"=== INCIDENT REGISTER — {incident_err} ===")
 
+    rendered_rows: list[dict] = []
+    if incident_rows:
+        rendered_rows.extend(incident_rows)
+
     if err_msg is not None:
         parts.append(f"=== KNOWLEDGE BASE — {err_msg} ===")
-        return "\n\n".join(parts)
+        result = "\n\n".join(parts)
+        ids, types = _telemetry_rows(rendered_rows)
+        _emit_injection_telemetry("build_start_context", ids, types, result, session_id, scope)
+        return result
     if not rows:
-        return "\n\n".join(parts)
+        result = "\n\n".join(parts)
+        ids, types = _telemetry_rows(rendered_rows)
+        _emit_injection_telemetry("build_start_context", ids, types, result, session_id, scope)
+        return result
 
     if query:
         header = f"=== KNOWLEDGE BASE — query={query!r}"
@@ -2021,6 +2075,7 @@ def build_start_context(
 
     out_lines: list[str] = [header]
     for r in rows:
+        rendered_rows.append(r)
         date = (r.get("created_at") or "")[:10]
         mt = r.get("memory_type") or "?"
         cat = r.get("category") or "-"
@@ -2040,10 +2095,13 @@ def build_start_context(
         if src:
             out_lines.append(f"    {src}")
     parts.append("\n".join(out_lines))
-    return "\n\n".join(parts)
+    result = "\n\n".join(parts)
+    ids, types = _telemetry_rows(rendered_rows)
+    _emit_injection_telemetry("build_start_context", ids, types, result, session_id, scope)
+    return result
 
 
-def build_context(scope: str = "global", token_budget: int = 4000) -> str:
+def build_context(scope: str = "global", token_budget: int = 4000, session_id: Optional[str] = None) -> str:
     """Build a formatted markdown context string within token budget."""
     sections = [
         ("DIRECTIVES", "directive", None, 10),
@@ -2056,6 +2114,8 @@ def build_context(scope: str = "global", token_budget: int = 4000) -> str:
 
     parts: list[str] = []
     tokens_used = 0
+    rendered_ids: list[int] = []
+    rendered_types: dict[str, int] = {}
 
     conn = get_connection()
     try:
@@ -2117,6 +2177,11 @@ def build_context(scope: str = "global", token_budget: int = 4000) -> str:
                     break
                 section_lines.append(line)
                 tokens_used += line_tokens
+                try:
+                    rendered_ids.append(int(r["id"]))
+                    rendered_types[mtype] = rendered_types.get(mtype, 0) + 1
+                except (KeyError, TypeError, ValueError):
+                    pass
 
             if len(section_lines) > 1:
                 parts.append("\n".join(section_lines))
@@ -2142,6 +2207,11 @@ def build_context(scope: str = "global", token_budget: int = 4000) -> str:
                         break
                     section_lines.append(line)
                     tokens_used += line_tokens
+                    try:
+                        rendered_ids.append(int(r["id"]))
+                        rendered_types["project_context"] = rendered_types.get("project_context", 0) + 1
+                    except (KeyError, TypeError, ValueError):
+                        pass
                 if len(section_lines) > 1:
                     parts.append("\n".join(section_lines))
     except Exception:
@@ -2149,7 +2219,9 @@ def build_context(scope: str = "global", token_budget: int = 4000) -> str:
     finally:
         conn.close()
 
-    return "\n\n".join(parts)
+    result = "\n\n".join(parts)
+    _emit_injection_telemetry("build_context", rendered_ids, rendered_types, result, session_id, scope)
+    return result
 
 
 def forget(memory_id: int) -> bool:
