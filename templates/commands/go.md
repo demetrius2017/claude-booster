@@ -98,6 +98,7 @@ Check that the Artifact Contract contains ALL of these mandatory fields:
 | `Verified Facts Brief:` | Current state evidence with file:line references (NOT docs or memory alone) |
 | `Architecture Context:` | `ARCHITECTURE.md` / `docs/dep_manifest.json` consulted or absent, touched components, critical flags, callers, feeds, downstream consumers, and code cross-check evidence |
 | `Incident Warnings:` | Incident register result: `none` OR source paths read plus production impact, trigger, mitigation, recurrence guard, and "do not repeat" constraints |
+| `Regression Loop Guard:` | File-scoped preservation analysis for every edited existing file: touched surface, consumers checked, relevant git/incident history, behaviors that must not regress, and the verification target |
 | `Artifact path:` | Where Worker writes the result |
 | `Expected observable behavior:` | What an external observer sees (curl response, file content, stdout, etc.) |
 | `Acceptance emphasis:` | What Verifier must specifically check |
@@ -163,6 +164,30 @@ project files:
 If `Architecture Context:` is missing, says `unknown`, or does not name the
 files checked, `/go` remains blocked. A Worker that only sees a code fragment is
 not allowed to write production code.
+
+### Regression loop guard (mandatory after architecture gate, before Flow Designer)
+
+Cross-check the Artifact Contract's `Regression Loop Guard:` against the files
+that will be edited. This gate exists to prevent the classic edit loop: fix A,
+silently break adjacent behavior B, then spend the next sessions repairing the
+damage caused by the repair.
+
+For every existing file in `Artifact path:` or otherwise expected to be edited,
+the field must follow the canonical format in `rules/core.md` §Regression Loop
+Guard. Keep `rules/core.md` as the source of truth for the checklist; this gate
+only validates that the Artifact Contract contains enough concrete evidence to
+feed `verifier_assertions`.
+
+Greenfield exemption: if no existing file will be edited, the field must state
+`Regression Loop Guard: none — new files only: <paths>`. That value passes this
+gate. A bare `N/A` does not.
+
+If `Regression Loop Guard:` is missing, says only `N/A`, omits consumers for an
+existing-file edit, or contains preservation claims without either an executable
+verification target or an explicit `advisory/test gap`, `/go` remains blocked.
+An `advisory/test gap` satisfies field completeness, but it must be logged as
+debt and cannot be used as PASS evidence. Do not spawn Flow Designer until the
+guard is concrete enough to feed `verifier_assertions`.
 
 ---
 

@@ -71,6 +71,57 @@ No edit, patch, migration, deploy, or coding Agent spawn is considered valid
 without this receipt. If a subagent/worker is spawned, inject the relevant receipt
 lines into its prompt; agents do not inherit the Lead's memory automatically.
 
+# [CRITICAL] Regression Loop Guard — do not fix A by breaking B
+
+Before editing any existing file, the Lead MUST run a file-scoped preservation
+analysis. This is higher priority than ordinary implementation speed: an edit
+that fixes the local symptom while breaking a neighboring behavior is a defect,
+even if the new code compiles. Trivial typo/log-message/docs one-liners may use
+`trivial — no behavioral surface` as the whole guard; any logic, control-flow,
+IO, schema, contract, command, hook, rule, or prompt change needs the full guard.
+
+For each file that will be edited, produce a **Regression Loop Guard** before
+the patch:
+
+1. **Touched surface:** name the functions/classes/config keys/CLI paths likely
+   to change. If exact lines are not known yet, name the smallest known symbol
+   or block.
+2. **Consumers:** `rg` imports/callers/routes/tests for that surface. List the
+   downstream behaviors that currently rely on it.
+3. **History:** check recent blame/log/pickaxe for the touched surface when the
+   file is non-trivial, critical, or has incidents/debts:
+   `git blame -w -C -C -L <range> -- <file>`,
+   `git log --follow --grep='revert\|incident\|regression\|fix' -i -- <file>`,
+   and `git log --follow -p -S '<guard symbol/string>' -- <file>` when a guard
+   or suspicious branch is being changed. History explains why a fence exists;
+   it does not prove the fence is still correct.
+4. **Preservation assertions:** write what must remain true after the edit.
+   At least one assertion should cover adjacent behavior, not only the new
+   desired behavior. If no executable assertion exists, explicitly mark it
+   `advisory` and do not pretend it gates correctness.
+5. **Verification target:** identify the test/command that will prove the
+   preservation assertions, or state the missing test gap as debt.
+
+Format:
+
+```
+Regression Loop Guard:
+  File: <path>
+  Touched surface: <symbols/lines>
+  Consumers checked: <rg/git evidence>
+  History checked: <git evidence or N/A with reason>
+  Must preserve:
+    - <observable behavior/invariant>
+  Verification target: <test/command or explicit gap>
+```
+
+Hard stops:
+- Do not edit if consumers have not been traced.
+- Do not remove or weaken a guard introduced by an incident/revert unless the
+  replacement behavior and verification target are named first.
+- Do not accept prose as protection. The guard becomes real only when the
+  Verifier receives an executable preservation assertion.
+
 # Work Principles
 - **[CRITICAL] 51% Rule — do not ask clarifying questions you can answer yourself.**
   If you estimate ≥51% confidence in the answer from available context (code, memory, prior session, reports, obvious defaults), **act on your best guess** and state the assumption in one line ("Assuming X because Y — correct if wrong"). Do NOT interrupt with "which option do you want?" / "should I proceed?" / "did you mean X or Y?" when the evidence already points to an answer.

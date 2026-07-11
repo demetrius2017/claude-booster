@@ -142,9 +142,13 @@ where the native model is Claude and "the other provider" is Codex
 - For `consilium`, `audit`, and `architecture`, build a Verified Facts Brief
   before spawning subagents.
 - For `go`, the Artifact Contract is incomplete unless it contains both
-  `Architecture Context:` and `Incident Warnings:` fields populated from the
-  Context Receipt. For broker/data/DB/financial/migration/external-system/
-  incident/critical-component work, the `/go` run must also produce a
+  `Architecture Context:`, `Incident Warnings:`, and `Regression Loop Guard:`
+  fields. `Architecture Context:` and `Incident Warnings:` are populated from
+  the Context Receipt; `Regression Loop Guard:` is populated from a fresh
+  file-scoped preservation analysis and must name edited files, touched surfaces,
+  consumers checked, relevant git/incident history, behaviors that must not
+  regress, and the verification target. For broker/data/DB/financial/migration/
+  external-system/incident/critical-component work, the `/go` run must also produce a
   `Prototype Handoff` before Worker: source-of-truth inputs, current-system
   comparison, first divergence, counts/samples, invariants proven, Worker facts,
   and Verifier regression assertions.
