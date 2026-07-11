@@ -47,10 +47,9 @@ Execute the command behavior, not the literal Claude Code tool names.
   ids or names plus their final messages. If no Codex subagent tool is available,
   state that full independent-agent parity is unavailable and run only a local
   second pass; do not label that fallback as a full Booster multi-agent result.
-- When spawning Codex subagents, pass `reasoning_effort: "medium"` unless the
-  user explicitly requested a higher effort for that delegate. Do not omit it:
-  omitted effort inherits the Lead session and can accidentally spawn delegates
-  as `gpt-5.5 high`.
+- Pass the selected route's `reasoning_effort` explicitly: Luna uses `low`;
+  Terra and Sol use `medium` by default. `high` requires evidence that a medium
+  attempt failed for lack of reasoning depth; never select `xhigh` automatically.
 - Claude model names (`haiku`, `sonnet`, `opus`) are guidance only. Use Codex's
   available subagent defaults unless a model can be pinned safely.
 - PAL/GPT external review: use PAL if the MCP tools exist. If not, use the
@@ -87,7 +86,7 @@ where the native model is Claude and "the other provider" is Codex
 (`codex_sandbox_worker.sh` / `codex_worker.sh`). On Codex CLI the roles
 **mirror** — translate, do not execute literally:
 
-- The native orchestrator here is gpt-5.5, so "the other provider" is Claude;
+- The native orchestrator follows the active GPT-5.6 route, so "the other provider" is Claude;
   reach it via a Claude subagent/CLI channel if one is available.
 - The invariant that matters is **Worker and Verifier/Challenger/Reviewer run on
   DIFFERENT providers** — not which provider is native. Read the spec's

@@ -83,7 +83,7 @@ Three mechanisms, each targeting a distinct way LLM agents fail on multi-session
 
 1. **Temporal-causal memory** — stores *causal chains* (tried → happened → concluded → still-open), not just facts. Kills the "re-discover the same bug every week" loop.
 2. **The семёрка pipeline (`/go`)** — the strong model *thinks* (design critique, independent verification, diff review) while the fast flat-fee model *types*. **No model ever reviews its own code**, and the verdict is a green test's exit code — not a vibe.
-3. **Smart model routing** — Haiku for lookups, Sonnet for coding, Opus for hard reasoning, flat-fee Codex where it's equivalent. Right model, right task, right cost.
+3. **Smart model routing** — GPT-5.6 Luna for cheap recon, Terra for implementation, Sol for hard reasoning, plus Claude and external providers for independent verification. Right model, right effort, enough quota to finish the week.
 
 > **New here?** Run `python install.py`, open a session with `/start`, build something with `/go`, and close with `/handover`. Everything else is depth you'll reach for when you need it.
 
@@ -143,6 +143,25 @@ A typical `/go` task runs Flow Designer and Challenge first, then a Prototype Ga
 **On API / pay-per-token plans:** model routing still works and actually *saves* money (Haiku and Sonnet are significantly cheaper than Opus). But you're paying per token, so budget accordingly. To disable routing and use a single model, remove the `[CRITICAL] Model routing` section from `~/.claude/rules/tool-strategy.md`.
 
 ---
+
+## What's new in v1.18 — GPT-5.6 routing and effort discipline
+
+Claude Booster now treats the GPT-5.6 family as three production lanes instead of routing every Codex task through one model:
+
+| Work | Default Codex route | Reasoning effort |
+|---|---|---|
+| Trivial lookup and RECON | `gpt-5.6-luna` | `low` |
+| Medium work and implementation | `gpt-5.6-terra` | `medium` |
+| Lead, architecture, hard debugging, consilium | `gpt-5.6-sol` | `medium` |
+| Auth, migrations, financial DML, infra | Claude Sonnet | Provider-specific default; hooks remain visible |
+
+`high` effort is an evidence-based escalation after a medium attempt fails because reasoning depth was insufficient. Booster never selects `xhigh` automatically. Effort travels with the route and is passed per invocation, so a Luna call cannot leak `low` into the next Terra or Sol task.
+
+The balancer continues to include provider quota pressure and health in routing. This matters more than minimizing one request: exhausting one provider early in the week is worse than using the next capable provider while quota is available.
+
+Sol, Terra, and Luna are all OpenAI models. They provide useful specialization but **not independent verification of one another**. `/go` therefore keeps the Worker and Verifier on different providers whenever the other channel is available, and labels the fallback `cross-provider: DEGRADED` when it is not.
+
+The upgrade includes migration of installed GPT-5.5-era pins, telemetry recognition for all three new slugs, `/code-review luna|terra|sol` selectors, and a focused executable routing contract in `tests/test_gpt56_routing.py`.
 
 ## What's new in v1.17 — Provider health-aware external review routing
 

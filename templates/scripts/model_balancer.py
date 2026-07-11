@@ -161,18 +161,18 @@ DEFAULTS: dict = {
     "weekly_tokens_cap": 0,
     "codex_pro_weekly_tokens_cap": 0,
     "routing": {
-        "trivial":        {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
-        "recon":          {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
-        "medium":         {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
-        "coding":         {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
-        "hard":           {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
-        "consilium_bio":  {"provider": PROVIDER_ANTHROPIC, "model": "claude-opus-4-8"},
+        "trivial":        {"provider": PROVIDER_CODEX,     "model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        "recon":          {"provider": PROVIDER_CODEX,     "model": "gpt-5.6-luna", "reasoning_effort": "low"},
+        "medium":         {"provider": PROVIDER_CODEX,     "model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+        "coding":         {"provider": PROVIDER_CODEX,     "model": "gpt-5.6-terra", "reasoning_effort": "medium"},
+        "hard":           {"provider": PROVIDER_CODEX,     "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
+        "consilium_bio":  {"provider": PROVIDER_CODEX,     "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
         "audit_external": {"provider": PROVIDER_PAL,       "model": "gpt-5.5"},
         "audit_secondary": {"provider": PROVIDER_ZAI,      "model": "glm-5.2[1m]"},
         "audit_tertiary": {"provider": PROVIDER_GROK,      "model": "grok-composer-2.5-fast"},
         "hackathon_external": {"provider": PROVIDER_ZAI,   "model": "glm-5.2[1m]"},
         "hackathon_coder": {"provider": PROVIDER_GROK,     "model": "grok-build"},
-        "lead":           {"provider": PROVIDER_CODEX,     "model": "gpt-5.5"},
+        "lead":           {"provider": PROVIDER_CODEX,     "model": "gpt-5.6-sol", "reasoning_effort": "medium"},
         "high_blast_radius": {
             "provider": PROVIDER_ANTHROPIC,
             "model": "claude-sonnet-4-6",
@@ -182,6 +182,21 @@ DEFAULTS: dict = {
             ],
         },
     },
+}
+
+_LEGACY_BOOTSTRAP_ROUTES: dict[str, dict[str, str]] = {
+    "trivial": {"provider": PROVIDER_ANTHROPIC, "model": "claude-haiku-4-5"},
+    "recon": {"provider": PROVIDER_CODEX, "model": "gpt-5.5"},
+    "medium": {"provider": PROVIDER_CODEX, "model": "gpt-5.5"},
+    "coding": {"provider": PROVIDER_CODEX, "model": "gpt-5.5"},
+    "hard": {"provider": PROVIDER_CODEX, "model": "gpt-5.5"},
+    "lead": {"provider": PROVIDER_CODEX, "model": "gpt-5.5"},
+}
+
+_CODEX_REASONING_EFFORT_BY_MODEL = {
+    "gpt-5.6-luna": "low",
+    "gpt-5.6-terra": "medium",
+    "gpt-5.6-sol": "medium",
 }
 
 # Known routing categories (for validation)
@@ -295,12 +310,36 @@ def _build_bootstrap() -> dict:
     return decision
 
 
+def _normalise_route(route: dict) -> dict:
+    """Attach the canonical effort to a recognized GPT-5.6 Codex route."""
+    normalized = copy.deepcopy(route)
+    if normalized.get("provider") == PROVIDER_CODEX:
+        effort = _CODEX_REASONING_EFFORT_BY_MODEL.get(normalized.get("model"))
+        if effort is not None:
+            normalized["reasoning_effort"] = effort
+    return normalized
+
+
 def _with_default_routes(data: dict) -> dict:
-    """Return a copy of *data* with any newly introduced default routes added."""
+    """Add defaults, migrate retired bootstrap routes, and normalize effort."""
     merged = copy.deepcopy(data)
     routing = merged.setdefault("routing", {})
     for category, default_route in DEFAULTS["routing"].items():
-        routing.setdefault(category, copy.deepcopy(default_route))
+        current = routing.get(category)
+        legacy = _LEGACY_BOOTSTRAP_ROUTES.get(category)
+        if current is None:
+            routing[category] = copy.deepcopy(default_route)
+        elif (
+            legacy is not None
+            and isinstance(current, dict)
+            and current.get("provider") == legacy["provider"]
+            and current.get("model") == legacy["model"]
+        ):
+            upgraded = copy.deepcopy(current)
+            upgraded.update(copy.deepcopy(default_route))
+            routing[category] = upgraded
+        elif isinstance(current, dict):
+            routing[category] = _normalise_route(current)
     return merged
 
 
@@ -700,17 +739,20 @@ def _active_decide(prior: dict) -> dict:
             key=lambda c: (c["score"], -c["p50"], c["success_rate"]),
         )
 
-        new_entry = {"provider": winner["provider"], "model": winner["model"]}
+        new_entry = _normalise_route(
+            {"provider": winner["provider"], "model": winner["model"]}
+        )
 
         # Detect change (compare core fields only)
         old_entry = prior_routing.get(category, {})
         old_core = {"provider": old_entry.get("provider"), "model": old_entry.get("model")}
-        if new_entry != old_core:
+        new_core = {"provider": new_entry["provider"], "model": new_entry["model"]}
+        if new_core != old_core:
             # Record transition
             transition = {
                 "category": category,
                 "old": old_core,
-                "new": new_entry,
+                "new": new_core,
                 "computed_at": _now_iso8601(),
                 "n_samples_winner": winner["n_samples"],
                 "p50_ms_winner": int(round(winner["p50"])),
@@ -791,6 +833,7 @@ def _apply_scheduled_changes(decision: dict) -> bool:
         new = dict(routing.get(cat, {}))
         new["provider"] = entry["provider"]
         new["model"] = entry["model"]
+        new = _normalise_route(new)
         routing[cat] = new
         entry["applied_on"] = today
         transitions.append({

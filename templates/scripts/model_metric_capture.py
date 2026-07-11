@@ -60,6 +60,9 @@ PROVIDER_CODEX = "codex-cli"
 # Live ChatGPT-subscription model allowlist (verified 2026-05-12).
 # Only commands that reference one of these models get a DB row.
 _CODEX_ALLOWLIST = frozenset({
+    "gpt-5.6-sol",
+    "gpt-5.6-terra",
+    "gpt-5.6-luna",
     "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
