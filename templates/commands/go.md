@@ -309,8 +309,9 @@ The Flow Designer drafted the PFD on the `hard` tier. This phase has a **differe
 
 - Check what `python3 ~/.claude/scripts/model_balancer.py get hard` returned for Phase 1.
 - **If `GO_FABLE=1` and the budget gate allows it**: run exactly ONE read-only
-  Fable Challenge (`claude --print --model fable` or the strongest available
-  Fable channel) with edit/write/deploy tools disabled. This consumes the
+  Fable Challenge (pipe its prompt to `~/.claude/scripts/fable_consult.sh`, or
+  use a stronger dedicated Fable channel) with edit/write/deploy tools
+  disabled. Do not assemble a raw Claude CLI invocation. This consumes the
   Challenge Fable call budget and must update `fable_control.calls_used`. If
   Fable is unavailable or weekly usage is `>=80%`, set
   `fable_control.degraded=true`, record `downgrade_reason`, and use the normal

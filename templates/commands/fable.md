@@ -52,10 +52,16 @@ specific question.
    channel available in the current runtime:
    - In Claude Code: spawn one read-only Agent with explicit Fable model if the
      runtime supports it. Disallow edit/write/deploy tools in the prompt.
-   - In Codex: if the Claude CLI is available, run a read-only Claude CLI call
-     with `--model fable`, `--print`/non-interactive mode, and no edit/write
-     tools. If the local runtime has a dedicated Fable wrapper, use that wrapper
-     instead.
+   - In Codex: pipe the complete prompt to the deterministic wrapper:
+     `printf '%s\n' "$prompt" | ~/.claude/scripts/fable_consult.sh`.
+     Do not construct a raw `claude` command. In particular, never put a
+     positional prompt after variadic `--tools <tools...>`: the option can
+     consume the prompt and fail before contacting Fable.
+   - Interpret wrapper exits `64` (empty input), `69` (missing local dependency),
+     `70` (local wrapper/output-contract failure), and `74` (stdin read failure)
+     as local failures. Report wrapper stderr accurately. Other nonzero exits
+     are Claude CLI/model failures. Do not call Fable "unavailable" merely
+     because a local failure occurred.
 4. Return the result in this shape:
 
 ```text
