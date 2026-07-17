@@ -117,6 +117,16 @@
     ],
     "PreToolUse": [
       {
+        "matcher": "AskUserQuestion",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/fable_autopilot.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      },
+      {
         "matcher": "Bash",
         "hooks": [
           {
@@ -188,6 +198,16 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "ExitPlanMode",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/fable_autopilot.py phase-event plan_complete",
+            "source": "booster@${BOOSTER_VERSION}"
+          }
+        ]
+      },
+      {
         "hooks": [
           {
             "type": "command",
@@ -221,6 +241,11 @@
         "hooks": [
           {
             "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/fable_autopilot.py phase-event final_diff",
+            "source": "booster@${BOOSTER_VERSION}"
+          },
+          {
+            "type": "command",
             "command": "${PYTHON} ${CLAUDE_HOME}/scripts/require_evidence.py",
             "source": "booster@${BOOSTER_VERSION}"
           }
@@ -241,6 +266,11 @@
     "Stop": [
       {
         "hooks": [
+          {
+            "type": "command",
+            "command": "${PYTHON} ${CLAUDE_HOME}/scripts/fable_autopilot.py",
+            "source": "booster@${BOOSTER_VERSION}"
+          },
           {
             "type": "command",
             "command": "${PYTHON} ${CLAUDE_HOME}/scripts/ask_gate.py",

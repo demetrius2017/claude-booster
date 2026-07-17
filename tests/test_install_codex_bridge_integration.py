@@ -154,7 +154,7 @@ def test_t2_dry_run_no_bridge() -> None:
 # ─── T3: --yes installs bridge manifest with correct counts ──────────────────
 
 def test_t3_yes_installs_bridge_manifest() -> None:
-    label = "T3: --yes installs bridge manifest (bridge_id, skills=18, prompts=17, command_specs=17)"
+    label = "T3: --yes installs bridge manifest matching all managed source artifacts"
     home = _fresh_home()
     try:
         result = _run(
@@ -192,13 +192,34 @@ def test_t3_yes_installs_bridge_manifest() -> None:
         commands_dir = agents_dir / "skills" / "booster-command" / "references" / "commands"
         command_specs = list(commands_dir.glob("*.md")) if commands_dir.exists() else []
 
+        # Derive the contract from the managed source trees. Adding a command
+        # such as autopilot must expand both installation and manifest without
+        # requiring another unrelated magic-number edit here.
+        expected_skills = list((ROOT / "templates" / "codex" / "skills").rglob("SKILL.md"))
+        expected_prompts = list((ROOT / "templates" / "codex" / "prompts").glob("*.md"))
+        expected_commands = list((ROOT / "templates" / "commands").glob("*.md"))
+        expected_sources = {
+            str(path.relative_to(ROOT))
+            for path in (*expected_skills, *expected_prompts, *expected_commands)
+        }
+        manifest_sources = {
+            entry.get("source") for entry in data.get("files", [])
+            if isinstance(entry, dict) and isinstance(entry.get("source"), str)
+        }
+
         errors = []
-        if len(skills) != 18:
-            errors.append(f"skills={len(skills)}, expected 18")
-        if len(prompts) != 17:
-            errors.append(f"prompts={len(prompts)}, expected 17")
-        if len(command_specs) != 17:
-            errors.append(f"command_specs={len(command_specs)}, expected 17")
+        if len(skills) != len(expected_skills):
+            errors.append(f"skills={len(skills)}, expected {len(expected_skills)}")
+        if len(prompts) != len(expected_prompts):
+            errors.append(f"prompts={len(prompts)}, expected {len(expected_prompts)}")
+        if len(command_specs) != len(expected_commands):
+            errors.append(f"command_specs={len(command_specs)}, expected {len(expected_commands)}")
+        if manifest_sources != expected_sources:
+            errors.append(
+                "manifest source set differs from managed sources: "
+                f"missing={sorted(expected_sources - manifest_sources)}, "
+                f"extra={sorted(manifest_sources - expected_sources)}"
+            )
 
         if errors:
             _fail(label, "; ".join(errors))

@@ -1,6 +1,6 @@
 ---
 name: "booster-command"
-description: "Run Claude Booster command protocols in Codex. Use when Dmitry invokes or asks to install/run Booster commands such as start, handover, fable, consilium, audit, code-review, architecture, go, debt, phase, update, delegate, lead, verify-flow, verify-after-edit, audit-trace, or hackathon."
+description: "Run Claude Booster command protocols in Codex. Use when Dmitry invokes or asks to install/run Booster commands such as start, handover, fable, autopilot, consilium, audit, code-review, architecture, go, debt, phase, update, delegate, lead, verify-flow, verify-after-edit, audit-trace, or hackathon."
 ---
 
 # Booster Command Runner
@@ -12,6 +12,7 @@ Use it when the user invokes a Booster command by name, for example:
 - `start`
 - `handover`
 - `fable <question>` or natural-language "посоветуйся с Fable 5"
+- `autopilot on <North Star>`, `autopilot status`, or `autopilot off`
 - `consilium <topic>`
 - `audit <topic>`
 - `code-review [model] [topic] [--model <model>] [--scope <path>] [--apply]`
@@ -75,6 +76,13 @@ Execute the command behavior, not the literal Claude Code tool names.
   output if non-empty. This refreshes the current UTC month from Claude/Codex
   transcript stores before printing. The wording is intentionally
   API-equivalent / credit-rate estimate language, not an actual billing ledger.
+- Fable autopilot parity is executable, not prose-only: preserve project-bound
+  state scope and use the trusted `fable_autopilot.py consult-decision` runner
+  for decisions and trusted `checkpoint plan_complete|first_slice|final_diff`
+  runners. Only those runners invoke and bind `fable_consult.sh` output; no
+  caller-supplied receipt may assert Fable provenance. They validate
+  typed `ON_COURSE|REFOCUS|REPLAN|ASK_USER` verdicts and `/go fable` watchlist
+  reconciliation. Codex must not fall back to ambient HOME autopilot state.
 
 ### Cross-provider stages (SHIP-1..4 in `go` and `hackathon`)
 

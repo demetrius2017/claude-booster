@@ -59,6 +59,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional, Tuple
@@ -207,6 +208,25 @@ def _repo_disabled(cwd_hint: str) -> bool:
         return False
 
 
+def _autopilot_owns_stop(cwd_hint: str) -> bool:
+    """Subordinate this legacy Stop classifier to enabled scoped autopilot."""
+    try:
+        base = Path(cwd_hint or ".").resolve()
+        result = subprocess.run(
+            ["git", "-C", str(base), "rev-parse", "--show-toplevel"],
+            text=True, capture_output=True, check=True, timeout=3,
+        )
+        root = Path(result.stdout.strip()).resolve()
+    except (OSError, subprocess.SubprocessError):
+        root = Path(cwd_hint or ".").resolve()
+    path = root / ".claude" / "autopilot.json"
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+        return bool(state.get("enabled") is True and Path(str(state.get("scope", ""))).resolve() == root)
+    except (OSError, ValueError, json.JSONDecodeError, AttributeError):
+        return False
+
+
 def _build_base_record(data: dict) -> dict:
     cwd = data.get("cwd") or ""
     return {
@@ -325,6 +345,14 @@ def main() -> int:
             "reason": ".ask_gate=off (lead)",
             "matched_pattern": "",
             "attempted_bypass": True,
+        })
+        return 0
+
+    if _autopilot_owns_stop(data.get("cwd") or ""):
+        append_jsonl(ASK_LOG_NAME, {
+            **base, "decision": DECISION_ALLOW,
+            "reason": "subordinate to enabled project-scoped Fable autopilot Stop hook",
+            "matched_pattern": "",
         })
         return 0
 

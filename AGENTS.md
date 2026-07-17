@@ -12,6 +12,7 @@ Booster command:
 - `handover` or `/handover`
 - `fable <question>`, `/fable <question>`, or natural-language
   `посоветуйся с Fable 5` — one read-only Fable 5 consult, not consilium
+- `autopilot on <North Star>`, `autopilot status`, or `autopilot off`
 - `consilium <topic>` or `/consilium <topic>`
 - `audit <topic>` or `/audit <topic>`
 - `code-review [model] [topic]` or `/code-review [model] [topic]`
