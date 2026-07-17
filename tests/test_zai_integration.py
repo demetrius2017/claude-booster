@@ -59,12 +59,14 @@ def test_zai_cli_builds_read_only_claude_command(monkeypatch) -> None:
     zai_cli = _import_script("zai_cli")
     captured: dict[str, object] = {}
 
-    def fake_run(cmd, *, input, text, env, check):  # noqa: ANN001
+    def fake_run(cmd, *, input, env, check, **kwargs):  # noqa: ANN001
         captured["cmd"] = cmd
         captured["input"] = input
         captured["env"] = env
         captured["check"] = check
-        return subprocess.CompletedProcess(cmd, 0)
+        # New impl captures stdout as bytes; return a non-empty payload so the
+        # empty-retry path is not triggered by this command-construction test.
+        return subprocess.CompletedProcess(cmd, 0, stdout=b"ok")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 

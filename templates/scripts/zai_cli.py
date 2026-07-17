@@ -57,6 +57,7 @@ INSERT INTO model_metrics
 VALUES
     (datetime('now'), ?, ?, ?, ?, 1, ?, NULL, NULL, ?, ?, ?)
 """
+_EMPTY_RETRY_BACKOFF_S = float(os.environ.get("ZAI_EMPTY_RETRY_BACKOFF_S", "0.5"))
 
 
 def _secret_path() -> Path:
@@ -197,21 +198,46 @@ def _run_claude(
         )
 
     started = time.monotonic()
+    env = _env()
     proc = subprocess.run(
         cmd,
-        input=prompt,
-        text=True,
-        env=_env(),
+        input=prompt.encode("utf-8"),
+        stdout=subprocess.PIPE,
+        env=env,
         check=False,
     )
+    raw = proc.stdout
+    if proc.returncode == 0 and raw.decode("utf-8", "replace").strip() == "":
+        if _EMPTY_RETRY_BACKOFF_S > 0:
+            time.sleep(_EMPTY_RETRY_BACKOFF_S)
+        proc = subprocess.run(
+            cmd,
+            input=prompt.encode("utf-8"),
+            stdout=subprocess.PIPE,
+            env=env,
+            check=False,
+        )
+        raw = proc.stdout
+
     duration_ms = int((time.monotonic() - started) * 1000)
-    _record_metric(
-        model=model,
-        task_category=task_category,
-        duration_ms=duration_ms,
-        success=proc.returncode == 0,
-    )
-    return int(proc.returncode)
+    final_returncode = int(proc.returncode)
+    is_empty = raw.decode("utf-8", "replace").strip() == ""
+    if final_returncode == 0 and is_empty:
+        print("zai_cli: empty response after retry", file=sys.stderr)
+        final_returncode = 1
+
+    sys.stdout.buffer.write(raw)
+    sys.stdout.buffer.flush()
+    try:
+        _record_metric(
+            model=model,
+            task_category=task_category,
+            duration_ms=duration_ms,
+            success=final_returncode == 0 and not is_empty,
+        )
+    except OSError as exc:
+        print(f"zai_cli: telemetry skipped: {exc}", file=sys.stderr)
+    return final_returncode
 
 
 def main() -> int:
